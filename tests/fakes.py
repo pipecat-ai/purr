@@ -79,6 +79,12 @@ class FakeRepos:
     async def guidelines(self, repo):
         return getattr(self, "repo_guidelines", "")
 
+    async def sync(self, repo, prs):
+        self.synced = [*getattr(self, "synced", []), (repo, [pr.number for pr in prs])]
+
+    async def diff(self, pr):
+        return getattr(self, "diffs", {}).get(pr.ref)
+
     async def plugin(self, repo):
         if isinstance(error := getattr(self, "plugin_error", None), Exception):
             raise error

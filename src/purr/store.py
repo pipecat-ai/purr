@@ -138,6 +138,9 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX prompts_by_pr ON prompts (repo, number);
     """,
+    """
+    ALTER TABLE prs ADD COLUMN base TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -169,6 +172,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         assigned_to_me=bool(row["assigned_to_me"]),
         updated_at=row["updated_at"],
         created_at=row["created_at"],
+        base=row["base"],
         assignees=tuple(json.loads(row["assignees"])),
     )
 
@@ -197,8 +201,8 @@ def _activity(row: aiosqlite.Row) -> Activity:
 
 _UPSERT_PR = """
     INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
-                     updated_at, created_at, assignees)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     updated_at, created_at, assignees, base)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET
         title = excluded.title,
         author = excluded.author,
@@ -208,7 +212,8 @@ _UPSERT_PR = """
         gh_state = excluded.gh_state,
         updated_at = excluded.updated_at,
         created_at = excluded.created_at,
-        assignees = excluded.assignees
+        assignees = excluded.assignees,
+        base = excluded.base
 """
 
 
@@ -225,6 +230,7 @@ def _upsert_params(pr: PR) -> tuple:
         pr.updated_at,
         pr.created_at,
         json.dumps(list(pr.assignees)),
+        pr.base,
     )
 
 

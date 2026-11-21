@@ -14,7 +14,7 @@ from purr.recap import ClaudeRecapAgent, RecapAgent
 from purr.review.agent import ClaudeReviewAgent, ReviewAgent
 from purr.review.instructions import ReviewInstructions
 from purr.store import Store
-from purr.workers import ActivityWorker, GitHubWorker, RecapWorker, ReviewWorker
+from purr.workers import ActivityWorker, GitHubWorker, GitWorker, RecapWorker, ReviewWorker
 
 
 class Purr:
@@ -136,4 +136,5 @@ class Purr:
                 permission_wait=self._config.permission_wait,
             ),
             RecapWorker(store=store, agent=self._recap_agent),
+            GitWorker(store=store, repos=self._repos, github=self._github),
         ]

@@ -75,7 +75,14 @@ One Purr instance covers several repos; you don't run one per repo:
 Two things keep this cheap:
 
 - **Watched repos** (the ones whose pool you see) are added and removed in the UI, and there are none to start with. Running `purr` inside a checkout opens that repo directly (see TUI), so the Claude Code habit of starting inside a repo still works; if the repo isn't watched yet, Purr offers to add it.
-- **Purr's own clones.** Purr keeps a blobless clone of each repo it reviews in its data dir (`repos/<owner>/<name>.git`) and creates review worktrees from it. Your checkouts are never touched (no extra worktrees, refs or fetches in them), and PRs assigned to you in repos you don't have locally work the same way.
+- **Purr's own clones.** Purr keeps a blobless clone of each repo with open PRs in its data dir (`repos/<owner>/<name>.git`) and creates review worktrees from it. Your checkouts are never touched (no extra worktrees, refs or fetches in them), and PRs assigned to you in repos you don't have locally work the same way.
+- **Open PRs are synced into the clone, so diffs are local.** The `git` worker syncs on start and after every change to the PR list (a poll found new or updated PRs), a second after the last one, in the background:
+  1. One `git fetch` for the PRs that are new or have new commits (`refs/pull/N/head` → `refs/purr/pull/N`) and the branches they merge into (`refs/purr/heads/<base>`; the poll now carries each PR's `baseRefName`). PRs no longer open lose their ref.
+  2. A commit-graph, so finding where each PR branched off takes ms instead of 50.
+  3. The files those diffs touch, in one more fetch: their blob ids come from the trees (`git diff --raw`, no contents needed), and only missing ones are requested.
+
+  Nothing new, no network (bases are refetched every 10 minutes regardless). The diff is then `git diff <base>...<head>` in the clone, the same as GitHub's, with no 300-file or 20,000-line limit. Measured on pipecat from scratch: the clone and first sync of 337 open PRs took 19 s in the background, the clone is 31 MB, and a diff over the bus takes 7 ms on average (23 ms for a 3,000-line one). A PR the clone doesn't have yet (a push since the last sync, a repo still cloning) gets its diff from GitHub instead.
+  No worktree is needed for this; worktrees are for reviews, where the agent needs the files.
 
 ## PR states
 
@@ -213,6 +220,7 @@ Events (broadcast, everyone listens):
 - `session.answer {request_id, allow}` (reviews worker): answers an agent's permission request. ("Always for this PR" isn't there yet; it's allow once or deny.)
 - `pr.assign {pr}` (GitHub worker): assigns you, when you start a review on a pool PR with `r`.
 - `pr.details {prs}` (GitHub worker): description, base and head branches, +/- lines, files, labels, review decision and CI state of some PRs, batched 20 to a request.
+- `pr.diff {pr}` (git worker): the PR's unified diff, from Purr's clone, or from GitHub if the clone doesn't have the PR's head yet.
 
 Commands: none yet. Everything that needs a reply is a job.
 
@@ -297,7 +305,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
   - **What scrolls**: the PR's description, then its diff (colored like `git diff`, a rule per file with its `+/−`; lock files and other generated files collapsed; the first 3000 lines), then the session with the agent (Claude Code style, see PR session). A PR nobody has reviewed yet opens at its description, so you can decide whether to take it; a reviewed one opens at the end of the conversation.
   - **The pending action box and the prompt**, which stay put too. The prompt takes several lines and grows with them (up to 10).
   - `d` opens the full diff in your pager (`gh pr diff`).
-- **Details and diffs are fetched ahead.** Selecting a PR fetches its details (about 0.5 s) and its diff (about 0.7 s, `gh api` with the diff media type) in parallel, plus the details of the 10 PRs below it in one request and the diffs of the next 3. Moving down the list doesn't wait: in the real run the next PR's diff was there in 0.1 s. Details are cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing; diffs are kept by head commit (the last 50). GitHub refuses diffs over 300 files or 20,000 lines; the pane shows its error.
+- **Details are fetched ahead; diffs are local.** Selecting a PR fetches its details from GitHub (about 0.5 s), plus those of the 10 PRs below it in one request. Its diff comes from Purr's clone (`pr.diff` on the `git` worker, see Repos), in a few ms. Details are cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing; diffs are kept by head commit (the last 50).
 - **Focus**: each pane has a rounded border, and the one with the focus lights up in the accent color, with its title (`PRs`, `PR`). `o` (or `enter`) on a PR moves the focus into its pane; `esc` brings it back.
 - **Status bar**: key hints for the focused pane, and mic state.
 

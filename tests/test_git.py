@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from purr.git import GitError, GitRepos
-from purr.models import PRRef
+from purr.models import PR, PRRef
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -166,3 +166,43 @@ async def test_no_repo_plugin(tmp_path, upstream):
     assert await repos.plugin("a/b") is None  # not cloned yet
     await repos.checkout(PRRef("a/b", 7), git(upstream, "rev-parse", "refs/pull/7/head"))
     assert await repos.plugin("a/b") is None
+
+
+def open_pr(number: int, head: str, base: str = "main") -> PR:
+    return PR(
+        repo="a/b", number=number, title="t", author="x", url="u", head_sha=head,
+        updated_at="", base=base,
+    )  # fmt: skip
+
+
+async def test_open_prs_are_synced_and_diffed_locally(tmp_path, upstream):
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    seven = open_pr(7, git(upstream, "rev-parse", "refs/pull/7/head"))
+    assert await repos.diff(seven) is None  # not cloned yet: the UI asks GitHub
+
+    await repos.sync("a/b", [seven])
+    diff = await repos.diff(seven)
+    assert diff is not None and diff.startswith("diff --git a/a.txt b/a.txt")
+    assert "-one\n+two\n" in diff
+
+    # New commits on the PR, and on main meanwhile. Until the next sync the
+    # clone doesn't have them; after it, the diff is still the PR's own changes
+    # (from where it branched off, like GitHub's), not main's.
+    git(upstream, "checkout", "-q", "feature")
+    (upstream / "a.txt").write_text("three\n")
+    git(upstream, "commit", "-qam", "three")
+    git(upstream, "update-ref", "refs/pull/7/head", "HEAD")
+    git(upstream, "checkout", "-q", "main")
+    (upstream / "b.txt").write_text("main moved on\n")
+    git(upstream, "add", ".")
+    git(upstream, "commit", "-qm", "main")
+    moved = open_pr(7, git(upstream, "rev-parse", "refs/pull/7/head"))
+    assert await repos.diff(moved) is None
+
+    await repos.sync("a/b", [moved])
+    diff = await repos.diff(moved)
+    assert diff is not None and "+three" in diff and "b.txt" not in diff
+
+    # Closed: its ref goes.
+    await repos.sync("a/b", [])
+    assert await repos.diff(moved) is None

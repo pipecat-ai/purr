@@ -24,7 +24,7 @@ ASSIGNED_QUERY = "is:pr is:open archived:false assignee:@me sort:created-desc"
 UPDATED_QUERY = "is:pr archived:false updated:>={since} sort:updated-desc repo:{repo}"
 
 _PR_FIELDS = """
-    number title url state isDraft updatedAt createdAt headRefOid
+    number title url state isDraft updatedAt createdAt headRefOid baseRefName
     author { login }
     assignees(first: 20) { nodes { login } }
     repository { nameWithOwner }
@@ -59,6 +59,7 @@ class RemotePR:
     is_draft: bool = False
     state: GHState = GHState.OPEN
     assignees: tuple[str, ...] = ()
+    base: str = ""  # the branch it merges into
 
     @property
     def ref(self) -> PRRef:
@@ -85,6 +86,7 @@ class RemotePR:
             head_sha=self.head_sha,
             updated_at=self.updated_at,
             created_at=self.created_at,
+            base=self.base,
             assignees=self.assignees,
             assigned_to_me=me.lower() in {a.lower() for a in self.assignees},
         )
@@ -132,6 +134,7 @@ def _remote_pr(node: dict) -> RemotePR:
         is_draft=node["isDraft"],
         state=GHState(node.get("state", "OPEN").lower()),
         assignees=tuple(a["login"] for a in (node.get("assignees") or {}).get("nodes", [])),
+        base=node.get("baseRefName") or "",
     )
 
 

@@ -114,6 +114,7 @@ class PR:
     head_sha: str
     updated_at: str
     created_at: str = ""
+    base: str = ""  # the branch it merges into; "" until a poll says
     assignees: tuple[str, ...] = ()
     assigned_to_me: bool = False
     state: PRState = PRState.NOT_REVIEWED

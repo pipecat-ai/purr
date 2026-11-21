@@ -9,6 +9,7 @@ from textual.message import Message
 from purr.messages import (
     ACTION_APPROVE,
     ACTION_DISMISS,
+    GIT_WORKER,
     GITHUB_WORKER,
     PERMISSION_ANSWER,
     PR_ASSIGN,
@@ -77,7 +78,7 @@ class UIWorker(BaseWorker):
 
     async def diff(self, pr: PRRef) -> str:
         """The PR's unified diff."""
-        response = await self._job(GITHUB_WORKER, PR_DIFF, {"pr": str(pr)})
+        response = await self._job(GIT_WORKER, PR_DIFF, {"pr": str(pr)})
         return str(response.get("diff") or "")
 
     async def send_message(self, pr: PRRef, text: str) -> None:

@@ -24,6 +24,7 @@ from pipecat.bus import BusDataMessage, BusMessage
 GITHUB_WORKER = "github"
 REVIEW_WORKER = "reviews"
 RECAP_WORKER = "recap"
+GIT_WORKER = "git"
 
 # Job names handled by RECAP_WORKER.
 # payload: {"since": ISO time} -> {"recap_id": int | None} (None: nothing notable happened)
