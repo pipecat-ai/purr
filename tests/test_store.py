@@ -1,3 +1,4 @@
+import aiosqlite
 import pytest
 
 from purr.models import (
@@ -5,6 +6,7 @@ from purr.models import (
     ActionKind,
     ActionStatus,
     Finding,
+    GHState,
     PRRef,
     PRState,
     ReviewStatus,
@@ -141,3 +143,82 @@ async def test_pending_action_can_only_be_resolved_once(store):
         is None
     )
     assert await store.pending_actions() == []
+
+
+async def test_migrating_a_v1_database_keeps_prs(tmp_path):
+    path = tmp_path / "purr.db"
+
+    async with aiosqlite.connect(path) as db:
+        await db.executescript(f"BEGIN;\n{MIGRATIONS[0]}\nPRAGMA user_version = 1;\nCOMMIT;")
+        await db.execute(
+            "INSERT INTO prs (repo, number, title, author, url, head_sha, updated_at)"
+            " VALUES ('a/b', 1, 't', 'x', 'u', 's', '2026-11-20T10:00:00Z')"
+        )
+        await db.commit()
+
+    async with Store.connect(path) as store:
+        assert await store.schema_version() == len(MIGRATIONS)
+        pr = await store.get_pr(PRRef("a/b", 1))
+        assert pr is not None and pr.gh_state == GHState.OPEN
+
+
+async def test_repos_are_listed_alphabetically_ignoring_case(store):
+    for name in ["pipecat-ai/whisker", "daily-co/daily-x", "Pipecat-ai/pipecat"]:
+        await store.add_repo(name)
+    await store.add_repo("daily-co/DAILY-X")  # already watched
+
+    assert [r.name for r in await store.list_repos()] == [
+        "daily-co/daily-x",
+        "Pipecat-ai/pipecat",
+        "pipecat-ai/whisker",
+    ]
+    assert (await store.get_repo("daily-co/daily-x")).synced_at is None
+    await store.mark_synced(["daily-co/daily-x"])
+    assert (await store.get_repo("daily-co/daily-x")).synced_at is not None
+
+
+async def test_removing_a_repo_keeps_prs_that_matter(store):
+    await store.add_repo("pipecat-ai/pipecat")
+    pool = await store.upsert_pr(make_pr(1))
+    assigned = await store.upsert_pr(make_pr(2, assigned_to_me=True))
+    reviewed = await store.upsert_pr(make_pr(3))
+    await store.set_pr_state(reviewed.ref, PRState.DONE)
+
+    assert await store.remove_repo("pipecat-ai/pipecat") is True
+    assert await store.remove_repo("pipecat-ai/pipecat") is False
+    assert await store.list_repos() == []
+    assert await store.get_pr(pool.ref) is None
+    assert await store.get_pr(assigned.ref) is not None
+    assert await store.get_pr(reviewed.ref) is not None
+
+
+async def test_apply_sync(store):
+    keep = await store.upsert_pr(make_pr(1))
+    gone = await store.upsert_pr(make_pr(2))
+    merged = await store.upsert_pr(make_pr(3))
+
+    await store.apply_sync(
+        upserts=[make_pr(1, title="Renamed"), make_pr(4)],
+        deletes=[gone.ref],
+        gh_states={merged.ref: GHState.MERGED},
+    )
+
+    assert (await store.get_pr(keep.ref)).title == "Renamed"
+    assert await store.get_pr(gone.ref) is None
+    assert (await store.get_pr(merged.ref)).gh_state == GHState.MERGED
+    assert sorted(pr.number for pr in await store.open_prs()) == [1, 4]
+
+
+async def test_activity_log(store):
+    ref = PRRef("pipecat-ai/pipecat", 1)
+    first = await store.record_activity("pr.changed", pr=ref, data={"change": "pooled"})
+    await store.record_activity("something.global")
+
+    entries = await store.activity()
+    assert [(a.kind, a.pr) for a in entries] == [
+        ("pr.changed", ref),
+        ("something.global", None),
+    ]
+    assert entries[0].data == {"change": "pooled"}
+    assert [a.id for a in await store.activity(pr=ref)] == [first.id]
+    assert await store.activity(since="2999-01-01") == []

@@ -5,8 +5,9 @@ from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
 from purr.config import Config
+from purr.github import GitHub
 from purr.store import Store
-from purr.workers import EventLogWorker
+from purr.workers import ActivityWorker, GitHubWorker
 
 
 class Purr:
@@ -51,4 +52,7 @@ class Purr:
             await self._runner.end(reason="purr stopping")
 
     def _create_workers(self, store: Store) -> list[BaseWorker]:
-        return [EventLogWorker("event-log")]
+        return [
+            ActivityWorker(store=store),
+            GitHubWorker(store=store, github=GitHub(), interval=self._config.poll_interval),
+        ]

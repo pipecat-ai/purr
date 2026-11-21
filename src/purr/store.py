@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,10 +13,13 @@ from purr.models import (
     PR,
     ActionKind,
     ActionStatus,
+    Activity,
     Finding,
+    GHState,
     PendingAction,
     PRRef,
     PRState,
+    Repo,
     Review,
     ReviewStatus,
     Severity,
@@ -78,6 +81,27 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX pending_actions_pr ON pending_actions (pr_id);
     """,
+    """
+    ALTER TABLE prs ADD COLUMN gh_state TEXT NOT NULL DEFAULT 'open'
+        CHECK (gh_state IN ('open', 'closed', 'merged'));
+
+    CREATE TABLE repos (
+        name      TEXT PRIMARY KEY COLLATE NOCASE,
+        added_at  TEXT NOT NULL,
+        synced_at TEXT
+    );
+
+    CREATE TABLE activity (
+        id     INTEGER PRIMARY KEY,
+        at     TEXT NOT NULL,
+        kind   TEXT NOT NULL,
+        repo   TEXT,
+        number INTEGER,
+        data   TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX activity_at ON activity (at);
+    CREATE INDEX activity_pr ON activity (repo, number);
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -105,8 +129,49 @@ def _pr(row: aiosqlite.Row) -> PR:
         url=row["url"],
         head_sha=row["head_sha"],
         state=PRState(row["state"]),
+        gh_state=GHState(row["gh_state"]),
         assigned_to_me=bool(row["assigned_to_me"]),
         updated_at=row["updated_at"],
+    )
+
+
+def _repo(row: aiosqlite.Row) -> Repo:
+    return Repo(name=row["name"], added_at=row["added_at"], synced_at=row["synced_at"])
+
+
+def _activity(row: aiosqlite.Row) -> Activity:
+    pr = PRRef(row["repo"], row["number"]) if row["repo"] is not None else None
+    return Activity(
+        id=row["id"], at=row["at"], kind=row["kind"], pr=pr, data=json.loads(row["data"])
+    )
+
+
+_UPSERT_PR = """
+    INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
+                     updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (repo, number) DO UPDATE SET
+        title = excluded.title,
+        author = excluded.author,
+        url = excluded.url,
+        head_sha = excluded.head_sha,
+        assigned_to_me = excluded.assigned_to_me,
+        gh_state = excluded.gh_state,
+        updated_at = excluded.updated_at
+"""
+
+
+def _upsert_params(pr: PR) -> tuple:
+    return (
+        pr.repo,
+        pr.number,
+        pr.title,
+        pr.author,
+        pr.url,
+        pr.head_sha,
+        int(pr.assigned_to_me),
+        pr.gh_state,
+        pr.updated_at,
     )
 
 
@@ -215,31 +280,7 @@ class Store:
 
     async def upsert_pr(self, pr: PR) -> PR:
         """Insert or refresh a PR's GitHub metadata. Never changes its review state."""
-        row = await self._fetchone(
-            """
-            INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me,
-                             updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (repo, number) DO UPDATE SET
-                title = excluded.title,
-                author = excluded.author,
-                url = excluded.url,
-                head_sha = excluded.head_sha,
-                assigned_to_me = excluded.assigned_to_me,
-                updated_at = excluded.updated_at
-            RETURNING *
-            """,
-            (
-                pr.repo,
-                pr.number,
-                pr.title,
-                pr.author,
-                pr.url,
-                pr.head_sha,
-                int(pr.assigned_to_me),
-                pr.updated_at,
-            ),
-        )
+        row = await self._fetchone(f"{_UPSERT_PR} RETURNING *", _upsert_params(pr))
         await self._db.commit()
         return _pr(row)
 
@@ -265,6 +306,115 @@ class Store:
         await self._db.commit()
         if cursor.rowcount == 0:
             raise KeyError(f"unknown PR {ref}")
+
+    async def open_prs(self) -> list[PR]:
+        """PRs that are open on GitHub, in no particular order."""
+        rows = await self._fetchall("SELECT * FROM prs WHERE gh_state = ?", (GHState.OPEN,))
+        return [_pr(row) for row in rows]
+
+    async def apply_sync(
+        self,
+        *,
+        upserts: Iterable[PR] = (),
+        deletes: Iterable[PRRef] = (),
+        gh_states: Mapping[PRRef, GHState] | None = None,
+    ) -> None:
+        """Apply one poll's worth of changes to the PR table, in a single transaction."""
+        try:
+            await self._db.executemany(_UPSERT_PR, [_upsert_params(pr) for pr in upserts])
+            await self._db.executemany(
+                "DELETE FROM prs WHERE repo = ? AND number = ?",
+                [(ref.repo, ref.number) for ref in deletes],
+            )
+            await self._db.executemany(
+                "UPDATE prs SET gh_state = ? WHERE repo = ? AND number = ?",
+                [(state, ref.repo, ref.number) for ref, state in (gh_states or {}).items()],
+            )
+        except BaseException:
+            await self._db.rollback()
+            raise
+        await self._db.commit()
+
+    # -- Repos -----------------------------------------------------------------
+
+    async def add_repo(self, name: str) -> Repo:
+        """Start watching ``owner/name``. Adding a watched repo again is a no-op."""
+        await self._db.execute(
+            "INSERT INTO repos (name, added_at) VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
+            (name, _now()),
+        )
+        await self._db.commit()
+        repo = await self.get_repo(name)
+        assert repo is not None
+        return repo
+
+    async def get_repo(self, name: str) -> Repo | None:
+        row = await self._fetchone("SELECT * FROM repos WHERE name = ?", (name,))
+        return _repo(row) if row else None
+
+    async def list_repos(self) -> list[Repo]:
+        """Watched repos, alphabetically (case-insensitive)."""
+        rows = await self._fetchall("SELECT * FROM repos ORDER BY name COLLATE NOCASE")
+        return [_repo(row) for row in rows]
+
+    async def remove_repo(self, name: str) -> bool:
+        """Stop watching a repo and drop its pool.
+
+        PRs assigned to you, or that Purr has started reviewing, are kept.
+        Returns whether the repo was being watched.
+        """
+        cursor = await self._db.execute("DELETE FROM repos WHERE name = ?", (name,))
+        removed = cursor.rowcount > 0
+        await self._db.execute(
+            """
+            DELETE FROM prs
+            WHERE repo = ? COLLATE NOCASE AND state = ? AND assigned_to_me = 0
+            """,
+            (name, PRState.NOT_REVIEWED),
+        )
+        await self._db.commit()
+        return removed
+
+    async def mark_synced(self, names: Iterable[str]) -> None:
+        now = _now()
+        await self._db.executemany(
+            "UPDATE repos SET synced_at = ? WHERE name = ?", [(now, name) for name in names]
+        )
+        await self._db.commit()
+
+    # -- Activity --------------------------------------------------------------
+
+    async def record_activity(
+        self, kind: str, *, pr: PRRef | None = None, data: dict | None = None
+    ) -> Activity:
+        cursor = await self._db.execute(
+            "INSERT INTO activity (at, kind, repo, number, data) VALUES (?, ?, ?, ?, ?)",
+            (
+                _now(),
+                kind,
+                pr.repo if pr else None,
+                pr.number if pr else None,
+                json.dumps(data or {}),
+            ),
+        )
+        await self._db.commit()
+        row = await self._fetchone("SELECT * FROM activity WHERE id = ?", (cursor.lastrowid,))
+        return _activity(row)
+
+    async def activity(
+        self, *, since: str | None = None, pr: PRRef | None = None
+    ) -> list[Activity]:
+        """Activity entries, oldest first; optionally only after ``since`` or for one PR."""
+        clauses, params = [], []
+        if since:
+            clauses.append("at > ?")
+            params.append(since)
+        if pr:
+            clauses += ["repo = ?", "number = ?"]
+            params += [pr.repo, pr.number]
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = await self._fetchall(f"SELECT * FROM activity {where} ORDER BY id", params)
+        return [_activity(row) for row in rows]
 
     # -- Reviews ---------------------------------------------------------------
 

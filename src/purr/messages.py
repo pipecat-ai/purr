@@ -6,7 +6,8 @@ Everything in Purr talks over one Pipecat worker bus:
   dispatched with ``request_job()`` / ``job()``. Their payloads carry PRs as
   ``owner/repo#123`` strings (see :class:`purr.models.PRRef`).
 - **Events** (:class:`PurrEvent`) are broadcast, so the TUI, the voice agent and
-  anything else listening all see the same thing.
+  anything else listening all see the same thing. Most are also recorded in the
+  activity log (see ``recorded``).
 - **Commands** (:class:`PurrCommand`) are targeted at the worker that executes
   them.
 
@@ -15,6 +16,7 @@ if components ever move to separate processes.
 """
 
 from dataclasses import dataclass, field, fields
+from typing import ClassVar
 
 from pipecat.bus import BusDataMessage, BusMessage
 
@@ -22,34 +24,64 @@ from pipecat.bus import BusDataMessage, BusMessage
 GITHUB_WORKER = "github"
 REVIEW_WORKER = "reviews"
 
-# Job names, handled by REVIEW_WORKER.
+# Job names handled by GITHUB_WORKER. Failures respond with status FAILED and
+# {"error": "..."}.
+REPO_ADD = "repo.add"  # payload: {"repo": "owner/name" or a GitHub URL} -> {"repo": "owner/name"}
+REPO_REMOVE = "repo.remove"  # payload: {"repo": "owner/name"} -> {"repo": "owner/name"}
+
+# Job names handled by REVIEW_WORKER.
 REVIEW_START = "review.start"  # payload: {"pr": "owner/repo#123"}
 REVIEW_MESSAGE = "review.message"  # payload: {"pr": "owner/repo#123", "text": "..."}
 
 
 @dataclass(kw_only=True)
 class PurrEvent(BusDataMessage):
-    """Base for Purr's broadcast events."""
+    """Base for Purr's broadcast events.
+
+    Class attributes:
+        kind: Stable name, used as the activity log's ``kind``.
+        recorded: Whether the event goes into the activity log.
+    """
+
+    kind: ClassVar[str]
+    recorded: ClassVar[bool] = True
 
 
 @dataclass(kw_only=True)
 class PRListUpdated(PurrEvent):
-    """The set of PRs or their states changed; re-read the store."""
+    """Watched repos, PRs or their states changed; re-read the store."""
+
+    kind: ClassVar[str] = "pr.list_updated"
+    recorded: ClassVar[bool] = False
+
+
+@dataclass(kw_only=True)
+class PRChanged(PurrEvent):
+    """The poller noticed something about a PR (see :class:`purr.models.PRChange`)."""
+
+    kind: ClassVar[str] = "pr.changed"
+    pr: str
+    change: str
+    title: str
 
 
 @dataclass(kw_only=True)
 class ReviewStarted(PurrEvent):
+    kind: ClassVar[str] = "review.started"
     pr: str
 
 
 @dataclass(kw_only=True)
 class ReviewProgress(PurrEvent):
+    kind: ClassVar[str] = "review.progress"
+    recorded: ClassVar[bool] = False
     pr: str
     text: str
 
 
 @dataclass(kw_only=True)
 class ReviewFinished(PurrEvent):
+    kind: ClassVar[str] = "review.finished"
     pr: str
     summary: str
     findings: list[dict] = field(default_factory=list)
@@ -57,12 +89,14 @@ class ReviewFinished(PurrEvent):
 
 @dataclass(kw_only=True)
 class ReviewFailed(PurrEvent):
+    kind: ClassVar[str] = "review.failed"
     pr: str
     error: str
 
 
 @dataclass(kw_only=True)
 class ActionPending(PurrEvent):
+    kind: ClassVar[str] = "action.pending"
     pr: str
     action_id: str
     description: str
@@ -70,6 +104,7 @@ class ActionPending(PurrEvent):
 
 @dataclass(kw_only=True)
 class ActionResolved(PurrEvent):
+    kind: ClassVar[str] = "action.resolved"
     pr: str
     action_id: str
     approved: bool
@@ -93,12 +128,13 @@ class DismissAction(PurrCommand):
 _BASE_FIELDS = {f.name for f in fields(BusMessage)}
 
 
+def payload(message: BusMessage) -> dict:
+    """A message's own fields (everything but the bus envelope)."""
+    return {f.name: getattr(message, f.name) for f in fields(message) if f.name not in _BASE_FIELDS}
+
+
 def describe(message: BusMessage) -> str:
     """One-line rendering of a message and its payload fields, for logs."""
-    payload = ", ".join(
-        f"{f.name}={getattr(message, f.name)!r}"
-        for f in fields(message)
-        if f.name not in _BASE_FIELDS
-    )
+    args = ", ".join(f"{key}={value!r}" for key, value in payload(message).items())
     target = f" → {message.target}" if message.target else ""
-    return f"{type(message).__name__}({payload}) from {message.source}{target}"
+    return f"{type(message).__name__}({args}) from {message.source}{target}"

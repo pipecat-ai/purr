@@ -74,7 +74,7 @@ One Purr instance covers several repos; you don't run one per repo:
 
 Two things keep this cheap:
 
-- **Watched repos** (the ones whose pool you see) are listed in `~/.config/purr/config.toml` (`repos = ["pipecat-ai/pipecat", ...]`). Running `purr` inside a checkout opens that repo directly (see TUI), so the Claude Code habit of starting inside a repo still works; if the repo isn't watched yet, Purr offers to add it.
+- **Watched repos** (the ones whose pool you see) are added and removed in the UI, and there are none to start with. Running `purr` inside a checkout opens that repo directly (see TUI), so the Claude Code habit of starting inside a repo still works; if the repo isn't watched yet, Purr offers to add it.
 - **Purr's own clones.** Purr keeps a blobless clone of each repo it reviews in its data dir (`repos/<owner>/<name>.git`) and creates review worktrees from it. Your checkouts are never touched (no extra worktrees, refs or fetches in them), and PRs assigned to you in repos you don't have locally work the same way.
 
 ## PR states
@@ -156,9 +156,11 @@ Jobs:
 - `review.start {pr}` (dispatched by TUI, voice or poller)
 - `review.message {pr, text}` (send a follow-up into a PR's session)
 - `recap.create {since}` (when you come back, or on demand)
+- `repo.add {repo}` / `repo.remove {repo}` (handled by the GitHub worker; `repo` can be `owner/name` or a GitHub URL)
 
 Events (broadcast, everyone listens):
-- `pr.list_updated`
+- `pr.list_updated` (repos, PRs or their states changed; re-read the store)
+- `pr.changed {pr, change, title}` (from the poller: assigned, unassigned, pooled, unpooled, new_commits, closed, merged)
 - `review.started {pr}`
 - `review.progress {pr, ...}`
 - `review.finished {pr, summary, findings}`
@@ -178,11 +180,12 @@ Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the
 
 ## SQLite store
 
-- `prs`: repo, number, title, author, url, head sha, state, assigned_to_me, updated_at, last_seen_at (when you last looked at it; clears its alerts)
+- `repos`: name (`owner/name`), added_at, synced_at (first complete poll; until then its pool isn't reported as new). The watched repos, managed from the UI.
+- `prs`: repo, number, title, author, url, head sha, state, gh_state (open/closed/merged), assigned_to_me, updated_at, last_seen_at (when you last looked at it; clears its alerts)
 - `reviews`: pr, session_id, worktree path, status, summary, started_at, finished_at
 - `findings`: review, file, line, severity, text
 - `pending_actions`: pr, action_id, kind (comment/request_changes/approve/merge), payload, status
-- `activity`: at, pr (optional), kind, text, data. Every Purr event; feeds the recaps and each PR's timeline.
+- `activity`: at, pr (optional), kind, data. Every recorded Purr event; feeds the recaps and each PR's timeline.
 - `recaps`: since, until, headline, items, created_at
 - `meta`: key/value, e.g. `last_active_at`
 
@@ -206,11 +209,13 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 │  ● new since you last looked                                                          │
 │                                                                                       │
 ├───────────────────────────────────────────────────────────────────────────────────────┤
-│ enter open · 1-9 repo · ctrl+p find · ctrl+o back · ctrl+n next alert · w recap · 🎙   │
+│ enter open · + add · 1-9 repo · ctrl+p · ctrl+o back · ctrl+n alert · w recap · 🎙     │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - One row per watched repo, plus any repo where a PR is assigned to you.
+- `+` adds a repo: type `owner/name` or paste a GitHub URL, with suggestions from repos you can access. Purr checks that the repo exists and starts polling it right away. `-` removes the selected repo (after confirming): its pool disappears, but PRs assigned to you there keep showing up, because those are reviewed regardless.
+- First launch: no repos yet. The list shows only repos with PRs assigned to you, plus a hint to press `+`.
 - Rows are sorted alphabetically by `owner/name` (case-insensitive) and numbered in that order, so the order and the `1`–`9` shortcuts only change when a repo is added or removed. Activity shows as counts and a ● marker; rows never move because of it.
 - Launching `purr` inside a checkout of a watched repo opens that repo directly (`esc` goes up to this list). Launched anywhere else, Purr starts here.
 
@@ -269,6 +274,7 @@ Global keys work everywhere, even while typing in a PR prompt:
 
 List keys (letters and numbers act on lists; while a prompt has focus, typing goes to the agent, as in Claude Code):
 - `0` repo list, `1`–`9` repo by number
+- `+` add a repo, `-` remove one (repo list)
 - `enter` open a repo, or a PR's session with its prompt focused
 - `esc` up one level: PR prompt → PR list → repo list
 - `space` mark/unmark PR
@@ -301,14 +307,15 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 ## Suggested build order
 
 1. Project skeleton: single asyncio process, Pipecat `WorkerRunner` with local bus, SQLite. (Done.)
-2. GitHub poller: watched repos from the config file, the pool (unassigned open PRs) plus PRs assigned to you in any repo, PR list in SQLite, activity log.
-3. Review worker: Purr-managed clone and worktree, Agent SDK session with the GitHub guardrails, store session ID, summary, findings, pending actions, stream `session.message` events.
-4. Pending action execution (post comments / review verdict / merge) gated on approval.
-5. Textual TUI: repo list, repo screen, Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher and jump keys, live updates from bus events.
-6. "Start from app" also assigns you on GitHub.
-7. While you were away: activity tracking, recap agent, recap panel.
-8. Open a PR's session in Claude Code (`o`).
-9. Voice agent with push-to-talk.
+2. GitHub poller: watched repos table, the pool (unassigned open PRs) plus PRs assigned to you in any repo, PR list in SQLite, activity log. (Done.)
+3. TUI shell: repo list (add/remove repos), repo screen with the PR list, navigation keys, live updates from bus events. Comes early because repos are only added from the UI, and it makes the poller visible.
+4. Review worker: Purr-managed clone and worktree, Agent SDK session with the GitHub guardrails, store session ID, summary, findings, pending actions, stream `session.message` events.
+5. Pending action execution (post comments / review verdict / merge) gated on approval.
+6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher.
+7. "Start from app" also assigns you on GitHub.
+8. While you were away: activity tracking, recap agent, recap panel.
+9. Open a PR's session in Claude Code (`o`).
+10. Voice agent with push-to-talk.
 
 ## Open questions
 

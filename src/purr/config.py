@@ -21,9 +21,11 @@ class Config:
         data_dir: Directory holding the database, logs and review worktrees.
             Defaults to ``$PURR_DATA_DIR``, else ``$XDG_DATA_HOME/purr``, else
             ``~/.local/share/purr``.
+        poll_interval: Seconds between GitHub polls.
     """
 
     data_dir: Path
+    poll_interval: float = 60.0
 
     @classmethod
     def load(cls, *, data_dir: Path | None = None) -> "Config":

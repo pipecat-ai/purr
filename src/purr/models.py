@@ -32,6 +32,26 @@ class Severity(StrEnum):
     NIT = "nit"
 
 
+class GHState(StrEnum):
+    """A PR's state on GitHub (as opposed to its place in Purr's review flow)."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    MERGED = "merged"
+
+
+class PRChange(StrEnum):
+    """Something the poller noticed about a PR."""
+
+    ASSIGNED = "assigned"  # assigned to you
+    UNASSIGNED = "unassigned"  # no longer assigned to you
+    POOLED = "pooled"  # new in a watched repo's pool
+    UNPOOLED = "unpooled"  # left the pool (someone was assigned, or it closed)
+    NEW_COMMITS = "new_commits"  # head moved on a PR Purr has reviewed
+    CLOSED = "closed"
+    MERGED = "merged"
+
+
 class ActionKind(StrEnum):
     """A GitHub-visible action the agent may propose but never execute itself."""
 
@@ -52,6 +72,18 @@ class ActionStatus(StrEnum):
 
 
 _REF_RE = re.compile(r"^(?P<repo>[\w.-]+/[\w.-]+)#(?P<number>\d+)$")
+_REPO_RE = re.compile(
+    r"^(?:(?:https?://)?(?:www\.)?github\.com/|git@github\.com:)?"
+    r"(?P<owner>[\w.-]+)/(?P<name>[\w.-]+?)(?:\.git)?/?$"
+)
+
+
+def parse_repo_name(value: str) -> str:
+    """Turn ``owner/name`` or a GitHub URL (https or ssh) into ``owner/name``."""
+    match = _REPO_RE.match(value.strip())
+    if not match:
+        raise ValueError(f"not a GitHub repo (expected owner/name or a GitHub URL): {value!r}")
+    return f"{match['owner']}/{match['name']}"
 
 
 @dataclass(frozen=True, order=True)
@@ -83,11 +115,32 @@ class PR:
     updated_at: str
     assigned_to_me: bool = False
     state: PRState = PRState.NOT_REVIEWED
+    gh_state: GHState = GHState.OPEN
     id: int | None = None
 
     @property
     def ref(self) -> PRRef:
         return PRRef(self.repo, self.number)
+
+
+@dataclass
+class Repo:
+    """A watched repo. ``synced_at`` is unset until its first complete poll."""
+
+    name: str
+    added_at: str
+    synced_at: str | None = None
+
+
+@dataclass
+class Activity:
+    """One entry in the activity log: a Purr event, as recorded."""
+
+    id: int
+    at: str
+    kind: str
+    pr: PRRef | None = None
+    data: dict = field(default_factory=dict)
 
 
 @dataclass

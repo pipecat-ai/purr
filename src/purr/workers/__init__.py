@@ -1,5 +1,6 @@
 """Purr's bus participants."""
 
-from purr.workers.event_log import EventLogWorker
+from purr.workers.activity import ActivityWorker
+from purr.workers.github import GitHubWorker
 
-__all__ = ["EventLogWorker"]
+__all__ = ["ActivityWorker", "GitHubWorker"]
