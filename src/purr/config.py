@@ -31,6 +31,8 @@ class Config:
         poll_interval: Seconds between GitHub polls.
         auto_review: Review PRs assigned to you without being asked.
         review_model: Model for reviews; None uses Claude Code's default.
+        lead_model: Model for the lead, which plans each review (one short call
+            per batch of PRs); None uses Claude Code's default.
         review_budget_usd: Optional spending cap per review run.
         away_after: Seconds without activity after which you count as away.
         max_reviews: Reviews running at once; the rest wait in line (your own
@@ -47,6 +49,7 @@ class Config:
     poll_interval: float = 60.0
     auto_review: bool = True
     review_model: str | None = None
+    lead_model: str | None = "claude-sonnet-5-5"
     review_budget_usd: float | None = None
     away_after: float = 15 * 60
     permission_wait: float = 5 * 60

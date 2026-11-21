@@ -102,11 +102,29 @@ Two ways in, same result:
 1. **From GitHub**: assign yourself to a PR on the web, in any repo (watched or not). The poller (every ~60s, via the GitHub API or `gh`) detects open PRs assigned to you that have no review yet and dispatches a review job automatically. Polling, not webhooks, because the app runs locally.
 2. **From the app**: select a PR to read its description, files and CI first, then press `r` (or mark several and press `r`). The app dispatches review jobs **and assigns you on GitHub**, so teammates see you've taken it. On a PR someone else has, `r` asks first and adds you next to them.
 
-Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs explicitly assigned to you (avoids burning tokens on PRs others handle).
+Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs explicitly assigned to you (avoids burning tokens on PRs others handle). How deep each review goes, what it focuses on and what goes first is up to the lead (see The lead); both ways in go through it.
 
 **The pool** ("Not reviewed") is the open PRs in the watched repos that nobody is reviewing. Starting a review assigns you, and teammates assign themselves when they review, so "nobody is reviewing it" simply means "no assignee". A PR leaves the pool as soon as someone is assigned (it moves to "Others reviewing") or it's closed. Drafts and your own PRs aren't listed.
 
 **Polling** uses GitHub's GraphQL search through `gh`, batching every search into one request per page. Each watched repo has one search: its open, non-draft PRs by other people, with author, opened date and assignees, which splits into the pool and "Others reviewing". It stays lean on purpose (pipecat: 337 PRs in 4 pages). Adding descriptions and file lists made a 100-PR page take 5.8 s instead of about 2 s, so those are fetched when you look at a PR (see Repo screen). A search takes 1-2 s regardless of size, and a big repo's pool is several pages (pipecat: 4), so a repo is fully synced only on startup, when added, and every 15 minutes. Polls in between fetch just the PRs updated since the last sync (5 minutes of overlap for search-index lag), which is usually one request of about a second. A newly added repo's pool is shown page by page as it arrives. A search that fails or comes back incomplete never removes anything.
+
+## The lead
+
+An agent that thinks about what needs doing before the review agents start: `LeadWorker` (`workers/lead.py`) on the bus, with the planning itself in `lead.py`. It **never skips a PR**: everything assigned to you gets reviewed, and every review ends by saying plainly whether it found something.
+
+- **What it decides, per PR** (a `ReviewPlan`):
+  - *depth*: **quick** for small, low-risk changes (docs, typos, bumps, tests only, small obvious fixes): one agent reads the diff and the code it touches, no subagents. **Full** for anything with real risk: the repo's review skill when it has one (pipecat's `code-review`), with subagents for independent checks. When in doubt, full.
+  - *priority*: high, normal or low: the order reviews wait in line. High when someone's likely waiting (small fixes, release labels, PRs you asked for); low for drafts, failing CI, big PRs that take long anyway.
+  - *focus*: up to 4 points specific to the PR for the review to look at hardest, naming a repo skill when one fits ("docstrings and changelog: pipecat:prose-review").
+  - *why*: one line for you, shown under the PR's status.
+- **When it runs**: after every poll, for the open PRs assigned to you that were never reviewed (on startup, once the first poll is in), and when a PR gets assigned to you; all at once, so one call plans a poll's worth (batches of 15). New commits on a reviewed PR assigned to you: re-review. `r` in the TUI (one PR or several marked) asks it too, as `lead.review {prs}`, and those are always high priority, since you're waiting.
+- **How**: one tool-less Agent SDK call with structured output (`lead_model`, Sonnet by default), from what Purr already has: each PR's description, files with +/- lines, CI, labels and earlier review; the repo's skills (only those a review agent can load are offered for focus) and its review skill; your review and code style. Measured on pipecat's 10 most recently updated PRs: 12 s and $0.05 for all ten. It called the 50-line flow-config fix and the Sarvam error fix quick, the 3,000-line Sidechat feature full and low priority, the SyncParallelPipeline frame-routing fix full and high, and the regex fix with failing CI quick and low, with focus points like "can a turn be dropped or the LLM answer twice; hold_secs timer cancellation on interruption".
+- **Never in the way**: if it can't plan (offline, a bad answer), or leaves a PR out, the PR gets a full review anyway (`by: default`, with the reason). The PR shows "Planning the review" meanwhile.
+- **What stays in code**, not up to the lead: nothing is posted without you, the permission policy, how many reviews run at once, budgets.
+- The plan goes to the review worker with `review.start {pr, plan}`, is stored with the review (`reviews.plan`, JSON), rides on `review.started`, and goes into the review agent's system prompt ("How this review should go"), so follow-ups know it too.
+- The same planning is what the voice agent will use ("what should I look at first?", "give #3112 a full review"); pipecat 1.16's `LLMWorker` (a bus worker with `@tool` methods) is the shape for that.
+
+**Found something or not.** Every finished review says one thing first: `nothing found`, or `found 1 issue, 2 nits`. In the PR list, a reviewed PR's mark says it at a glance (✓ green: nothing found; ● red: issues; ● yellow: only suggestions or nits); the PR's header says it in words (`● Review: found 1 issue · 1 pending action`), with the plan under it (`Full review · high priority · Core pipeline frame routing fix`); alerts and news say `review: nothing found` / `review: found 3`. Finding nothing is a fine outcome, and the review agent is told so.
 
 ## Review workers
 
@@ -131,14 +149,14 @@ How it's built (`src/purr/review/`, `src/purr/workers/reviews.py`):
   - *Asks:* everything else: running tests or scripts, editing files, fetching URLs, paths outside the worktree, redirections, subshells, command substitution. Until the PR session UI can show prompts, the answer is "no" and the agent carries on, noting in its findings what it couldn't check.
 - Only the user's own Claude Code settings are loaded (`setting_sources=["user"]`). A PR's `.claude/settings.json` could define hooks, and hooks run commands.
 - The repo's own skills, agents and commands (`.claude/skills`, `.claude/agents`, `.claude/commands`) are loaded from its default branch as a plugin named after the repo, so pipecat's show up as `pipecat:code-review`, `pipecat:docstring`, ... (`plugins=`). Purr builds it from its clone (`git archive` of those directories into `plugins/<owner>/<name>/<key>`, the key coming from their tree hashes), so it's rebuilt only when they change on the default branch. Frontmatter that could get around the review policy is dropped: `hooks`, `allowed-tools`, `permissionMode`, `mcpServers`. The repo's `settings.json` isn't used. A review goes ahead without them if they can't be loaded.
-- **The repo's own review skill.** When a repo has a skill for reviewing PRs, Purr's reviews follow it (`review/skills.py`). pipecat's `code-review` is one: its multi-agent process (CLAUDE.md compliance, two bug scans, each issue validated by another agent) and its bar (only high-signal issues) replace Purr's general guidance.
+- **The repo's own review skill.** When a repo has a skill for reviewing PRs, Purr's full reviews follow it (quick ones don't) (`review/skills.py`). pipecat's `code-review` is one: its multi-agent process (CLAUDE.md compliance, two bug scans, each issue validated by another agent) and its bar (only high-signal issues) replace Purr's general guidance.
   - *Which skills:* those whose name says "review" or whose description says they review PRs ("code review", "review a pull request"). A skill with both is clearly the one; for pipecat that's `code-review`, while `prose-review` is only a candidate and `cleanup`, `pr-description` aren't.
   - *Choosing:* one clear skill is used without asking, and a notice says so. Otherwise, if there are candidates, Purr asks once (a dialog listing them, plus "Purr's own review"), and the repo's reviews wait up to `permission_wait` (5 minutes) for the answer, then go ahead without it; `esc` means ask again next run. The choice is kept per repo (`review_skills` table: the skill or '' for Purr's own, who chose it, when). `i` then `s` inside a repo changes it. A skill the repo later drops means Purr's own review.
   - *How:* the review starts with the skill as a slash command (`/pipecat:code-review <PR URL>`), the way you'd run it in Claude Code. That works for skills marked `disable-model-invocation` too, which the agent couldn't start on its own. A section in the system prompt fits the skill into Purr: skip its checks on whether to review at all (draft, already commented on by Claude), never post (what it would post goes into `propose_action`; the policy denies `gh pr comment`/`gh pr review` regardless), and finish with `submit_review` and `propose_action`. Re-reviews of new commits follow the skill's process again. Each review records the skill it followed (`reviews.skill`), so reviews with and without a skill can be compared (cost, turns, what got approved).
   - Subagents the skill starts (pipecat's starts about eight) are recorded in `messages` like everything else, tagged with the call that started them; the PR's conversation shows only those calls (`Agent(Scan for obvious bugs)`) and what each came back with.
   - Any other skill can still be run by hand in a PR's session: type `/pipecat:prose-review`.
-- PRs assigned to you are reviewed automatically (`auto_review`, on by default): when a poll reports an assignment, and after every poll for any open PR assigned to you that was never reviewed. On startup that means once the first poll has brought the store up to date (the GitHub worker announces each finished poll with a `github.synced` event), not from what the store remembers, which may be a PR that closed or was reassigned while Purr wasn't running. Reviews interrupted by quitting resume on the next start.
-- **A few at a time.** At most `max_reviews` (3) reviews run at once, re-reviews of new commits and resumed reviews included; the rest wait in line, in order, and their PR's pane says where they are (`Queued, next up`, `Queued, 2 ahead`). Your own messages in a PR's session don't wait: you're the one waiting for them.
+- PRs assigned to you are reviewed automatically (`auto_review`, on by default), through the lead (see The lead): when a poll reports an assignment, and after every poll for any open PR assigned to you that was never reviewed. On startup that means once the first poll has brought the store up to date (the GitHub worker announces each finished poll with a `github.synced` event), not from what the store remembers, which may be a PR that closed or was reassigned while Purr wasn't running. Reviews interrupted by quitting resume on the next start.
+- **A few at a time.** At most `max_reviews` (3) reviews run at once, re-reviews of new commits and resumed reviews included; the rest wait in line by the lead's priority, then in order (`workers/slots.py`), and their PR's pane says where they are (`Queued, next up`, `Queued, 2 ahead`). Your own messages in a PR's session don't wait: you're the one waiting for them.
 - A failed review moves the PR to Needs you, with the error.
 - The agent reads linked issues (`gh issue view`) to know what the PR is meant to do, and the PR's existing review threads (a `get_review_threads` tool: ids, file and line, resolved or not, comments, with the user's own marked) so it doesn't repeat what's been said. A proposal can carry `replies` to existing threads next to its new inline comments; Purr posts the review, then the replies. A reply failing after the review went up is a warning, not a retry, so the review can't be posted twice.
 - **New commits** on a reviewed PR assigned to you: the same session gets a follow-up asking it to look at `git diff <reviewed head> <new head>`, say which earlier findings are resolved or still stand, reply on the threads about them, and propose what to post now. Each review records the commit it last looked at (`reviews.head_sha`). The agent remembers its first review, so there's no interdiff machinery: the conversation is the memory.
@@ -204,7 +222,9 @@ If things happen while you're not looking, Purr shows you a recap when you come 
 ## Bus messages (initial sketch)
 
 Jobs:
-- `review.start {pr}` (dispatched by TUI, voice or poller)
+- `lead.review {prs}` (lead worker): plan and start reviews you asked for (TUI `r`, voice); answers once they've started, with why any didn't.
+- `review.start {pr, plan}` (reviews worker, dispatched by the lead; without a plan, a full review)
+- `review.rereview {pr}` (reviews worker, dispatched by the lead on new commits)
 - `review.message {pr, text}` (send a follow-up into a PR's session)
 - `recap.create {since}` (when you come back, or on demand)
 - `repo.add {repo}` / `repo.remove {repo}` (handled by the GitHub worker; `repo` can be `owner/name` or a GitHub URL)
@@ -213,7 +233,7 @@ Jobs:
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)
 - `pr.changed {pr, change, title}` (from the poller: assigned, unassigned, pooled, unpooled, new_commits, closed, merged)
-- `review.started {pr}`
+- `review.started {pr, plan}`
 - `review.progress {pr, ...}`
 - `review.finished {pr, summary, findings}`
 - `action.pending {pr, action_id, description}`
@@ -305,7 +325,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 ┌─ Purr › 2 pipecat-ai/pipecat ───────────────────────────────────────────── 🔔 1 · whisker#112 needs you ─┐
 │   #       TITLE               ASSIGNED   AUTHOR OPENED │ #2841  Add message bus                          │
 │ ⚠ NEEDS YOU (1)                                        │ by alice · opened 3d ago · main ← bus · +412 −30 │
-│ ⚠ #2841   Add message bus     you        alice      3d │ ✓ Review done · 3 findings · 1 pending action    │
+│ ● #2841   Add message bus     you        alice      3d │ ● Review: found 2 issues, 1 nit · 1 pending act… │
 │                                                        │                                                  │
 │ ● REVIEWING (1)                                        │ Adds a message bus so workers can talk without   │
 │ ● #2850   TTS context         you        bob        1d │ knowing about each other. …                      │
@@ -341,7 +361,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 
 News is something you'd want to know that happened since you last looked at a PR: it was assigned to you, its review finished or failed, or its agent needs your OK. Review progress doesn't count.
 
-- **The top bar says one short thing about other repos**, on every screen, so you know to go and look: the latest news there if there's any (`🔔 2 · whisker#112 review done  (ctrl+n)`), otherwise how many PRs need you there (`⚠ 3 need you in other repos  (0)`). `0` goes to the repo list, which says where: a ● after each repo with news, and its NEEDS YOU count.
+- **The top bar says one short thing about other repos**, on every screen, so you know to go and look: the latest news there if there's any (`🔔 2 · whisker#112 review: found 2  (ctrl+n)`), otherwise how many PRs need you there (`⚠ 3 need you in other repos  (0)`). `0` goes to the repo list, which says where: a ● after each repo with news, and its NEEDS YOU count.
 - **In a repo, PRs with news have their title in bold**, like unread mail, until you look at them. News about the PR you're looking at isn't news.
 - `ctrl+n` jumps to the newest news in another repo (or in this one if there's none elsewhere); pressing it again goes through the rest.
 - **It survives restarts.** Looking at a PR stores when (`prs.seen_at`, through a `pr.seen` job), and on startup the news comes from the activity log: what happened to open PRs since you last looked at them.
@@ -402,7 +422,8 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 7. "Start from app" also assigns you on GitHub. (Done: `r` on a pool PR starts the review and assigns you.)
 8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`recap.create {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
 9. Open a PR's session in Claude Code (`c`). (Done. `claude --resume` keeps the session ID; `--fork-session` is what would make a new one. It runs with `--setting-sources user`, GitHub writes disallowed, and a note that Purr's own tools aren't available there. Purr keeps running underneath, and reloads the transcript afterwards.)
-10. Voice agent with push-to-talk.
+10. The lead: plans every review (quick or full, priority, focus) before it starts, never skips one, and every review says whether it found something. (Done; see The lead.)
+11. Voice agent with push-to-talk, on the same planning.
 
 ## Open questions
 

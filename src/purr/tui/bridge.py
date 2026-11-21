@@ -11,6 +11,8 @@ from purr.messages import (
     ACTION_DISMISS,
     GIT_WORKER,
     GITHUB_WORKER,
+    LEAD_REVIEW,
+    LEAD_WORKER,
     PERMISSION_ANSWER,
     PR_ASSIGN,
     PR_DETAILS,
@@ -23,7 +25,6 @@ from purr.messages import (
     REVIEW_MESSAGE,
     REVIEW_SKILL,
     REVIEW_SKILLS,
-    REVIEW_START,
     REVIEW_WORKER,
     PurrEvent,
     UserActive,
@@ -68,8 +69,11 @@ class UIWorker(BaseWorker):
     async def remove_repo(self, repo: str) -> None:
         await self._job(GITHUB_WORKER, REPO_REMOVE, {"repo": repo})
 
-    async def start_review(self, pr: PRRef) -> None:
-        await self._job(REVIEW_WORKER, REVIEW_START, {"pr": str(pr)})
+    async def start_review(self, prs: list[PRRef]) -> dict[str, str]:
+        """Have the lead plan the PRs' reviews and start them; why some didn't, by PR."""
+        payload = {"prs": [str(pr) for pr in prs]}
+        response = await self._job(LEAD_WORKER, LEAD_REVIEW, payload, timeout=180)
+        return dict(response.get("errors") or {})
 
     async def assign(self, pr: PRRef) -> None:
         await self._job(GITHUB_WORKER, PR_ASSIGN, {"pr": str(pr)})

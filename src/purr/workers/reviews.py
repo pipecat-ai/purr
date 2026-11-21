@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from loguru import logger
-from pipecat.bus import BusJobRequestMessage, BusMessage
+from pipecat.bus import BusJobRequestMessage
 from pipecat.pipeline.job_decorator import job
 from pipecat.workers.base_worker import BaseWorker
 
@@ -16,6 +16,7 @@ from purr.github import GitHub, GitHubError
 from purr.messages import (
     PERMISSION_ANSWER,
     REVIEW_MESSAGE,
+    REVIEW_REREVIEW,
     REVIEW_SKILL,
     REVIEW_SKILLS,
     REVIEW_START,
@@ -24,7 +25,6 @@ from purr.messages import (
     ActionResolved,
     PermissionRequest,
     PermissionResolved,
-    PRChanged,
     PRListUpdated,
     ReviewFailed,
     ReviewFinished,
@@ -33,18 +33,19 @@ from purr.messages import (
     SessionMessage,
     SkillChosen,
     SkillQuestion,
-    Synced,
 )
 from purr.models import (
     PR,
     ActionKind,
     ActionStatus,
+    Depth,
     Finding,
     GHState,
-    PRChange,
+    Priority,
     PRRef,
     PRState,
     Review,
+    ReviewPlan,
     ReviewStatus,
 )
 from purr.review.agent import (
@@ -58,6 +59,7 @@ from purr.review.agent import (
 )
 from purr.review.skills import review_skills
 from purr.store import Store
+from purr.workers.slots import Slots
 
 
 class ReviewError(Exception):
@@ -79,22 +81,23 @@ def _metrics(result: AgentResult) -> dict:
 class ReviewWorker(BaseWorker):
     """Runs reviews and follow-up turns, and records what they produce.
 
-    - ``review.start {pr}`` starts a review and responds right away with
-      ``{"review_id": ...}`` (or ``{"error": ...}``); progress comes as events.
+    What gets reviewed, how deep and when is up to the lead worker
+    (:mod:`purr.workers.lead`); this one runs what it's asked to:
+
+    - ``review.start {pr, plan}`` starts a review following ``plan`` (a
+      :class:`ReviewPlan`; a full review without one) and responds right away
+      with ``{"review_id": ...}`` (or ``{"error": ...}``); progress comes as events.
+    - ``review.rereview {pr}`` has a finished review of a PR assigned to you
+      look at its new commits, in the same session.
     - ``review.message {pr, text}`` sends a follow-up into the PR's session.
-    - PRs assigned to you are reviewed automatically (when ``auto_review``): as
-      a poll reports them, and after every poll for any assigned PR that was
-      never reviewed, which on startup covers those from before.
     - At most ``max_reviews`` reviews (and re-reviews) run at once; the rest
-      wait in line, in order, saying where they are. Your own messages in a
-      PR's session don't wait.
+      wait in line by the plan's priority, then in order, saying where they
+      are. Your own messages in a PR's session don't wait.
     - On startup, reviews interrupted by the last shutdown are resumed.
-    - When a reviewed PR assigned to you gets new commits, its session is asked
-      to re-review what changed (when ``auto_review``).
     - When an agent wants something that isn't pre-approved, a
       :class:`PermissionRequest` goes out, the PR needs you, and the agent waits
       for a ``session.answer {request_id, allow}`` job.
-    - A review follows the repo's own review skill when it has one (see
+    - A full review follows the repo's own review skill when it has one (see
       :mod:`purr.review.skills`): one clearly for reviewing PRs is chosen
       without asking (:class:`SkillChosen`); otherwise, if some skills may be,
       a :class:`SkillQuestion` asks you once and the review waits a while for
@@ -110,7 +113,6 @@ class ReviewWorker(BaseWorker):
         repos: Clones and worktrees.
         agent: Runs the agent sessions.
         github: Reads a PR's review threads for the agent (none: no threads).
-        auto_review: Review PRs assigned to you without being asked.
         permission_wait: Seconds an agent waits for a permission answer (and a
             review for an answer about the repo's review skill) before carrying
             on without it.
@@ -124,7 +126,6 @@ class ReviewWorker(BaseWorker):
         repos: GitRepos,
         agent: ReviewAgent,
         github: GitHub | None = None,
-        auto_review: bool = True,
         permission_wait: float = 300,
         max_reviews: int = 3,
     ):
@@ -134,13 +135,11 @@ class ReviewWorker(BaseWorker):
         self._agent = agent
         self._github = github
         self._permission_wait = permission_wait
-        self._auto_review = auto_review
         self._running: dict[PRRef, asyncio.Task] = {}
         self._start_lock = asyncio.Lock()
         self._startup_task: asyncio.Task | None = None
         self._asks: dict[str, asyncio.Future[bool]] = {}
-        self._slots = asyncio.Semaphore(max_reviews)
-        self._queue: list[PRRef] = []  # waiting for a slot, in order
+        self._slots = Slots(max_reviews)
         # Per repo (lowercase): its review skill question, and until when reviews wait for it.
         self._skill_asks: dict[str, tuple[asyncio.Future[str | None], float]] = {}
         self._skill_locks: dict[str, asyncio.Lock] = {}
@@ -183,32 +182,6 @@ class ReviewWorker(BaseWorker):
                 logger.info(f"Resuming the review of {pr.ref}")
                 self._launch(pr, review, prompt=RESUME_PROMPT, resume=True, kind="resume")
 
-    async def _review_assigned(self) -> None:
-        """Start reviews of the open PRs assigned to you that were never reviewed.
-
-        Runs after each poll rather than on startup, so it goes by what's on
-        GitHub now, not by what the store remembers from the last run.
-        """
-        for pr in await self._store.list_prs(state=PRState.NOT_REVIEWED, open_only=True):
-            if pr.assigned_to_me and pr.ref not in self._running:
-                await self._try_start(pr.ref)
-
-    async def on_bus_message(self, message: BusMessage) -> None:
-        await super().on_bus_message(message)
-        if not self._auto_review:
-            return
-        if isinstance(message, Synced):
-            await self._review_assigned()
-            return
-        if not isinstance(message, PRChanged):
-            return
-        if message.change == PRChange.ASSIGNED:
-            pr = await self._store.get_pr(PRRef.parse(message.pr))
-            if pr and pr.state == PRState.NOT_REVIEWED:
-                await self._try_start(pr.ref)
-        elif message.change == PRChange.NEW_COMMITS:
-            await self.rereview(PRRef.parse(message.pr))
-
     async def rereview(self, ref: PRRef) -> bool:
         """Have a finished review look at the PR's new commits, in the same session.
 
@@ -232,22 +205,27 @@ class ReviewWorker(BaseWorker):
         await self._progress(ref, "Re-reviewing new commits")
         return True
 
-    async def _try_start(self, ref: PRRef) -> None:
-        try:
-            await self.start_review(ref)
-        except ReviewError as e:
-            logger.debug(f"Not starting a review of {ref}: {e}")
-
     # -- Jobs ---------------------------------------------------------------------
 
     @job(name=REVIEW_START)
     async def on_review_start(self, message: BusJobRequestMessage) -> None:
+        payload = message.payload or {}
+        plan = ReviewPlan.from_dict(payload["plan"]) if payload.get("plan") else None
         try:
-            review = await self.start_review(PRRef.parse(str((message.payload or {}).get("pr"))))
+            review = await self.start_review(PRRef.parse(str(payload.get("pr"))), plan=plan)
         except (ReviewError, ValueError) as e:
             await self.send_job_response(message.job_id, {"error": str(e)})
             return
         await self.send_job_response(message.job_id, {"review_id": review.id})
+
+    @job(name=REVIEW_REREVIEW)
+    async def on_rereview(self, message: BusJobRequestMessage) -> None:
+        try:
+            started = await self.rereview(PRRef.parse(str((message.payload or {}).get("pr"))))
+        except ValueError as e:
+            await self.send_job_response(message.job_id, {"error": str(e)})
+            return
+        await self.send_job_response(message.job_id, {"started": started})
 
     @job(name=REVIEW_MESSAGE)
     async def on_review_message(self, message: BusJobRequestMessage) -> None:
@@ -304,8 +282,9 @@ class ReviewWorker(BaseWorker):
 
     # -- Starting -------------------------------------------------------------------
 
-    async def start_review(self, ref: PRRef) -> Review:
-        """Start reviewing a PR in the background."""
+    async def start_review(self, ref: PRRef, *, plan: ReviewPlan | None = None) -> Review:
+        """Start reviewing a PR in the background, following ``plan`` (default: a full review)."""
+        plan = plan or ReviewPlan()
         async with self._start_lock:
             if ref in self._running:
                 raise ReviewError(f"{ref} is already being reviewed")
@@ -315,7 +294,10 @@ class ReviewWorker(BaseWorker):
             # A new review supersedes whatever the last one proposed.
             await self._dismiss_pending(ref)
             review = await self._store.start_review(
-                ref, worktree_path=str(self._repos.worktree_path(ref)), head_sha=pr.head_sha
+                ref,
+                worktree_path=str(self._repos.worktree_path(ref)),
+                head_sha=pr.head_sha,
+                plan=plan,
             )
             await self._store.set_review_session(review.id, str(uuid.uuid4()))
             review = await self._store.latest_review(ref)
@@ -323,7 +305,9 @@ class ReviewWorker(BaseWorker):
             await self._store.set_pr_state(ref, PRState.REVIEWING)
             # The prompt depends on the repo's review skill, which may need asking.
             self._launch(pr, review, prompt="", resume=False, kind="review")
-        await self.send_bus_message(ReviewStarted(source=self.name, pr=str(ref)))
+        await self.send_bus_message(
+            ReviewStarted(source=self.name, pr=str(ref), plan=plan.to_dict())
+        )
         await self.send_bus_message(PRListUpdated(source=self.name))
         return review
 
@@ -365,21 +349,21 @@ class ReviewWorker(BaseWorker):
         )
         self._running[pr.ref] = self.create_task(run, f"{self}::review::{pr.ref}")
 
-    async def _take_slot(self, ref: PRRef) -> None:
-        """Wait for one of the ``max_reviews`` slots, in line behind the others waiting."""
-        if not self._queue and not self._slots.locked():
-            await self._slots.acquire()
+    async def _take_slot(self, ref: PRRef, priority: Priority) -> None:
+        """Wait for one of the ``max_reviews`` slots, in line by priority, then arrival."""
+        turn = self._slots.join(ref, priority.rank)
+        if turn.done():
             return
-        self._queue.append(ref)
-        await self._report_queue()
         try:
-            await self._slots.acquire()
-        finally:
-            self._queue.remove(ref)
+            await self._report_queue()
+            await turn
+        except asyncio.CancelledError:
+            self._slots.leave(turn)
+            raise
         await self._report_queue()
 
     async def _report_queue(self) -> None:
-        for ahead, ref in enumerate(self._queue):
+        for ahead, ref in enumerate(self._slots.waiting()):
             await self._progress(ref, f"Queued, {ahead} ahead" if ahead else "Queued, next up")
 
     # -- Running ----------------------------------------------------------------------
@@ -448,6 +432,7 @@ class ReviewWorker(BaseWorker):
     ):
         ref = pr.ref
         skill = review.skill
+        plan = review.plan or ReviewPlan()
         submitted: dict = {}
         state_before = pr.state
         slot = False
@@ -461,11 +446,12 @@ class ReviewWorker(BaseWorker):
                 await self.send_bus_message(PRListUpdated(source=self.name))
             plugin = await self._repo_plugin(ref.repo)
             if kind == "review":
-                skill = await self._choose_skill(ref, plugin)
+                # Only full reviews follow the repo's review process.
+                skill = await self._choose_skill(ref, plugin) if plan.depth == Depth.FULL else None
                 await self._store.set_review_followed(review.id, skill)
                 prompt = review_prompt(pr, skill)
             if queued:
-                await self._take_slot(ref)
+                await self._take_slot(ref, plan.priority)
                 slot = True
             await self._store.run_started(run_id)
             await self._progress(ref, "Checking out the PR")
@@ -489,6 +475,7 @@ class ReviewWorker(BaseWorker):
                 guidelines=await self._repos.guidelines(ref.repo),
                 plugin=plugin,
                 skill=skill,
+                plan=plan,
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")

@@ -33,8 +33,9 @@ from claude_agent_sdk import (
     tool,
 )
 
-from purr.models import PR, ActionKind, Finding, Severity
+from purr.models import PR, ActionKind, Finding, ReviewPlan, Severity
 from purr.review.instructions import ReviewInstructions
+from purr.review.plan import plan_section
 from purr.review.policy import Policy
 from purr.review.skills import skill_prompt, skill_section
 from purr.review.tools import (
@@ -178,6 +179,7 @@ class ReviewAgent(Protocol):
         guidelines: str = "",
         plugin: Path | None = None,
         skill: str | None = None,
+        plan: ReviewPlan | None = None,
     ) -> AgentResult: ...
 
 
@@ -383,6 +385,7 @@ class ClaudeReviewAgent:
         guidelines: str = "",
         plugin: Path | None = None,
         skill: str | None = None,
+        plan: ReviewPlan | None = None,
     ) -> AgentResult:
         policy = Policy(worktree, readable=[plugin] if plugin else [])
 
@@ -459,6 +462,7 @@ class ClaudeReviewAgent:
                 "append": INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
                 + guidelines_section(pr.repo, guidelines)
                 + (skill_section(pr.repo, skill) if skill else "")
+                + (plan_section(plan) if plan else "")
                 + (self._instructions.for_repo(pr.repo) if self._instructions else ""),
             },
             mcp_servers={

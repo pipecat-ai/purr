@@ -3,7 +3,15 @@
 from purr.workers.activity import ActivityWorker
 from purr.workers.git import GitWorker
 from purr.workers.github import GitHubWorker
+from purr.workers.lead import LeadWorker
 from purr.workers.recap import RecapWorker
 from purr.workers.reviews import ReviewWorker
 
-__all__ = ["ActivityWorker", "GitHubWorker", "GitWorker", "RecapWorker", "ReviewWorker"]
+__all__ = [
+    "ActivityWorker",
+    "GitHubWorker",
+    "GitWorker",
+    "LeadWorker",
+    "RecapWorker",
+    "ReviewWorker",
+]

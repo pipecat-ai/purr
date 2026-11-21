@@ -113,6 +113,7 @@ class FakeAgent:
         self.ask: tuple[str, dict, str] | None = None
         self.answers: list[bool] = []
         self.entries: dict[str, list[dict]] = {}
+        self.findings: dict = {}  # PRRef -> what its review finds (default: one race)
 
     def session_exists(self, session_id, worktree):
         return session_id in self.sessions
@@ -132,6 +133,7 @@ class FakeAgent:
         guidelines="",
         plugin=None,
         skill=None,
+        plan=None,
     ):
         from purr.models import ActionKind, Finding, Severity
         from purr.review.agent import AgentResult
@@ -145,6 +147,7 @@ class FakeAgent:
                 "guidelines": guidelines,
                 "plugin": plugin,
                 "skill": skill,
+                "plan": plan,
             }
         )
         self.sessions.add(session_id)
@@ -158,9 +161,10 @@ class FakeAgent:
         entry = {"kind": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "gh pr diff"}}
         self.entries.setdefault(session_id, []).append(entry)
         await callbacks.on_message(entry)
+        race = [Finding(severity=Severity.ISSUE, text="Race on shutdown", file="bus.py", line=42)]
+        findings = self.findings.get(pr.ref, race)
         await callbacks.on_submit(
-            "Clean refactor, one race.",
-            [Finding(severity=Severity.ISSUE, text="Race on shutdown", file="bus.py", line=42)],
+            "Clean refactor, one race." if findings else "Looks good.", findings
         )
         await callbacks.on_propose(
             ActionKind.REQUEST_CHANGES,
@@ -247,3 +251,33 @@ def make_plugin(root, skills: dict[str, str], *, name: str = "pipecat", commands
     for command, meta in (commands or {}).items():
         write(root / "commands" / f"{command}.md", meta)
     return root
+
+
+class FakeLead:
+    """Stands in for purr.lead.ClaudeLead: plans what ``plans`` says, by PR.
+
+    ``plans`` maps ``owner/repo#123`` to a plan dict; PRs not in it get a full,
+    normal-priority review. Set ``fail_with`` to make planning raise.
+    """
+
+    def __init__(self):
+        import re
+
+        self._pr = re.compile(r"^## ([\w.-]+/[\w.-]+#\d+) ", re.MULTILINE)
+        self.plans: dict[str, dict] = {}
+        self.notes: list[str] = []
+        self.fail_with: str | None = None
+        self.gate = None
+
+    async def plan(self, notes):
+        self.notes.append(notes)
+        if self.gate:
+            await self.gate.wait()
+        if self.fail_with:
+            raise RuntimeError(self.fail_with)
+        default = {"depth": "full", "priority": "normal", "focus": [], "why": "Looks real."}
+        return {
+            "plans": [
+                {"pr": pr, **default, **self.plans.get(pr, {})} for pr in self._pr.findall(notes)
+            ]
+        }

@@ -10,11 +10,19 @@ from purr.actions import GitHubWriter
 from purr.config import Config
 from purr.git import GitRepos
 from purr.github import GitHub
+from purr.lead import ClaudeLead, LeadAgent
 from purr.recap import ClaudeRecapAgent, RecapAgent
 from purr.review.agent import ClaudeReviewAgent, ReviewAgent
 from purr.review.instructions import ReviewInstructions
 from purr.store import Store
-from purr.workers import ActivityWorker, GitHubWorker, GitWorker, RecapWorker, ReviewWorker
+from purr.workers import (
+    ActivityWorker,
+    GitHubWorker,
+    GitWorker,
+    LeadWorker,
+    RecapWorker,
+    ReviewWorker,
+)
 
 
 class Purr:
@@ -32,6 +40,8 @@ class Purr:
         repos: Clones and worktrees (a fake in tests).
         writer: Posts approved actions to GitHub (a fake in tests).
         recap_agent: Writes "while you were away" recaps (a fake in tests).
+        lead: Plans each review: how deep, what to focus on, what goes first
+            (a fake in tests).
         handle_sigint: Let the runner stop on Ctrl+C. Turn off when a UI
             owns the terminal and handles keys itself.
     """
@@ -45,6 +55,7 @@ class Purr:
         repos: GitRepos | None = None,
         writer: GitHubWriter | None = None,
         recap_agent: RecapAgent | None = None,
+        lead: LeadAgent | None = None,
         handle_sigint: bool = True,
     ):
         self._config = config
@@ -58,6 +69,7 @@ class Purr:
         self._repos = repos or GitRepos(config.data_dir)
         self._writer = writer
         self._recap_agent = recap_agent or ClaudeRecapAgent(model=config.review_model)
+        self._lead = lead or ClaudeLead(model=config.lead_model)
         self._handle_sigint = handle_sigint
         self._store: Store | None = None
         self._runner: WorkerRunner | None = None
@@ -132,9 +144,16 @@ class Purr:
                 repos=self._repos,
                 agent=self._agent,
                 github=self._github,
-                auto_review=self._config.auto_review,
                 permission_wait=self._config.permission_wait,
                 max_reviews=self._config.max_reviews,
+            ),
+            LeadWorker(
+                store=store,
+                agent=self._lead,
+                github=self._github,
+                repos=self._repos,
+                instructions=self._instructions,
+                auto_review=self._config.auto_review,
             ),
             RecapWorker(store=store, agent=self._recap_agent),
             GitWorker(store=store, repos=self._repos, github=self._github),

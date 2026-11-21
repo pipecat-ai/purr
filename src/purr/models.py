@@ -226,6 +226,108 @@ class Finding:
     id: int | None = None
 
 
+class Depth(StrEnum):
+    """How deep a review goes (see :class:`ReviewPlan`)."""
+
+    QUICK = "quick"  # one agent: the diff and the code it touches
+    FULL = "full"  # the repo's review process, with subagents for independent checks
+
+
+class Priority(StrEnum):
+    """Which reviews go first when they wait in line."""
+
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+    @property
+    def rank(self) -> int:
+        return list(Priority).index(self)
+
+
+@dataclass(frozen=True)
+class ReviewPlan:
+    """What Purr's lead decided a PR's review needs (see :mod:`purr.lead`).
+
+    Parameters:
+        depth: Quick or full.
+        priority: Where it goes in line.
+        focus: What the review should look at hardest, specific to the PR.
+        why: One line for the user: why this depth and priority.
+        by: ``lead`` when the lead planned it, ``default`` when it couldn't.
+    """
+
+    depth: Depth = Depth.FULL
+    priority: Priority = Priority.NORMAL
+    focus: tuple[str, ...] = ()
+    why: str = ""
+    by: str = "default"
+
+    def to_dict(self) -> dict:
+        return {
+            "depth": self.depth.value,
+            "priority": self.priority.value,
+            "focus": list(self.focus),
+            "why": self.why,
+            "by": self.by,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "ReviewPlan":
+        """From its JSON form; whatever's missing or invalid takes the default."""
+        data = data or {}
+        depth = data.get("depth")
+        priority = data.get("priority")
+        focus = data.get("focus") or ()
+        return cls(
+            depth=Depth(depth) if depth in Depth._value2member_map_ else Depth.FULL,
+            priority=(
+                Priority(priority) if priority in Priority._value2member_map_ else Priority.NORMAL
+            ),
+            focus=tuple(str(f) for f in focus if str(f).strip()) if isinstance(focus, list) else (),
+            why=str(data.get("why") or ""),
+            by=str(data.get("by") or "default"),
+        )
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """What a finished review found, by severity: the one thing to know about it."""
+
+    issues: int = 0
+    suggestions: int = 0
+    nits: int = 0
+
+    @classmethod
+    def of(cls, findings) -> "Outcome":
+        """From findings (:class:`Finding` or their dicts)."""
+        counts = {severity: 0 for severity in Severity}
+        for finding in findings:
+            severity = finding.get("severity") if isinstance(finding, dict) else finding.severity
+            if severity in Severity._value2member_map_:
+                counts[Severity(severity)] += 1
+        return cls(counts[Severity.ISSUE], counts[Severity.SUGGESTION], counts[Severity.NIT])
+
+    @property
+    def found(self) -> int:
+        return self.issues + self.suggestions + self.nits
+
+    def text(self) -> str:
+        """``nothing found``, or ``found 1 issue, 2 nits``."""
+        if not self.found:
+            return "nothing found"
+        parts = [
+            f"{n} {name}{'s' if n != 1 else ''}"
+            for n, name in [
+                (self.issues, "issue"),
+                (self.suggestions, "suggestion"),
+                (self.nits, "nit"),
+            ]
+            if n
+        ]
+        return "found " + ", ".join(parts)
+
+
 @dataclass
 class Review:
     id: int
@@ -239,6 +341,7 @@ class Review:
     finished_at: str | None = None
     head_sha: str | None = None  # the commit this review last looked at
     skill: str | None = None  # the repo's own skill it followed, if any
+    plan: ReviewPlan | None = None  # what the lead decided it needs
 
 
 @dataclass

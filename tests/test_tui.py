@@ -12,7 +12,15 @@ from purr.store import Store
 from purr.tui import PurrApp
 from purr.tui.prompt import HistorySearchScreen
 from purr.tui.screens import AddRepoScreen, ConfirmScreen, MainScreen
-from tests.fakes import FakeAgent, FakeGitHub, FakeRecapAgent, FakeRepos, FakeWriter, remote
+from tests.fakes import (
+    FakeAgent,
+    FakeGitHub,
+    FakeLead,
+    FakeRecapAgent,
+    FakeRepos,
+    FakeWriter,
+    remote,
+)
 
 
 def make_app(tmp_path, cwd=None) -> tuple[PurrApp, FakeGitHub]:
@@ -25,6 +33,7 @@ def make_app(tmp_path, cwd=None) -> tuple[PurrApp, FakeGitHub]:
         repos=FakeRepos(tmp_path / "data"),
         writer=FakeWriter(),
         recap_agent=FakeRecapAgent(),
+        lead=FakeLead(),
         handle_sigint=False,
     )
     return PurrApp(purr, cwd=cwd), github
@@ -150,6 +159,10 @@ def focused(app: PurrApp) -> str | None:
     return app.focused.id if app.focused else None
 
 
+def header(app: PurrApp) -> str:
+    return str(app.main.repo.session.query_one("#pr-header").render())
+
+
 def decision(app: PurrApp) -> str:
     box = app.main.repo.session.query_one("#pr-decision")
     return str(box.render()) if box.display else ""
@@ -166,6 +179,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         repos=FakeRepos(tmp_path / "data"),
         writer=writer,
         recap_agent=FakeRecapAgent(),
+        lead=FakeLead(),
         handle_sigint=False,
     )
     app = PurrApp(purr)
@@ -186,6 +200,9 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert writer.assigned == [reviewed]
         assert "Bash(gh pr diff)" in transcript(app)
         assert "[a] approve" in decision(app)
+        # What it found, and what the lead planned (you asked: high priority).
+        await until(pilot, lambda: "Review: found 1 issue" in header(app))
+        assert "Full review · high priority · Looks real." in header(app)
 
         # a posts the proposed review.
         await pilot.press("a")
@@ -278,7 +295,7 @@ async def test_alerts_and_the_switcher(tmp_path):
         await until(pilot, lambda: in_repo(app, "pipecat-ai/pipecat"))
 
         # The assigned PR elsewhere gets reviewed; that shows up as an alert here.
-        await until(pilot, lambda: "daily-x#7 review done" in str(alert.render()))
+        await until(pilot, lambda: "daily-x#7 review: found 1" in str(alert.render()))
         await pilot.press("ctrl+n")
         await until(pilot, lambda: in_repo(app, "daily-co/daily-x"))
         await until(pilot, lambda: app.main.repo.selected_pr() is not None)
@@ -326,7 +343,7 @@ async def test_news_survives_a_restart_and_shows_in_bold(tmp_path):
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2, title="Docs")]
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: "pipecat-ai/pipecat#1" in app.alerts)
-        assert "pipecat#1 review done" in str(app.main.query_one("#alert").render())
+        assert "pipecat#1 review: nothing found" in str(app.main.query_one("#alert").render())
         # In the repo, #2 (the newest) is selected; #1 is bold until you look at it.
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)

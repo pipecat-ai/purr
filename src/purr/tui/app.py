@@ -312,7 +312,8 @@ class PurrApp(App):
         if isinstance(event, PRChanged) and event.change == PRChange.ASSIGNED:
             self._alert(event.pr, "assigned to you")
         elif isinstance(event, ReviewFinished):
-            self._alert(event.pr, "review done")
+            found = len(event.findings)
+            self._alert(event.pr, f"review: found {found}" if found else "review: nothing found")
         elif isinstance(event, ReviewFailed):
             self._alert(event.pr, "review failed")
         elif isinstance(event, PermissionRequest):

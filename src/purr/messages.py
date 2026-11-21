@@ -25,6 +25,13 @@ GITHUB_WORKER = "github"
 REVIEW_WORKER = "reviews"
 RECAP_WORKER = "recap"
 GIT_WORKER = "git"
+LEAD_WORKER = "lead"
+
+# Job names handled by LEAD_WORKER, which decides what gets reviewed, how deep and
+# in what order (see purr.lead). It answers once it has the PRs; their reviews
+# start after it has planned them.
+# payload: {"prs": ["owner/repo#123", ...]} -> {"ok": true}
+LEAD_REVIEW = "lead.review"
 
 # Job names handled by RECAP_WORKER.
 # payload: {"since": ISO time} -> {"recap_id": int | None} (None: nothing notable happened)
@@ -47,7 +54,11 @@ PR_DETAILS = "pr.details"
 PR_DIFF = "pr.diff"
 
 # Job names handled by REVIEW_WORKER.
-REVIEW_START = "review.start"  # payload: {"pr": "owner/repo#123"}
+# payload: {"pr": "owner/repo#123", "plan": {...} (a ReviewPlan; optional)} -> {"review_id": ...}
+REVIEW_START = "review.start"
+# Have a finished review look at the PR's new commits:
+# payload: {"pr": "owner/repo#123"} -> {"started": bool}
+REVIEW_REREVIEW = "review.rereview"
 REVIEW_MESSAGE = "review.message"  # payload: {"pr": "owner/repo#123", "text": "..."}
 # Answer an agent's permission request: {"request_id": "...", "allow": bool} -> {"ok": true}
 PERMISSION_ANSWER = "session.answer"
@@ -101,8 +112,11 @@ class PRChanged(PurrEvent):
 
 @dataclass(kw_only=True)
 class ReviewStarted(PurrEvent):
+    """A review started (it may wait in line); ``plan`` is what the lead decided it needs."""
+
     kind: ClassVar[str] = "review.started"
     pr: str
+    plan: dict = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)

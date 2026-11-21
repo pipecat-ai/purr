@@ -295,3 +295,33 @@ async def test_whats_new_since_you_looked(store):
     # Closed PRs aren't news.
     await store.apply_sync(gh_states={two: GHState.CLOSED})
     assert await store.unseen() == []
+
+
+async def test_what_reviews_found_and_how_they_were_planned(store):
+    from purr.models import Depth, Outcome, Priority, ReviewPlan
+
+    one, two, three = (PRRef("pipecat-ai/pipecat", n) for n in (1, 2, 3))
+    for ref in (one, two, three):
+        await store.upsert_pr(make_pr(ref.number))
+    plan = ReviewPlan(Depth.QUICK, Priority.HIGH, ("docs",), "Docs only", by="lead")
+    review = await store.start_review(one, plan=plan)
+    assert (await store.latest_review(one)).plan == plan
+    await store.finish_review(
+        review.id,
+        summary="Two things",
+        findings=[Finding(Severity.ISSUE, "Race"), Finding(Severity.NIT, "Name")],
+    )
+    clean = await store.start_review(two)
+    await store.finish_review(clean.id, summary="Fine", findings=[])
+    await store.start_review(three)  # still running: nothing to say yet
+
+    assert await store.outcomes("pipecat-ai/pipecat") == {
+        one: Outcome(issues=1, nits=1),
+        two: Outcome(),
+    }
+    assert (await store.outcomes("other/repo")) == {}
+
+    # News says it too.
+    await store.record_activity("review.finished", pr=one, data={"findings": [{}, {}]})
+    await store.record_activity("review.finished", pr=two, data={"findings": []})
+    assert await store.unseen() == [(one, "review: found 2"), (two, "review: nothing found")]

@@ -16,6 +16,7 @@ from purr.models import (
     Activity,
     Finding,
     GHState,
+    Outcome,
     PendingAction,
     PRRef,
     PRState,
@@ -23,6 +24,7 @@ from purr.models import (
     Repo,
     RepoSummary,
     Review,
+    ReviewPlan,
     ReviewStatus,
     Severity,
 )
@@ -199,6 +201,10 @@ MIGRATIONS: list[str] = [
     );
     ALTER TABLE reviews ADD COLUMN skill TEXT;
     """,
+    # What Purr's lead planned for each review (see purr.models.ReviewPlan), as JSON.
+    """
+    ALTER TABLE reviews ADD COLUMN plan TEXT;
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -206,7 +212,9 @@ _NEWS = """
     CASE
         WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'assigned'
             THEN 'assigned to you'
-        WHEN a.kind = 'review.finished' THEN 'review done'
+        WHEN a.kind = 'review.finished' AND json_array_length(a.data, '$.findings') > 0
+            THEN 'review: found ' || json_array_length(a.data, '$.findings')
+        WHEN a.kind = 'review.finished' THEN 'review: nothing found'
         WHEN a.kind = 'review.failed' THEN 'review failed'
         WHEN a.kind = 'session.permission_request' THEN 'needs your OK'
     END
@@ -324,6 +332,7 @@ def _review(row: aiosqlite.Row) -> Review:
         finished_at=row["finished_at"],
         head_sha=row["head_sha"],
         skill=row["skill"],
+        plan=ReviewPlan.from_dict(json.loads(row["plan"])) if row["plan"] else None,
     )
 
 
@@ -791,13 +800,25 @@ class Store:
     """
 
     async def start_review(
-        self, ref: PRRef, *, worktree_path: str | None = None, head_sha: str | None = None
+        self,
+        ref: PRRef,
+        *,
+        worktree_path: str | None = None,
+        head_sha: str | None = None,
+        plan: ReviewPlan | None = None,
     ) -> Review:
         pr_id = await self._pr_id(ref)
         cursor = await self._db.execute(
-            "INSERT INTO reviews (pr_id, worktree_path, head_sha, status, started_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (pr_id, worktree_path, head_sha, ReviewStatus.RUNNING, _now()),
+            "INSERT INTO reviews (pr_id, worktree_path, head_sha, status, started_at, plan)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                pr_id,
+                worktree_path,
+                head_sha,
+                ReviewStatus.RUNNING,
+                _now(),
+                json.dumps(plan.to_dict()) if plan else None,
+            ),
         )
         await self._db.commit()
         return await self._get_review(cursor.lastrowid)
@@ -893,6 +914,28 @@ class Store:
             "SELECT * FROM findings WHERE review_id = ? ORDER BY id", (review_id,)
         )
         return [_finding(row) for row in rows]
+
+    async def outcomes(self, repo: str | None = None) -> dict[PRRef, Outcome]:
+        """What each PR's latest review found, for PRs whose latest review finished."""
+        where = "AND prs.repo = ?" if repo else ""
+        rows = await self._fetchall(
+            f"""
+            SELECT prs.repo, prs.number, findings.severity, COUNT(findings.id) AS n
+            FROM prs
+            JOIN reviews ON reviews.id =
+                (SELECT MAX(id) FROM reviews WHERE reviews.pr_id = prs.id)
+            LEFT JOIN findings ON findings.review_id = reviews.id
+            WHERE reviews.status = 'finished' {where}
+            GROUP BY prs.id, findings.severity
+            """,
+            (repo,) if repo else (),
+        )
+        counts: dict[PRRef, list[dict]] = {}
+        for row in rows:
+            found = counts.setdefault(PRRef(row["repo"], row["number"]), [])
+            if row["severity"]:
+                found += [{"severity": row["severity"]}] * row["n"]
+        return {ref: Outcome.of(found) for ref, found in counts.items()}
 
     # -- Pending actions -------------------------------------------------------
 

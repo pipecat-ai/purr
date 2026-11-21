@@ -63,8 +63,28 @@ def _plugin_name(plugin: Path) -> str | None:
     return name if isinstance(name, str) and name else None
 
 
-def review_skills(plugin: Path | None) -> list[Skill]:
-    """The plugin's skills and commands that look like they're for reviewing, likeliest first."""
+@dataclass(frozen=True)
+class RepoSkill:
+    """One of the repo's skills or commands that can be started with a slash command.
+
+    Parameters:
+        name: With the plugin: ``pipecat:prose-review``.
+        description: What it says it does.
+        model_invocable: The agent can load it on its own (the Skill tool);
+            otherwise only a slash command starts it.
+    """
+
+    name: str
+    description: str
+    model_invocable: bool = True
+
+    @property
+    def short_name(self) -> str:
+        return self.name.split(":", 1)[-1]
+
+
+def repo_skills(plugin: Path | None) -> list[RepoSkill]:
+    """The plugin's skills and commands, as Claude Code names them."""
     if plugin is None or not (prefix := _plugin_name(plugin)):
         return []
     found: list[tuple[str, dict]] = []  # (name, frontmatter)
@@ -73,15 +93,25 @@ def review_skills(plugin: Path | None) -> list[Skill]:
         found.append((str(meta.get("name") or path.parent.name), meta))
     for path in sorted(plugin.glob("commands/*.md")):
         found.append((path.stem, _frontmatter(path)))
+    return [
+        RepoSkill(
+            f"{prefix}:{name}",
+            " ".join(str(meta.get("description") or "").split()),
+            model_invocable=meta.get("disable-model-invocation") is not True,
+        )
+        for name, meta in found
+        if meta.get("user-invocable") is not False  # else no slash command starts it
+    ]
+
+
+def review_skills(plugin: Path | None) -> list[Skill]:
+    """The plugin's skills and commands that look like they're for reviewing, likeliest first."""
     skills = []
-    for name, meta in found:
-        if meta.get("user-invocable") is False:
-            continue  # it can't be started as a slash command
-        description = " ".join(str(meta.get("description") or "").split())
-        in_name = "review" in name.lower()
-        reviews_prs = bool(_REVIEWS_PRS.search(description))
+    for skill in repo_skills(plugin):
+        in_name = "review" in skill.short_name.lower()
+        reviews_prs = bool(_REVIEWS_PRS.search(skill.description))
         if in_name or reviews_prs:
-            skills.append(Skill(f"{prefix}:{name}", description, likely=in_name and reviews_prs))
+            skills.append(Skill(skill.name, skill.description, likely=in_name and reviews_prs))
     return sorted(skills, key=lambda skill: not skill.likely)
 
 

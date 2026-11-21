@@ -28,7 +28,7 @@ from purr.models import PR, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.tui.bridge import RequestError
 from purr.tui.overview import short_age
-from purr.tui.session import NUMBER_STYLE, PRSession, SessionState
+from purr.tui.session import NUMBER_STYLE, PRSession, SessionState, outcome_mark
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -301,6 +301,7 @@ class RepoView(PurrView):
         self._search = ""
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
+        self._outcomes: dict = {}  # PRRef -> what its latest review found
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -329,7 +330,9 @@ class RepoView(PurrView):
         if not self.repo:
             return
         await super().reload()
-        self._all = await self.purr_app.purr.store.list_prs(repo=self.repo, open_only=True)
+        store = self.purr_app.purr.store
+        self._all = await store.list_prs(repo=self.repo, open_only=True)
+        self._outcomes = await store.outcomes(self.repo)
         self._number_width = max((len(f"#{pr.number}") for pr in self._all), default=5)
         self._list()
 
@@ -366,8 +369,15 @@ class RepoView(PurrView):
 
     def _prompt(self, pr: PR) -> Table:
         marked = str(pr.ref) in self._marked
+        outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
+        if marked:
+            mark = Text("▪", style="bold magenta")
+        elif outcome:
+            mark = outcome_mark(outcome)
+        else:
+            mark = Text(_ICONS[group(pr)])
         return _row(
-            Text("▪", style="bold magenta") if marked else _ICONS[group(pr)],
+            mark,
             Text(f"#{pr.number}", style=NUMBER_STYLE),
             # Something happened since you last looked: like unread mail.
             Text(pr.title, style="bold" if str(pr.ref) in self.purr_app.alerts else ""),
@@ -538,20 +548,25 @@ class RepoView(PurrView):
         ):
             return
         self._marked.clear()
+        if not targets:
+            return
         for pr in targets:
-            try:
-                await self.purr_app.bus.start_review(pr.ref)
-            except RequestError as e:
-                self.notify(str(e), severity="warning")
-                continue
             if not pr.assigned_to_me:
                 # Taking it from the pool: assign yourself, so teammates see it's taken.
                 try:
                     await self.purr_app.bus.assign(pr.ref)
                 except RequestError as e:
                     self.notify(str(e), severity="warning")
-        if targets:
-            self.notify(f"Reviewing {len(targets)} PR{'s' if len(targets) != 1 else ''}")
+        plural = "s" if len(targets) != 1 else ""
+        self.notify(f"Planning {len(targets)} review{plural}")
+        # The lead plans them together (a few seconds), then they start.
+        try:
+            errors = await self.purr_app.bus.start_review([pr.ref for pr in targets])
+        except RequestError as e:
+            self.notify(str(e), severity="warning")
+            return
+        for error in errors.values():
+            self.notify(error, severity="warning")
 
     def _asking(self) -> SessionState | None:
         """The shown PR's session, if its agent is waiting on a permission answer."""

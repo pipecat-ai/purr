@@ -16,7 +16,15 @@ from textual.containers import Vertical
 from textual.widgets import RichLog, Static
 
 from purr.messages import PermissionRequest
-from purr.models import PR, PendingAction, PRDetails, PRState, Review, ReviewStatus
+from purr.models import (
+    PR,
+    Outcome,
+    PendingAction,
+    PRDetails,
+    PRState,
+    Review,
+    ReviewStatus,
+)
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.bridge import RequestError
 from purr.tui.overview import details_line, render_overview
@@ -77,6 +85,13 @@ def render_proposal(proposal: dict) -> RenderableType:
         line.append(str(reply.get("body", "")))
         parts.append(line)
     return Group(*parts)
+
+
+def outcome_mark(outcome: Outcome) -> Text:
+    """What a review found, at a glance: ✓ nothing, ● something (red: issues)."""
+    if not outcome.found:
+        return Text("✓", style="bold green")
+    return Text("●", style="bold red" if outcome.issues else "bold yellow")
 
 
 def render_entry(entry: dict) -> RenderableType | None:
@@ -253,12 +268,12 @@ class PRSession(Vertical):
         pr = await store.get_pr(self.pr.ref) or self.pr
         self.pr = pr
         review = await store.latest_review(pr.ref)
-        findings = len(await store.findings(review.id)) if review else 0
+        outcome = Outcome.of(await store.findings(review.id)) if review else Outcome()
         actions = await store.pending_actions(pr.ref)
         state = self.state()
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
-            self._header(pr, review, findings, actions, state, details)
+            self._header(pr, review, outcome, actions, state, details)
         )
         decision = self.query_one("#pr-decision", Static)
         if state.ask:
@@ -292,7 +307,7 @@ class PRSession(Vertical):
     def _header(
         pr: PR,
         review: Review | None,
-        findings: int,
+        outcome: Outcome,
         actions: list[PendingAction],
         state: SessionState,
         details: PRDetails | None,
@@ -308,12 +323,14 @@ class PRSession(Vertical):
             text.append("⟳ Reviewing", style="bold cyan")
             if state.progress:
                 text.append(f" · {_short(state.progress, 80)}", style="dim")
+        elif state.progress:  # the lead is planning its review
+            text.append(f"⟳ {_short(state.progress, 80)}", style="bold cyan")
         elif review and review.status == ReviewStatus.FAILED:
             text.append(f"✗ Review failed: {review.error}", style="bold red")
         elif review and review.status == ReviewStatus.FINISHED:
-            style = "bold yellow" if actions else "bold green"
-            text.append("✓ Review done", style=style)
-            text.append(f" · {findings} finding{'s' if findings != 1 else ''}")
+            mark = outcome_mark(outcome)
+            text.append(mark)
+            text.append(f" Review: {outcome.text()}", style=mark.style)
             if actions:
                 text.append(f" · {len(actions)} pending action", style="yellow")
         elif review is None and pr.others_on_it:
@@ -323,6 +340,11 @@ class PRSession(Vertical):
             text.append("○ Not reviewed", style="bold")
             hint = " · r to review it" + ("" if pr.assigned_to_me else " and take it")
             text.append(f"{hint} · d diff", style="dim")
+        if review and review.plan and pr.state != PRState.NOT_REVIEWED:
+            # What the lead planned, and why.
+            plan = review.plan
+            line = f"{plan.depth.value.capitalize()} review · {plan.priority.value} priority"
+            text.append(f"\n{line}" + (f" · {plan.why}" if plan.why else ""), style="dim")
         return text
 
     def focus_prompt(self) -> None:

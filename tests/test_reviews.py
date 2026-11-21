@@ -10,6 +10,8 @@ from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
 from purr.messages import (
+    LEAD_REVIEW,
+    LEAD_WORKER,
     PERMISSION_ANSWER,
     REVIEW_MESSAGE,
     REVIEW_SKILL,
@@ -34,8 +36,8 @@ from purr.messages import (
 from purr.models import PR, ActionStatus, PRRef, PRState, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
-from purr.workers import ActivityWorker, ReviewWorker
-from tests.fakes import FakeAgent, FakeRepos, make_plugin
+from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
+from tests.fakes import FakeAgent, FakeLead, FakeRepos, make_plugin
 
 REF = PRRef("pipecat-ai/pipecat", 2841)
 
@@ -66,9 +68,9 @@ class Client(BaseWorker):
     def of(self, kind: type) -> list:
         return [e for e in self.events if isinstance(e, kind)]
 
-    async def request(self, name: str, payload: dict) -> dict:
+    async def request(self, name: str, payload: dict, worker: str = REVIEW_WORKER) -> dict:
         params = JobParams(name=name, payload=payload, timeout=5)
-        async with self.job(REVIEW_WORKER, params=params) as j:
+        async with self.job(worker, params=params) as j:
             pass
         return j.response
 
@@ -85,7 +87,7 @@ async def eventually(check: Callable[[], Awaitable[bool] | bool], timeout: float
 
 
 class Setup:
-    def __init__(self, store, agent, repos, client, runner):
+    def __init__(self, store, agent, repos, client, runner, lead):
         self.store, self.agent, self.repos, self.client, self.runner = (
             store,
             agent,
@@ -93,6 +95,7 @@ class Setup:
             client,
             runner,
         )
+        self.lead = lead
 
     async def state(self) -> PRState:
         return (await self.store.get_pr(REF)).state
@@ -107,19 +110,20 @@ async def make(tmp_path):
         before_start=None, auto_review=True, permission_wait=300, max_reviews=3
     ) -> Setup:
         store = await Store.open(":memory:")
-        agent, repos, client = FakeAgent(), FakeRepos(tmp_path), Client()
+        agent, repos, client, lead = FakeAgent(), FakeRepos(tmp_path), Client(), FakeLead()
         if before_start:
             await before_start(store, agent)
         worker = ReviewWorker(
             store=store,
             repos=repos,
             agent=agent,
-            auto_review=auto_review,
             permission_wait=permission_wait,
             max_reviews=max_reviews,
         )
+        # The lead decides what gets reviewed (assigned PRs, new commits).
+        lead_worker = LeadWorker(store=store, agent=lead, auto_review=auto_review, settle=0.01)
         runner = WorkerRunner(handle_sigint=False)
-        await runner.add_workers(ActivityWorker(store=store), worker, client)
+        await runner.add_workers(ActivityWorker(store=store), worker, lead_worker, client)
         task = asyncio.create_task(runner.run(auto_end=False))
 
         async def cleanup():
@@ -129,7 +133,7 @@ async def make(tmp_path):
 
         cleanups.append(cleanup)
         await asyncio.sleep(0.05)
-        return Setup(store, agent, repos, client, runner)
+        return Setup(store, agent, repos, client, runner, lead)
 
     yield build
     for cleanup in cleanups:
@@ -579,3 +583,81 @@ async def test_a_chosen_skill_the_repo_dropped_means_purrs_own_review(make, tmp_
     await s.client.request(REVIEW_START, {"pr": str(REF)})
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["skill"] is None
+
+
+# -- The lead -----------------------------------------------------------------------
+
+
+async def test_the_lead_plans_assigned_prs_together_and_they_run_by_priority(make):
+    async def seed(store, agent):
+        for number in (1, 2, 3):
+            await store.upsert_pr(make_pr(number=number, assigned_to_me=True))
+        agent.gate = asyncio.Event()  # hold the first review, so the rest wait in line
+
+    s = await make(before_start=seed, max_reviews=1)
+    s.lead.plans = {
+        "pipecat-ai/pipecat#1": {"priority": "low", "why": "Big refactor"},
+        "pipecat-ai/pipecat#2": {"priority": "normal"},
+        "pipecat-ai/pipecat#3": {"depth": "quick", "priority": "high", "focus": ["typos"]},
+    }
+    await s.client.send_bus_message(Synced(source="github"))
+    await eventually(lambda: len(s.client.of(ReviewStarted)) == 3)
+    assert len(s.lead.notes) == 1  # one call for all three
+    plans = {e.pr: e.plan for e in s.client.of(ReviewStarted)}
+    assert plans["pipecat-ai/pipecat#3"]["depth"] == "quick"
+    assert plans["pipecat-ai/pipecat#1"]["why"] == "Big refactor"
+    assert [p.text for p in s.client.of(ReviewProgress)][:3] == ["Planning the review"] * 3
+
+    s.agent.gate.set()
+    await eventually(lambda: len(s.client.of(ReviewFinished)) == 3)
+    # Started highest priority first, and ran in that order.
+    assert [run["pr"].number for run in s.agent.runs] == [3, 2, 1]
+    quick = s.agent.runs[0]["plan"]
+    assert quick.depth == "quick" and quick.focus == ("typos",) and quick.by == "lead"
+    assert (await s.store.latest_review(PRRef(REF.repo, 1))).plan.why == "Big refactor"
+
+
+async def test_reviews_go_ahead_when_the_lead_cant_plan(make):
+    s = await make()
+    s.lead.fail_with = "offline"
+    await s.store.upsert_pr(make_pr(assigned_to_me=True))
+    await s.client.send_bus_message(Synced(source="github"))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    plan = s.agent.runs[0]["plan"]
+    assert (plan.depth, plan.by) == ("full", "default")
+    assert "offline" in plan.why
+
+
+async def test_quick_reviews_skip_the_repo_review_skill(make, tmp_path):
+    s = await make()
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
+    s.lead.plans = {str(REF): {"depth": "quick"}}
+    await s.store.upsert_pr(make_pr(assigned_to_me=True))
+    await s.client.send_bus_message(Synced(source="github"))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["skill"] is None
+    assert s.agent.runs[0]["prompt"].startswith("Review pipecat-ai/pipecat#2841")
+
+
+async def test_reviews_you_ask_for_are_planned_at_high_priority(make):
+    s = await make(auto_review=False)
+    await s.store.upsert_pr(make_pr())
+    s.lead.plans = {str(REF): {"priority": "low"}}
+
+    response = await s.client.request(
+        LEAD_REVIEW, {"prs": [str(REF), "pipecat-ai/pipecat#404"]}, worker=LEAD_WORKER
+    )
+    assert response["started"] == [str(REF)]
+    assert response["errors"] == {
+        "pipecat-ai/pipecat#404": "Purr doesn't know pipecat-ai/pipecat#404"
+    }
+    assert "the user asked for this review now" in s.lead.notes[0]
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["plan"].priority == "high"
+
+    # Already being reviewed: says so.
+    s.agent.gate = asyncio.Event()
+    await s.client.request(LEAD_REVIEW, {"prs": [str(REF)]}, worker=LEAD_WORKER)
+    response = await s.client.request(LEAD_REVIEW, {"prs": [str(REF)]}, worker=LEAD_WORKER)
+    assert "already being reviewed" in response["errors"][str(REF)]
+    s.agent.gate.set()
