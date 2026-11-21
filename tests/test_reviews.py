@@ -22,6 +22,7 @@ from purr.messages import (
     PurrEvent,
     ReviewFailed,
     ReviewFinished,
+    ReviewProgress,
     ReviewStarted,
     SessionMessage,
     Synced,
@@ -37,9 +38,9 @@ REF = PRRef("pipecat-ai/pipecat", 2841)
 
 def make_pr(**kwargs) -> PR:
     kwargs.setdefault("head_sha", "abc123")
+    kwargs.setdefault("number", REF.number)
     return PR(
         repo=REF.repo,
-        number=REF.number,
         title="Add message bus",
         author="someone",
         url="https://github.com/pipecat-ai/pipecat/pull/2841",
@@ -98,7 +99,9 @@ async def make(tmp_path):
     """Builds a running setup; ``before_start`` can seed the store first."""
     cleanups = []
 
-    async def build(before_start=None, auto_review=True, permission_wait=300) -> Setup:
+    async def build(
+        before_start=None, auto_review=True, permission_wait=300, max_reviews=3
+    ) -> Setup:
         store = await Store.open(":memory:")
         agent, repos, client = FakeAgent(), FakeRepos(tmp_path), Client()
         if before_start:
@@ -109,6 +112,7 @@ async def make(tmp_path):
             agent=agent,
             auto_review=auto_review,
             permission_wait=permission_wait,
+            max_reviews=max_reviews,
         )
         runner = WorkerRunner(handle_sigint=False)
         await runner.add_workers(ActivityWorker(store=store), worker, client)
@@ -358,3 +362,34 @@ async def test_reviews_go_ahead_without_the_repo_plugin(make):
     await s.client.request(REVIEW_START, {"pr": str(REF)})
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["plugin"] is None
+
+
+async def test_reviews_wait_in_line_but_your_messages_dont(make):
+    s = await make(max_reviews=1)
+    first, second, chat = (PRRef("pipecat-ai/pipecat", n) for n in (1, 2, 3))
+    for ref in (first, second, chat):
+        await s.store.upsert_pr(make_pr(number=ref.number))
+    # A PR you've already reviewed, to talk to later.
+    await s.client.request(REVIEW_START, {"pr": str(chat)})
+    await eventually(lambda: len(s.client.of(ReviewFinished)) == 1)
+
+    s.agent.gate = asyncio.Event()
+    await s.client.request(REVIEW_START, {"pr": str(first)})
+    await s.client.request(REVIEW_START, {"pr": str(second)})
+    await eventually(lambda: [r["pr"] for r in s.agent.runs][-1:] == [first])
+
+    def progress(ref: PRRef) -> list[str]:
+        return [e.text for e in s.client.of(ReviewProgress) if e.pr == str(ref)]
+
+    await eventually(lambda: "Queued, next up" in progress(second))
+    assert second not in [r["pr"] for r in s.agent.runs]
+
+    # Your message doesn't wait behind them.
+    await s.client.request(REVIEW_MESSAGE, {"pr": str(chat), "text": "and the tests?"})
+    await eventually(lambda: s.agent.runs[-1]["prompt"] == "and the tests?")
+    assert second not in [r["pr"] for r in s.agent.runs]
+
+    # When the first is done, the second goes.
+    s.agent.gate.set()
+    await eventually(lambda: second in [r["pr"] for r in s.agent.runs])
+    await eventually(lambda: any(e.pr == str(second) for e in s.client.of(ReviewFinished)))

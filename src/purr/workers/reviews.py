@@ -66,6 +66,9 @@ class ReviewWorker(BaseWorker):
     - PRs assigned to you are reviewed automatically (when ``auto_review``): as
       a poll reports them, and after every poll for any assigned PR that was
       never reviewed, which on startup covers those from before.
+    - At most ``max_reviews`` reviews (and re-reviews) run at once; the rest
+      wait in line, in order, saying where they are. Your own messages in a
+      PR's session don't wait.
     - On startup, reviews interrupted by the last shutdown are resumed.
     - When a reviewed PR assigned to you gets new commits, its session is asked
       to re-review what changed (when ``auto_review``).
@@ -97,6 +100,7 @@ class ReviewWorker(BaseWorker):
         github: GitHub | None = None,
         auto_review: bool = True,
         permission_wait: float = 300,
+        max_reviews: int = 3,
     ):
         super().__init__(name)
         self._store = store
@@ -109,6 +113,8 @@ class ReviewWorker(BaseWorker):
         self._start_lock = asyncio.Lock()
         self._startup_task: asyncio.Task | None = None
         self._asks: dict[str, asyncio.Future[bool]] = {}
+        self._slots = asyncio.Semaphore(max_reviews)
+        self._queue: list[PRRef] = []  # waiting for a slot, in order
 
     async def on_activated(self, args: dict | None) -> None:
         await super().on_activated(args)
@@ -270,13 +276,40 @@ class ReviewWorker(BaseWorker):
             pr = await self._store.get_pr(ref)
             if review is None or pr is None or not review.session_id:
                 raise ReviewError(f"{ref} hasn't been reviewed yet")
-            self._launch(pr, review, prompt=text, resume=True, followup=True)
+            # You're waiting on this one: it doesn't queue behind reviews.
+            self._launch(pr, review, prompt=text, resume=True, followup=True, queued=False)
 
-    def _launch(self, pr: PR, review: Review, *, prompt: str, resume: bool, followup: bool = False):
+    def _launch(
+        self,
+        pr: PR,
+        review: Review,
+        *,
+        prompt: str,
+        resume: bool,
+        followup: bool = False,
+        queued: bool = True,
+    ):
         self._running[pr.ref] = self.create_task(
-            self._run(pr, review, prompt=prompt, resume=resume, followup=followup),
+            self._run(pr, review, prompt=prompt, resume=resume, followup=followup, queued=queued),
             f"{self}::review::{pr.ref}",
         )
+
+    async def _take_slot(self, ref: PRRef) -> None:
+        """Wait for one of the ``max_reviews`` slots, in line behind the others waiting."""
+        if not self._queue and not self._slots.locked():
+            await self._slots.acquire()
+            return
+        self._queue.append(ref)
+        await self._report_queue()
+        try:
+            await self._slots.acquire()
+        finally:
+            self._queue.remove(ref)
+        await self._report_queue()
+
+    async def _report_queue(self) -> None:
+        for ahead, ref in enumerate(self._queue):
+            await self._progress(ref, f"Queued, {ahead} ahead" if ahead else "Queued, next up")
 
     # -- Running ----------------------------------------------------------------------
 
@@ -288,14 +321,20 @@ class ReviewWorker(BaseWorker):
             logger.warning(f"Couldn't load {repo}'s skills and agents: {e}")
             return None
 
-    async def _run(self, pr: PR, review: Review, *, prompt: str, resume: bool, followup: bool):
+    async def _run(
+        self, pr: PR, review: Review, *, prompt: str, resume: bool, followup: bool, queued: bool
+    ):
         ref = pr.ref
         submitted: dict = {}
         state_before = pr.state
+        slot = False
         try:
             if followup:
                 await self._store.set_pr_state(ref, PRState.REVIEWING)
                 await self.send_bus_message(PRListUpdated(source=self.name))
+            if queued:
+                await self._take_slot(ref)
+                slot = True
             await self._progress(ref, "Checking out the PR")
             worktree = await self._repos.checkout(ref, pr.head_sha)
             assert review.session_id
@@ -348,6 +387,8 @@ class ReviewWorker(BaseWorker):
                 )
                 await self._settle(ref, PRState.NEEDS_YOU)
         finally:
+            if slot:
+                self._slots.release()
             self._running.pop(ref, None)
 
     async def _settle(self, ref: PRRef, state: PRState) -> None:

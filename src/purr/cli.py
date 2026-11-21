@@ -38,6 +38,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="don't start reviews of PRs assigned to you on your behalf",
     )
+    parser.add_argument(
+        "--max-reviews",
+        type=int,
+        metavar="N",
+        help="reviews running at once; the rest wait in line (default: 3)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging on stderr")
     parser.add_argument("--version", action="version", version=f"purr {__version__}")
     args = parser.parse_args(argv)
@@ -45,6 +51,8 @@ def main(argv: list[str] | None = None) -> None:
     config = Config.load(data_dir=args.data_dir)
     if args.no_auto_review:
         config = dataclasses.replace(config, auto_review=False)
+    if args.max_reviews:
+        config = dataclasses.replace(config, max_reviews=max(1, args.max_reviews))
     # With the UI up, stderr belongs to the terminal UI: log to the file only.
     _setup_logging(config, verbose=args.verbose, stderr=args.headless)
 

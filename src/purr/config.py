@@ -33,6 +33,8 @@ class Config:
         review_model: Model for reviews; None uses Claude Code's default.
         review_budget_usd: Optional spending cap per review run.
         away_after: Seconds without activity after which you count as away.
+        max_reviews: Reviews running at once; the rest wait in line (your own
+            messages in a PR's session never wait).
         permission_wait: Seconds an agent waits for you to allow something before
             carrying on without it. Claude Code gives up on its own after about
             ten minutes, so keep this below that.
@@ -48,6 +50,7 @@ class Config:
     review_budget_usd: float | None = None
     away_after: float = 15 * 60
     permission_wait: float = 5 * 60
+    max_reviews: int = 3
     config_dir: Path = field(default_factory=_default_config_dir)
 
     @classmethod

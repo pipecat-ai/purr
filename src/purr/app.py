@@ -134,6 +134,7 @@ class Purr:
                 github=self._github,
                 auto_review=self._config.auto_review,
                 permission_wait=self._config.permission_wait,
+                max_reviews=self._config.max_reviews,
             ),
             RecapWorker(store=store, agent=self._recap_agent),
             GitWorker(store=store, repos=self._repos, github=self._github),
