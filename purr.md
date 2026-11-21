@@ -34,12 +34,13 @@ One Python asyncio process containing:
 4. **Review workers** (Claude Agent SDK, one session per PR)
 5. **SQLite store**
 
-All components communicate over **Pipecat Subagents' in-process local bus**, sharing a single runner. Reviews are dispatched as **jobs** on the bus (Pipecat job coordination) and handled by review worker agents. The TUI and the voice agent are both bus participants, so starting a review is the same path from either: dispatch a job, listen for events.
+All components are Pipecat **workers** on Pipecat's in-process worker bus (`AsyncQueueBus`), sharing a single `WorkerRunner`. (Pipecat Subagents has been merged into Pipecat core as `pipecat.workers` / `pipecat.bus`, available since `pipecat-ai` 1.16.0; the standalone `pipecat-subagents` repo is archived.) Reviews are dispatched as **jobs** on the bus (Pipecat job coordination) and handled by review worker agents. The TUI and the voice agent are both bus participants, so starting a review is the same path from either: dispatch a job, listen for events.
 
 Why not proxy agents or Redis: we looked at Pipecat proxy agents and they are point-to-point tunnels between two named agents. Only targeted messages of allowed types cross; broadcast messages (like "review finished") are not forwarded. Since everything now lives in one process, the local bus is enough. If components are ever split into separate processes, switch to a shared distributed bus (e.g. Redis), not proxies.
 
 Relevant docs (verify current APIs before building):
-- Pipecat Subagents: https://docs.pipecat.ai/subagents/introduction
+- Workers and the runner: https://docs.pipecat.ai/pipecat/learn/your-first-agent
+- Multiple workers on one bus: https://docs.pipecat.ai/pipecat/learn/multiple-llm-agents
 - Job coordination: https://docs.pipecat.ai/pipecat/learn/job-coordination
 - Proxy agents (for background on why we're not using them): https://docs.pipecat.ai/pipecat/learn/proxy-agents
 - Claude Agent SDK for Python (`claude-agent-sdk`)
@@ -106,7 +107,7 @@ Events (broadcast, everyone listens):
 Commands:
 - `action.approve {action_id}` / `action.dismiss {action_id}`
 
-Adapt names and shapes to whatever Pipecat Subagents' job/message primitives look like.
+Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the `reviews` worker; events (`PurrEvent`) and commands (`PurrCommand`) are `BusDataMessage` subclasses. Events are broadcast (no target); commands target the worker that executes them. PRs travel as `owner/repo#123` strings.
 
 ## SQLite store
 
@@ -164,7 +165,7 @@ Keys:
 
 ## Suggested build order
 
-1. Project skeleton: single asyncio process, Pipecat Subagents runner with local bus, SQLite.
+1. Project skeleton: single asyncio process, Pipecat `WorkerRunner` with local bus, SQLite.
 2. GitHub poller + PR list in SQLite (assigned-to-me + open PRs in the pool).
 3. Review worker: worktree setup, Agent SDK session, store session ID, summary, findings, pending actions.
 4. Pending action execution (post comments / review verdict / merge) gated on approval.
