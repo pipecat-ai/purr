@@ -8,7 +8,7 @@ Command: `purr`. Python package: `purr` (check availability on PyPI before publi
 
 Juggling several PR reviews inside the Claude Code terminal gets messy. It's hard to see which reviews are in flight, find the one you were working on, and resume it (`/resume` doesn't solve this well). Purr makes PRs the primary unit: every PR has its own review session, state and findings, and getting back to any review is one keypress. Stepping away makes it worse: when you come back, there's no quick way to see what finished, what failed and what's waiting on you.
 
-Purr should feel like Claude Code, but organized around PRs: the list of PRs is the home screen, and inside a PR you're in a Claude Code-style session for that PR.
+Purr should feel like Claude Code, but organized around PRs: your repos and their PRs are the home screen, and inside a PR you're in a Claude Code-style session for that PR.
 
 ## Goals
 
@@ -18,6 +18,7 @@ Purr should feel like Claude Code, but organized around PRs: the list of PRs is 
 - Resume any PR's review session at any time, including after restarting the app.
 - Inside a PR, work as you would in Claude Code: a full conversational session in the PR's worktree.
 - Catch up after being away: an agent-written recap of what happened, with what needs you first.
+- Move between repos and PRs instantly, and notice when something happens in another repo. Everything should feel fast.
 - Control everything by keyboard or voice, interchangeably.
 - Never take a visible action on GitHub (comments, review verdicts, merges) without approval.
 
@@ -73,7 +74,7 @@ One Purr instance covers several repos; you don't run one per repo:
 
 Two things keep this cheap:
 
-- **Watched repos** (the ones whose pool you see) are listed in `~/.config/purr/config.toml` (`repos = ["pipecat-ai/pipecat", ...]`). Running `purr` inside a checkout of a repo that isn't watched offers to add it, so the Claude Code habit of starting inside a repo still works.
+- **Watched repos** (the ones whose pool you see) are listed in `~/.config/purr/config.toml` (`repos = ["pipecat-ai/pipecat", ...]`). Running `purr` inside a checkout opens that repo directly (see TUI), so the Claude Code habit of starting inside a repo still works; if the repo isn't watched yet, Purr offers to add it.
 - **Purr's own clones.** Purr keeps a blobless clone of each repo it reviews in its data dir (`repos/<owner>/<name>.git`) and creates review worktrees from it. Your checkouts are never touched (no extra worktrees, refs or fetches in them), and PRs assigned to you in repos you don't have locally work the same way.
 
 ## PR states
@@ -177,7 +178,7 @@ Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the
 
 ## SQLite store
 
-- `prs`: repo, number, title, author, url, head sha, state, assigned_to_me, updated_at
+- `prs`: repo, number, title, author, url, head sha, state, assigned_to_me, updated_at, last_seen_at (when you last looked at it; clears its alerts)
 - `reviews`: pr, session_id, worktree path, status, summary, started_at, finished_at
 - `findings`: review, file, line, severity, text
 - `pending_actions`: pr, action_id, kind (comment/request_changes/approve/merge), payload, status
@@ -189,49 +190,102 @@ Session transcripts are not stored here; they're the SDK's own session files.
 
 ## TUI
 
-Two-pane, lazygit-style layout.
+Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs plus the selected PR's session) → **a PR session** zoomed to full screen. The recap panel opens on top of whichever screen you're on.
+
+### Repo list (home)
 
 ```
-┌─ Purr ────────────────────────────┬─ pipecat#2841: Add message bus ───────────────────┐
+┌─ Purr ────────────────────────────────────────────────── 🔔 1 · whisker#112 needs you ─┐
+│                                                                                       │
+│    REPO                       NEEDS YOU   REVIEWING   NOT REVIEWED   LAST ACTIVITY    │
+│  1 ▸ pipecat-ai/pipecat           2           1            3          2 min ago       │
+│  2   pipecat-ai/whisker           1 ●         -            1          just now        │
+│  3   daily-co/daily-x             -           1            -          15 min ago      │
+│  4   pipecat-ai/pipecat-flows     -           -            4          3 h ago         │
+│                                                                                       │
+│  ● new since you last looked                                                          │
+│                                                                                       │
+├───────────────────────────────────────────────────────────────────────────────────────┤
+│ enter open · 1-9 repo · ctrl+p find · ctrl+o back · ctrl+n next alert · w recap · 🎙   │
+└───────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- One row per watched repo, plus any repo where a PR is assigned to you.
+- Rows keep a stable order (the config file's order, newly added repos at the end) and a stable number, so `1`–`9` always go to the same repo. Changes show as counts and a ● marker; rows don't move around.
+- Launching `purr` inside a checkout of a watched repo opens that repo directly (`esc` goes up to this list). Launched anywhere else, Purr starts here.
+
+### Repo screen
+
+Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere else (alerts, recaps, the switcher) as `whisker#112`, the repo name without its owner unless that's ambiguous.
+
+```
+┌─ Purr › 1 pipecat-ai/pipecat ─────────────────────────── 🔔 1 · whisker#112 needs you ─┐
+├─ PRs ─────────────────────────────┬─ #2841: Add message bus ──────────────────────────┤
 │ ⚠ NEEDS YOU (2)                   │ ✓ Review done · 3 findings · 1 pending action     │
-│ ▸ pipecat#2841  Message bus  ⚠    │                                                   │
-│   whisker#112   File format  ⚠    │ ⏺ Reviewing pipecat#2841 at 3f2a91c               │
+│ ▸ #2841  Message bus         ⚠    │                                                   │
+│   #2838  Frame serializer    ⚠    │ ⏺ Reviewing #2841 at 3f2a91c                      │
 │                                   │   ⎿ Bash(gh pr diff 2841) · 412 lines             │
-│ REVIEWING (2)                     │   ⎿ Read(src/pipecat/bus/bus.py)                  │
-│ ● pipecat#2850  TTS context  ⟳    │   ⎿ Bash(uv run pytest tests/bus) · 48 passed     │
-│ ● daily-x#77    Win CI fix   ⟳    │                                                   │
-│                                   │ ⏺ Clean refactor, tests pass. Concerns:           │
-│ NOT REVIEWED (3)                  │   1. Race in bus.subscribe() on shutdown          │
-│ ○ pipecat#2855  Evals report      │   2. Missing docstring on publish()               │
-│ ○ pipecat#2860  Sim scenarios     │   3. Nit: unused import in frames.py              │
-│ ○ whisker#115   Layout tweak      │                                                   │
-│                                   │ ┌ Pending action ──────────────────────────────┐  │
-│ DONE (1)                          │ │ Post 3 comments + request changes?           │  │
-│ ✓ pipecat#2833  Frame cleanup     │ │            [a] approve   [x] dismiss         │  │
+│ REVIEWING (1)                     │   ⎿ Read(src/pipecat/bus/bus.py)                  │
+│ ● #2850  TTS context         ⟳    │   ⎿ Bash(uv run pytest tests/bus) · 48 passed     │
+│                                   │                                                   │
+│ NOT REVIEWED (3)                  │ ⏺ Clean refactor, tests pass. Concerns:           │
+│ ○ #2855  Evals report             │   1. Race in bus.subscribe() on shutdown          │
+│ ○ #2860  Sim scenarios            │   2. Missing docstring on publish()               │
+│ ○ #2861  Docs typo                │   3. Nit: unused import in frames.py              │
+│                                   │                                                   │
+│ DONE (1)                          │ ┌ Pending action ──────────────────────────────┐  │
+│ ✓ #2833  Frame cleanup            │ │ Post 3 comments + request changes?           │  │
+│                                   │ │            [a] approve   [x] dismiss         │  │
 │                                   │ └──────────────────────────────────────────────┘  │
 │                                   │                                                   │
 │                                   │ ╭──────────────────────────────────────────────╮  │
 │                                   │ │ > is the race reachable from user code?      │  │
 │                                   │ ╰──────────────────────────────────────────────╯  │
 ├───────────────────────────────────┴───────────────────────────────────────────────────┤
-│ space mark · r review · enter open · a approve · x dismiss · w recap · o claude · 🎙   │
+│ space mark · r review · enter open · a approve · x dismiss · esc repos · ctrl+p · 🎙   │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Left pane**: PRs grouped by state, "Needs you" first.
+- **Header**: where you are (`Purr › 1 pipecat-ai/pipecat`) and the latest alert from other repos.
+- **Left pane**: the repo's PRs grouped by state, "Needs you" first.
 - **Right pane**: the selected PR's session, Claude Code style (see PR session): a status line, the transcript, the pending action box, and the prompt.
 - **Status bar**: key hints and mic state.
 
-Keys (letter keys act on the list; while the prompt has focus, typing goes to the agent, as in Claude Code):
+### Alerts from other repos
+
+When something notable happens in a repo you're not looking at, the header shows it on every screen (`🔔 1 · whisker#112 needs you`) and that repo gets a ● in the repo list. "Notable" is the same filter the recap uses: a review finished or failed, an agent got blocked, a PR was assigned to you, a pending action appeared. Review progress doesn't count.
+
+- `ctrl+n` jumps straight to the newest alert; pressing it again goes through the rest.
+- An alert clears once you've looked at that PR.
+- Events in the repo you're in just update its list in place.
+
+### Moving around
+
+Global keys work everywhere, even while typing in a PR prompt:
+- `ctrl+p` quick switcher: fuzzy search over repos and PRs (number, title, author), most recent first. Built on Textual's command palette.
+- `ctrl+o` back to where you were before the last jump (repo and PR); press it again to return, like `cd -`.
+- `ctrl+n` jump to the newest alert from another repo.
+- push-to-talk key (hold) for voice.
+
+List keys (letters and numbers act on lists; while a prompt has focus, typing goes to the agent, as in Claude Code):
+- `0` repo list, `1`–`9` repo by number
+- `enter` open a repo, or a PR's session with its prompt focused
+- `esc` up one level: PR prompt → PR list → repo list
 - `space` mark/unmark PR
 - `r` start review on marked PRs (or the selected one)
-- `enter` open the PR session and focus its prompt; `esc` back to the list
-- `z` zoom the PR session to full screen
 - `a` approve pending action, `x` dismiss
-- `w` open the latest "while you were away" recap
+- `z` zoom the PR session to full screen
 - `o` open the PR's session in Claude Code
+- `w` open the latest "while you were away" recap
 - `/` filter
-- push-to-talk key (hold) for voice
+
+### Fast by default
+
+- Nothing on screen waits on the network or an agent. Every screen draws from local state, so switching repos or PRs takes effect on the next frame (target: well under 50 ms).
+- That state is kept in memory, loaded from SQLite at startup and kept current by bus events.
+- Startup: the UI is usable in under a second, drawn from the last saved state. The first GitHub poll, resuming interrupted reviews and loading the voice models all happen in the background after that.
+- PR transcripts load on first open, newest messages first, and stay cached.
+- Slow work (a poll, an agent turn) shows progress in place, and keys keep working meanwhile.
 
 ## Voice
 
@@ -242,6 +296,7 @@ Keys (letter keys act on the list; while the prompt has focus, typing goes to th
 - Risky actions (merge, posting comments) require clear confirmation by voice too.
 - "What did I miss?" reads the latest recap's headline, then goes through the items on request.
 - It can answer the agent's permission prompts ("yes, let it run the tests").
+- Navigation works by voice too: "go to whisker", "open the message bus PR", "go back".
 
 ## Suggested build order
 
@@ -249,7 +304,7 @@ Keys (letter keys act on the list; while the prompt has focus, typing goes to th
 2. GitHub poller: watched repos from the config file, the pool (unassigned open PRs) plus PRs assigned to you in any repo, PR list in SQLite, activity log.
 3. Review worker: Purr-managed clone and worktree, Agent SDK session with the GitHub guardrails, store session ID, summary, findings, pending actions, stream `session.message` events.
 4. Pending action execution (post comments / review verdict / merge) gated on approval.
-5. Textual TUI: list, Claude Code-style PR session (transcript, prompt, permission prompts, zoom), keys, live updates from bus events.
+5. Textual TUI: repo list, repo screen, Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher and jump keys, live updates from bus events.
 6. "Start from app" also assigns you on GitHub.
 7. While you were away: activity tracking, recap agent, recap panel.
 8. Open a PR's session in Claude Code (`o`).
