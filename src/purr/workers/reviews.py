@@ -28,6 +28,7 @@ from purr.messages import (
     ReviewProgress,
     ReviewStarted,
     SessionMessage,
+    Synced,
 )
 from purr.models import (
     PR,
@@ -62,7 +63,9 @@ class ReviewWorker(BaseWorker):
     - ``review.start {pr}`` starts a review and responds right away with
       ``{"review_id": ...}`` (or ``{"error": ...}``); progress comes as events.
     - ``review.message {pr, text}`` sends a follow-up into the PR's session.
-    - PRs assigned to you are reviewed automatically (when ``auto_review``).
+    - PRs assigned to you are reviewed automatically (when ``auto_review``): as
+      a poll reports them, and after every poll for any assigned PR that was
+      never reviewed, which on startup covers those from before.
     - On startup, reviews interrupted by the last shutdown are resumed.
     - When a reviewed PR assigned to you gets new commits, its session is asked
       to re-review what changed (when ``auto_review``).
@@ -143,14 +146,25 @@ class ReviewWorker(BaseWorker):
             if pr.ref not in self._running:
                 logger.info(f"Resuming the review of {pr.ref}")
                 self._launch(pr, review, prompt=RESUME_PROMPT, resume=True)
-        if self._auto_review:
-            for pr in await self._store.list_prs(state=PRState.NOT_REVIEWED, open_only=True):
-                if pr.assigned_to_me:
-                    await self._try_start(pr.ref)
+
+    async def _review_assigned(self) -> None:
+        """Start reviews of the open PRs assigned to you that were never reviewed.
+
+        Runs after each poll rather than on startup, so it goes by what's on
+        GitHub now, not by what the store remembers from the last run.
+        """
+        for pr in await self._store.list_prs(state=PRState.NOT_REVIEWED, open_only=True):
+            if pr.assigned_to_me and pr.ref not in self._running:
+                await self._try_start(pr.ref)
 
     async def on_bus_message(self, message: BusMessage) -> None:
         await super().on_bus_message(message)
-        if not (self._auto_review and isinstance(message, PRChanged)):
+        if not self._auto_review:
+            return
+        if isinstance(message, Synced):
+            await self._review_assigned()
+            return
+        if not isinstance(message, PRChanged):
             return
         if message.change == PRChange.ASSIGNED:
             pr = await self._store.get_pr(PRRef.parse(message.pr))

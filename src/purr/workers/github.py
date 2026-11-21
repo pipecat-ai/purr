@@ -24,6 +24,7 @@ from purr.messages import (
     ActionResolved,
     PRChanged,
     PRListUpdated,
+    Synced,
 )
 from purr.models import ActionStatus, PRRef, PRState, Repo, parse_repo_name
 from purr.store import Store
@@ -151,6 +152,7 @@ class GitHubWorker(BaseWorker):
             )
         if not plan.empty:
             await self.send_bus_message(PRListUpdated(source=self.name))
+        await self.send_bus_message(Synced(source=self.name))
         return plan
 
     def _needs_full_sync(self, repo: Repo) -> bool:

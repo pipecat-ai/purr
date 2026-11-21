@@ -24,6 +24,7 @@ from purr.messages import (
     ReviewFinished,
     ReviewStarted,
     SessionMessage,
+    Synced,
 )
 from purr.models import PR, ActionStatus, PRRef, PRState, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
@@ -166,12 +167,21 @@ async def test_prs_assigned_to_you_are_reviewed_automatically(make):
     await eventually(lambda: s.client.of(ReviewFinished))
 
 
-async def test_already_assigned_prs_are_reviewed_on_startup(make):
+async def test_already_assigned_prs_are_reviewed_once_synced(make):
     async def seed(store, agent):
         await store.upsert_pr(make_pr(assigned_to_me=True))
 
     s = await make(before_start=seed)
+    # Not from what the store remembers: the PR may have closed meanwhile.
+    await asyncio.sleep(0.1)
+    assert s.agent.runs == []
+    # Once a poll has brought the store up to date, it's reviewed.
+    await s.client.send_bus_message(Synced(source="github"))
     await eventually(lambda: s.client.of(ReviewFinished))
+    # Later polls don't review it again.
+    await s.client.send_bus_message(Synced(source="github"))
+    await asyncio.sleep(0.1)
+    assert len(s.agent.runs) == 1
 
 
 async def test_no_auto_review_when_turned_off(make):
@@ -179,6 +189,7 @@ async def test_no_auto_review_when_turned_off(make):
         await store.upsert_pr(make_pr(assigned_to_me=True))
 
     s = await make(before_start=seed, auto_review=False)
+    await s.client.send_bus_message(Synced(source="github"))
     await asyncio.sleep(0.1)
     assert s.agent.runs == []
 

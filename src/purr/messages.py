@@ -74,6 +74,14 @@ class PRListUpdated(PurrEvent):
 
 
 @dataclass(kw_only=True)
+class Synced(PurrEvent):
+    """A poll finished: the store matches GitHub (as of now)."""
+
+    kind: ClassVar[str] = "github.synced"
+    recorded: ClassVar[bool] = False
+
+
+@dataclass(kw_only=True)
 class PRChanged(PurrEvent):
     """The poller noticed something about a PR (see :class:`purr.models.PRChange`)."""
 

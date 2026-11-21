@@ -9,7 +9,15 @@ from pipecat.pipeline.job_context import JobParams
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
-from purr.messages import GITHUB_WORKER, REPO_ADD, REPO_REMOVE, PRChanged, PRListUpdated, PurrEvent
+from purr.messages import (
+    GITHUB_WORKER,
+    REPO_ADD,
+    REPO_REMOVE,
+    PRChanged,
+    PRListUpdated,
+    PurrEvent,
+    Synced,
+)
 from purr.models import PRChange, PRRef
 from purr.store import Store
 from purr.workers import ActivityWorker, GitHubWorker
@@ -90,6 +98,8 @@ async def test_add_poll_and_remove_a_repo(setup):
     event = await client.next_event(PRChanged)
     assert (event.pr, event.change) == ("pipecat-ai/pipecat#2", PRChange.POOLED)
     await client.next_event(PRListUpdated)
+    # Every poll ends saying so (reviews of PRs assigned to you wait for it).
+    await client.next_event(Synced)
 
     async def recorded():
         return len(await store.activity(pr=PRRef("pipecat-ai/pipecat", 2))) == 1
