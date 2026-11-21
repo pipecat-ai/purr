@@ -82,7 +82,7 @@ Two things keep this cheap:
   3. The files those diffs touch, in one more fetch: their blob ids come from the trees (`git diff --raw`, no contents needed), and only missing ones are requested.
 
   Nothing new, no network (bases are refetched every 10 minutes regardless). The diff is then `git diff <base>...<head>` in the clone, the same as GitHub's, with no 300-file or 20,000-line limit. Measured on pipecat from scratch: the clone and first sync of 337 open PRs took 19 s in the background, the clone is 31 MB, and a diff over the bus takes 7 ms on average (23 ms for a 3,000-line one). A PR the clone doesn't have yet (a push since the last sync, a repo still cloning) gets its diff from GitHub instead.
-  No worktree is needed for this; worktrees are for reviews, where the agent needs the files.
+- **A worktree only once a review starts.** Diffs don't need one. Starting a review (`r`, or auto-review) makes the PR's worktree, where the agent, and you through the PR session or `c`, can run the code and change it. It's made from what the sync already brought, so there's no fetch unless the PR moved since. Measured on pipecat: the first worktree takes 3 s (the clone downloads the rest of the repo's files once, ending at 61 MB), the next ones 1.4 s and 0.2 s.
 
 ## PR states
 

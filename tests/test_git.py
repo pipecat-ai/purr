@@ -206,3 +206,13 @@ async def test_open_prs_are_synced_and_diffed_locally(tmp_path, upstream):
     # Closed: its ref goes.
     await repos.sync("a/b", [])
     assert await repos.diff(moved) is None
+
+
+async def test_reviews_start_from_what_the_sync_brought(tmp_path, upstream):
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    head = git(upstream, "rev-parse", "refs/pull/7/head")
+    await repos.sync("a/b", [open_pr(7, head)])
+    # GitHub is unreachable, and the worktree still gets made: no fetch needed.
+    upstream.rename(tmp_path / "gone")
+    path = await repos.checkout(PRRef("a/b", 7), head)
+    assert (path / "a.txt").read_text() == "two\n"

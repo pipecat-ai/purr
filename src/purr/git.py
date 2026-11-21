@@ -107,15 +107,17 @@ class GitRepos:
         # Git commands on one clone mustn't overlap (index and ref locks).
         async with self._locks.setdefault(ref.repo, asyncio.Lock()):
             clone = await self._clone(ref.repo)
-            # The PR's head, and the default branch (where trusted guidelines live).
-            await self._git(
-                clone,
-                "fetch",
-                "--quiet",
-                "origin",
-                f"+refs/pull/{ref.number}/head:refs/purr/pull/{ref.number}",
-                f"+HEAD:{BASE_REF}",
-            )
+            # The PR's head, and the default branch (where trusted guidelines
+            # live): usually here already, from the last sync.
+            if not await self._synced(clone, ref, head_sha):
+                await self._git(
+                    clone,
+                    "fetch",
+                    "--quiet",
+                    "origin",
+                    f"+refs/pull/{ref.number}/head:{PR_REFS}/{ref.number}",
+                    f"+HEAD:{BASE_REF}",
+                )
             path = self.worktree_path(ref)
             if (path / ".git").exists():
                 await self._git(path, "checkout", "--quiet", "--detach", "--force", head_sha)
@@ -128,6 +130,12 @@ class GitRepos:
                     clone, "worktree", "add", "--quiet", "--detach", str(path), head_sha
                 )
             return path
+
+    async def _synced(self, clone: Path, ref: PRRef, head_sha: str) -> bool:
+        """Whether the clone has the PR at ``head_sha`` and a recent default branch."""
+        if time.monotonic() - self._bases_fetched.get(ref.repo, -BASE_REFRESH) >= BASE_REFRESH:
+            return False
+        return (await self._pr_heads(clone)).get(ref.number) == head_sha
 
     async def _clone(self, repo: str) -> Path:
         """The repo's clone, made if needed. Call with the repo's lock held."""
