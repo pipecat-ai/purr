@@ -19,6 +19,7 @@ from purr.messages import (
     GITHUB_WORKER,
     PR_ASSIGN,
     PR_DETAILS,
+    PR_SEEN,
     REPO_ADD,
     REPO_REMOVE,
     ActionResolved,
@@ -203,6 +204,16 @@ class GitHubWorker(BaseWorker):
         await self.send_bus_message(PRListUpdated(source=self.name))
 
     # -- Writes the user asked for -------------------------------------------------
+
+    @job(name=PR_SEEN)
+    async def on_pr_seen(self, message: BusJobRequestMessage) -> None:
+        try:
+            ref = PRRef.parse(str((message.payload or {}).get("pr")))
+        except ValueError as e:
+            await self._reject(message, str(e))
+            return
+        await self._store.mark_seen(ref)
+        await self.send_job_response(message.job_id, {"ok": True})
 
     @job(name=PR_ASSIGN)
     async def on_pr_assign(self, message: BusJobRequestMessage) -> None:

@@ -220,6 +220,7 @@ Events (broadcast, everyone listens):
 
 - `session.answer {request_id, allow}` (reviews worker): answers an agent's permission request. ("Always for this PR" isn't there yet; it's allow once or deny.)
 - `pr.assign {pr}` (GitHub worker): assigns you, when you start a review on a pool PR with `r`.
+- `pr.seen {pr}` (GitHub worker): you looked at a PR that had news; stores when, so it isn't news after a restart.
 - `pr.details {prs}` (GitHub worker): description, base and head branches, +/- lines, files, labels, review decision and CI state of some PRs, batched 20 to a request.
 - `pr.diff {pr}` (git worker): the PR's unified diff, from Purr's clone, or from GitHub if the clone doesn't have the PR's head yet.
 
@@ -230,13 +231,12 @@ Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the
 ## SQLite store
 
 - `repos`: name (`owner/name`), added_at, synced_at (first complete poll; until then its pool isn't reported as new). The watched repos, managed from the UI.
-- `prs`: repo, number, title, author, url, head sha, state, gh_state (open/closed/merged), assigned_to_me, assignees, created_at, updated_at, last_seen_at (when you last looked at it; clears its alerts). Descriptions and files aren't stored; the UI caches them in memory.
+- `prs`: repo, number, title, author, url, head sha, state, gh_state (open/closed/merged), assigned_to_me, assignees, created_at, updated_at, base, seen_at (when you last looked at it; what happened before isn't news). Descriptions and files aren't stored; the UI caches them in memory.
 - `reviews`: pr, session_id, worktree path, status, summary, started_at, finished_at
 - `findings`: review, file, line, severity, text
 - `pending_actions`: pr, action_id, kind (comment/request_changes/approve/merge), payload, status
 - `prompts`: at, repo, number, text. What you asked PR agents, for the prompt's history (`↑`/`↓`, `ctrl+r`).
 - `activity`: at, pr (optional), kind, data. Every recorded Purr event; feeds the recaps and each PR's timeline.
-- (`recaps` and `meta` exist as described; `prs.last_seen_at` doesn't yet, so alerts are in memory.)
 - `recaps`: since, until, headline, items, created_at
 - `meta`: key/value, e.g. `last_active_at`
 
@@ -330,11 +330,12 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 
 ### Alerts from other repos
 
-When something notable happens in a repo you're not looking at, the header shows it on every screen (`🔔 1 · whisker#112 needs you`) and that repo gets a ● in the repo list. "Notable" is the same filter the recap uses: a review finished or failed, an agent got blocked, a PR was assigned to you, a pending action appeared. Review progress doesn't count.
+News is something you'd want to know that happened since you last looked at a PR: it was assigned to you, its review finished or failed, or its agent needs your OK. Review progress doesn't count.
 
-- `ctrl+n` jumps straight to the newest alert; pressing it again goes through the rest.
-- An alert clears once you've looked at that PR.
-- Events in the repo you're in just update its list in place.
+- **The top bar says one short thing about other repos**, on every screen, so you know to go and look: the latest news there if there's any (`🔔 2 · whisker#112 review done  (ctrl+n)`), otherwise how many PRs need you there (`⚠ 3 need you in other repos  (0)`). `0` goes to the repo list, which says where: a ● after each repo with news, and its NEEDS YOU count.
+- **In a repo, PRs with news have their title in bold**, like unread mail, until you look at them. News about the PR you're looking at isn't news.
+- `ctrl+n` jumps to the newest news in another repo (or in this one if there's none elsewhere); pressing it again goes through the rest.
+- **It survives restarts.** Looking at a PR stores when (`prs.seen_at`, through a `pr.seen` job), and on startup the news comes from the activity log: what happened to open PRs since you last looked at them.
 
 ### Moving around
 
@@ -388,7 +389,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 3. TUI shell: repo list (add/remove repos), repo screen with the PR list, navigation keys, live updates from bus events. Comes early because repos are only added from the UI, and it makes the poller visible. (Done. Measured with pipecat's 331 PRs: UI up with data in 0.5 s, opening the repo 35 ms, back home 16 ms, reopening 7 ms.)
 4. Review worker: Purr-managed clone and worktree, Agent SDK session with the GitHub guardrails, store session ID, summary, findings, pending actions, stream `session.message` events. (Done, except interactive permission prompts, which come with the PR session UI.)
 5. Pending action execution (post comments / review verdict / merge) gated on approval. (Done for reviews: approve / request changes / comment. Merging isn't proposed yet. Tested against a fake GitHub; not yet run against a real PR.)
-6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher. (Done. Transcripts come from the SDK's session file plus live `session.message` events. Alerts live in memory for now: `prs.last_seen_at` isn't stored yet, so they don't survive a restart.)
+6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher. (Done. Transcripts come from the SDK's session file plus live `session.message` events. Alerts survive restarts: `prs.seen_at` plus the activity log.)
 7. "Start from app" also assigns you on GitHub. (Done: `r` on a pool PR starts the review and assigns you.)
 8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`recap.create {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
 9. Open a PR's session in Claude Code (`c`). (Done. `claude --resume` keeps the session ID; `--fork-session` is what would make a new one. It runs with `--setting-sources user`, GitHub writes disallowed, and a note that Purr's own tools aren't available there. Purr keeps running underneath, and reloads the transcript afterwards.)

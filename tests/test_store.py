@@ -276,3 +276,22 @@ async def test_prompt_history(store):
     await store.add_prompt(a, "and the docs?")
     assert await store.prompts(a) == [(a, "and the docs?"), (a, "is it safe?")]
     assert [text for _, text in await store.prompts()] == ["and the docs?", "tests?", "is it safe?"]
+
+
+async def test_whats_new_since_you_looked(store):
+    one, two, three = (PRRef("pipecat-ai/pipecat", n) for n in (1, 2, 3))
+    for ref in (one, two, three):
+        await store.upsert_pr(make_pr(ref.number))
+    await store.record_activity("review.finished", pr=one, data={"summary": "ok"})
+    await store.record_activity("pr.changed", pr=two, data={"change": "pooled"})  # not news
+    await store.record_activity("pr.changed", pr=two, data={"change": "assigned"})
+    await store.record_activity("review.started", pr=three)  # not news either
+    await store.record_activity("session.permission_request", pr=one, data={"tool": "Bash"})
+    # One per PR, at its latest news; the oldest news first.
+    assert await store.unseen() == [(two, "assigned to you"), (one, "needs your OK")]
+
+    await store.mark_seen(one)
+    assert await store.unseen() == [(two, "assigned to you")]
+    # Closed PRs aren't news.
+    await store.apply_sync(gh_states={two: GHState.CLOSED})
+    assert await store.unseen() == []

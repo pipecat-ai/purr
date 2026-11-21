@@ -81,7 +81,10 @@ class PurrApp(App):
         self.data_version = 0  # bumped whenever the store's data changes
         self.sessions: dict[str, SessionState] = {}  # per PR, see SessionState
         self.details = DetailsCache()  # PR descriptions, files and CI
-        self.alerts: dict[str, str] = {}  # PR -> what happened, newest last
+        # PR -> what happened since you last looked at it, newest last (from
+        # the store on startup, then live).
+        self.alerts: dict[str, str] = {}
+        self._needs_you: dict[str, int] = {}  # repo -> PRs needing you there
         self._reload_scheduled = False
         self._stopping = False
         self._last_active: datetime | None = None  # last key or voice turn
@@ -92,8 +95,11 @@ class PurrApp(App):
         # When the user was last around, including in an earlier run.
         if last := await self.purr.store.get_meta(LAST_ACTIVE):
             self._last_active = datetime.fromisoformat(last)
+        # What's happened since you last looked, including before this run.
+        self.alerts = {str(ref): what for ref, what in await self.purr.store.unseen()}
         await self.push_screen(self.main)
         await self.main.show_home()
+        await self._count_needs_you()
         if self._cwd:
             self.run_worker(self._open_checkout_repo(self._cwd))
 
@@ -175,6 +181,7 @@ class PurrApp(App):
             self._previous = self.location
         self.location = name
         await self.main.show_repo(name)
+        self.main.set_alert(self._alert_text())
 
     async def go_home(self, *, remember: bool = True) -> None:
         if self.location is None:
@@ -183,6 +190,7 @@ class PurrApp(App):
             self._previous = self.location
         self.location = None
         await self.main.show_home()
+        self.main.set_alert(self._alert_text())
 
     async def action_home(self) -> None:
         if not self._modal_open():
@@ -198,34 +206,52 @@ class PurrApp(App):
         await self.open_repo(ref.repo)
 
     async def action_next_alert(self) -> None:
+        """The newest news, from another repo if there's any."""
         if self._modal_open() or not self.alerts:
             return
-        pr = next(reversed(self.alerts))
+        elsewhere = self._alerts_elsewhere()
+        pr = elsewhere[-1] if elsewhere else next(reversed(self.alerts))
         await self.goto_pr(PRRef.parse(pr))
 
     def seen(self, pr: str) -> None:
-        """The user is looking at a PR: its alert is done."""
+        """The user is looking at a PR: what happened there isn't news anymore."""
         if self.alerts.pop(pr, None) is not None:
+            self.run_worker(self.bus.seen(PRRef.parse(pr)), group="seen")
             self._alerts_changed()
 
     def _alert(self, pr: str, text: str) -> None:
-        if PRRef.parse(pr).repo == self.location:
-            return  # it's on screen already
+        shown = self.main.repo.session.pr if self.main.is_mounted else None
+        if self.location and shown and str(shown.ref) == pr:
+            self.run_worker(self.bus.seen(PRRef.parse(pr)), group="seen")
+            return  # you're looking at it
         self.alerts.pop(pr, None)
         self.alerts[pr] = text
         self._alerts_changed()
 
     def _alerts_changed(self) -> None:
         self.main.set_alert(self._alert_text())
-        if self.location is None:
-            self.data_version += 1  # the repo list's ● markers
-            self.run_worker(self._reload())
+        # The repo list's ● markers, the PR list's bold titles.
+        self.data_version += 1
+        self.run_worker(self._reload())
+
+    def _alerts_elsewhere(self) -> list[str]:
+        return [pr for pr in self.alerts if PRRef.parse(pr).repo != self.location]
 
     def _alert_text(self) -> str:
-        if not self.alerts:
-            return ""
-        pr, text = next(reversed(self.alerts.items()))
-        return f"🔔 {len(self.alerts)} · {short_name(PRRef.parse(pr))} {text}  (ctrl+n)"
+        """One thing about other repos, so you know to go and look: news first."""
+        if elsewhere := self._alerts_elsewhere():
+            pr = elsewhere[-1]
+            what = self.alerts[pr]
+            return f"🔔 {len(elsewhere)} · {short_name(PRRef.parse(pr))} {what}  (ctrl+n)"
+        if self.location is None:
+            return ""  # the repo list shows what needs you
+        needs = sum(n for repo, n in self._needs_you.items() if repo != self.location)
+        return f"⚠ {needs} need{'s' if needs == 1 else ''} you in other repos  (0)" if needs else ""
+
+    async def _count_needs_you(self) -> None:
+        summaries = await self.purr.store.repo_summaries()
+        self._needs_you = {summary.name: summary.needs_you for summary in summaries}
+        self.main.set_alert(self._alert_text())
 
     async def action_back(self) -> None:
         if self._modal_open() or self._previous is _NOWHERE:
@@ -284,6 +310,7 @@ class PurrApp(App):
     async def _reload(self) -> None:
         self._reload_scheduled = False
         await self.main.current.reload()
+        await self._count_needs_you()
 
     # -- Shutdown -------------------------------------------------------------------
 

@@ -15,6 +15,7 @@ from purr.messages import (
     PR_ASSIGN,
     PR_DETAILS,
     PR_DIFF,
+    PR_SEEN,
     RECAP_CREATE,
     RECAP_WORKER,
     REPO_ADD,
@@ -70,6 +71,10 @@ class UIWorker(BaseWorker):
 
     async def assign(self, pr: PRRef) -> None:
         await self._job(GITHUB_WORKER, PR_ASSIGN, {"pr": str(pr)})
+
+    async def seen(self, pr: PRRef) -> None:
+        """You looked at the PR (what happened so far isn't news anymore)."""
+        await self._job(GITHUB_WORKER, PR_SEEN, {"pr": str(pr)})
 
     async def details(self, prs: list[PRRef]) -> dict[str, PRDetails]:
         """Description, files and CI of these PRs, keyed by ``owner/repo#123``."""

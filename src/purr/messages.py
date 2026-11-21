@@ -38,6 +38,7 @@ REPO_REMOVE = "repo.remove"  # payload: {"repo": "owner/name"} -> {"repo": "owne
 ACTION_APPROVE = "action.approve"
 ACTION_DISMISS = "action.dismiss"  # payload: {"action_id": "..."} -> {"ok": true}
 PR_ASSIGN = "pr.assign"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: assigns you
+PR_SEEN = "pr.seen"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: you looked at it
 # Description, files and CI of some PRs, read from GitHub (see purr.models.PRDetails):
 # payload: {"prs": ["owner/repo#123", ...]} -> {"details": {"owner/repo#123": {...}}}
 PR_DETAILS = "pr.details"

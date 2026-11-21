@@ -369,7 +369,8 @@ class RepoView(PurrView):
         return _row(
             Text("▪", style="bold magenta") if marked else _ICONS[group(pr)],
             Text(f"#{pr.number}", style=NUMBER_STYLE),
-            pr.title,
+            # Something happened since you last looked: like unread mail.
+            Text(pr.title, style="bold" if str(pr.ref) in self.purr_app.alerts else ""),
             _assignees(pr),
             Text(pr.author, style="dim"),
             Text(short_age(pr.created_at), style="dim"),

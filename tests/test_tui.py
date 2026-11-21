@@ -8,6 +8,7 @@ from textual.widgets import Input, OptionList
 
 from purr.app import Purr
 from purr.config import Config
+from purr.store import Store
 from purr.tui import PurrApp
 from purr.tui.prompt import HistorySearchScreen
 from purr.tui.screens import AddRepoScreen, ConfirmScreen, MainScreen
@@ -285,6 +286,13 @@ async def test_alerts_and_the_switcher(tmp_path):
         await until(pilot, lambda: not app.alerts)
         assert "🔔" not in str(alert.render())
 
+        # Seen is remembered (the next run won't show it as news).
+        async def seen_stored() -> bool:
+            return await app.purr.store.unseen() == []
+
+        while not await seen_stored():
+            await pilot.pause(0.02)
+
         # ctrl+p finds a PR by its title and jumps to it.
         await pilot.press("ctrl+p")
         await pilot.press(*"message bus")
@@ -292,6 +300,46 @@ async def test_alerts_and_the_switcher(tmp_path):
         await pilot.press("enter")
         await until(pilot, lambda: in_repo(app, "pipecat-ai/pipecat"))
         await until(pilot, lambda: getattr(app.main.repo.selected_pr(), "number", None) == 1)
+
+        # No news elsewhere, but daily-x#7 still needs you: a short signal, and
+        # 0 goes to the repo list, which says where.
+        await until(pilot, lambda: "⚠ 1 needs you in other repos" in str(alert.render()))
+        await pilot.press("0")
+        await until(pilot, lambda: home(app))
+        assert str(alert.render()) == ""
+
+
+async def test_news_survives_a_restart_and_shows_in_bold(tmp_path):
+    from purr.models import PRRef
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2, title="Docs")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+    # Something happens to #1 while Purr isn't running.
+    store = await Store.open(tmp_path / "data" / "purr.db")
+    await store.record_activity("review.finished", pr=PRRef("pipecat-ai/pipecat", 1))
+    await store.close()
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2, title="Docs")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await until(pilot, lambda: "pipecat-ai/pipecat#1" in app.alerts)
+        assert "pipecat#1 review done" in str(app.main.query_one("#alert").render())
+        # In the repo, #2 (the newest) is selected; #1 is bold until you look at it.
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+
+        def bold(title: str) -> bool:
+            repo = app.main.repo
+            pr = next(pr for pr in repo._prs.values() if pr.title == title)
+            return "bold" in str(repo._prompt(pr).columns[4]._cells[0].style)
+
+        assert bold("Message bus") and not bold("Docs")
+        await pilot.press("n")
+        await until(pilot, lambda: not bold("Message bus"))
+        assert "pipecat-ai/pipecat#1" not in app.alerts
 
 
 async def test_coming_back_shows_a_recap(tmp_path):

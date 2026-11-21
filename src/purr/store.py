@@ -182,7 +182,24 @@ MIGRATIONS: list[str] = [
     CREATE INDEX messages_by_pr ON messages (repo, number);
     CREATE INDEX messages_by_run ON messages (run_id);
     """,
+    # When you last looked at each PR, so what's new since survives restarts.
+    # Everything counts as seen as of the upgrade, not as years of news.
+    """
+    ALTER TABLE prs ADD COLUMN seen_at TEXT;
+    UPDATE prs SET seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+    """,
 ]
+
+# Activity that's news to you, and how the UI says it (see Store.unseen).
+_NEWS = """
+    CASE
+        WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'assigned'
+            THEN 'assigned to you'
+        WHEN a.kind = 'review.finished' THEN 'review done'
+        WHEN a.kind = 'review.failed' THEN 'review failed'
+        WHEN a.kind = 'session.permission_request' THEN 'needs your OK'
+    END
+"""
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
 _STATE_ORDER = """
@@ -666,6 +683,40 @@ class Store:
             (pr.repo, pr.number),
         )
         return [{**dict(row), "data": json.loads(row["data"])} for row in rows]
+
+    # -- What's new for you ------------------------------------------------------
+
+    async def mark_seen(self, pr: PRRef) -> None:
+        """You looked at the PR: what happened until now isn't news anymore."""
+        await self._db.execute(
+            "UPDATE prs SET seen_at = ? WHERE repo = ? AND number = ?",
+            (_now_ms(), pr.repo, pr.number),
+        )
+        await self._db.commit()
+
+    async def unseen(self) -> list[tuple[PRRef, str]]:
+        """Open PRs where something you'd want to know happened since you last looked.
+
+        One per PR, its latest news ("review done", ...), oldest first.
+        """
+        rows = await self._fetchall(
+            f"""
+            SELECT repo, number, what FROM (
+                SELECT a.id, a.repo, a.number, a.at, p.seen_at, {_NEWS} AS what
+                FROM activity a JOIN prs p ON p.repo = a.repo AND p.number = a.number
+                WHERE p.gh_state = 'open'
+            )
+            WHERE what IS NOT NULL
+              AND (seen_at IS NULL OR julianday(at) > julianday(seen_at))
+            ORDER BY id
+            """
+        )
+        news: dict[PRRef, str] = {}
+        for row in rows:
+            ref = PRRef(row["repo"], row["number"])
+            news.pop(ref, None)  # keep each PR at its latest news
+            news[ref] = row["what"]
+        return list(news.items())
 
     # -- Prompt history --------------------------------------------------------
 
