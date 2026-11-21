@@ -393,3 +393,69 @@ async def test_reviews_wait_in_line_but_your_messages_dont(make):
     s.agent.gate.set()
     await eventually(lambda: second in [r["pr"] for r in s.agent.runs])
     await eventually(lambda: any(e.pr == str(second) for e in s.client.of(ReviewFinished)))
+
+
+async def test_conversations_are_recorded_with_times(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    s.agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
+
+    async def answer_when_asked():
+        await eventually(lambda: s.client.of(PermissionRequest))
+        request = s.client.of(PermissionRequest)[0]
+        await s.client.request(PERMISSION_ANSWER, {"request_id": request.request_id, "allow": True})
+
+    await asyncio.gather(s.client.request(REVIEW_START, {"pr": str(REF)}), answer_when_asked())
+    await eventually(lambda: s.client.of(ReviewFinished))
+    s.agent.ask = None
+    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "is it safe?"})
+    await eventually(lambda: s.agent.runs[-1]["prompt"] == "is it safe?")
+
+    async def two_runs_done():
+        runs = await s.store.runs(REF)
+        return len(runs) == 2 and all(r["status"] == "finished" for r in runs)
+
+    await eventually(two_runs_done)
+    review, message = await s.store.runs(REF)
+    assert (review["kind"], message["kind"]) == ("review", "message")
+    assert review["session_id"] and review["session_id"] == message["session_id"]
+    assert review["queued_at"] <= review["started_at"] <= review["finished_at"]
+    assert (review["model"], review["cost_usd"], review["turns"]) == ("claude-opus-5-5", 0.25, 4)
+    assert (review["input_tokens"], review["output_tokens"], review["cache_read_tokens"]) == (
+        10,
+        20,
+        300,
+    )
+
+    messages = await s.store.messages(REF)
+    timeline = [(m["run_id"], m["kind"], m["author"]) for m in messages]
+    assert timeline[:4] == [
+        (review["id"], "prompt", "purr"),
+        (review["id"], "permission_request", "agent"),
+        (review["id"], "permission_answer", "you"),
+        (review["id"], "tool_use", "agent"),
+    ]
+    assert (message["id"], "prompt", "you") in timeline
+    assert messages[1]["data"]["description"] == "$ uv run pytest"
+    assert messages[2]["data"] == {"kind": "permission_answer", "allowed": True, "answered": True}
+    assert all(m["at"] for m in messages)
+    assert [m["at"] for m in messages] == sorted(m["at"] for m in messages)
+
+
+async def test_failed_and_interrupted_runs_are_recorded(make):
+    async def seed(store, agent):
+        await store.upsert_pr(make_pr())
+        await store.start_run(REF, kind="review", review_id=None, session_id=None)
+
+    s = await make(before_start=seed)
+    await eventually(lambda: _statuses(s, ["interrupted"]))
+    s.agent.fail_with = "API overloaded"
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: _statuses(s, ["interrupted", "failed"]))
+    failed = (await s.store.runs(REF))[1]
+    assert failed["error"] == "API overloaded"
+    assert (await s.store.messages(REF))[-1]["data"] == {"kind": "error", "text": "API overloaded"}
+
+
+async def _statuses(s, expected: list[str]) -> bool:
+    return [r["status"] for r in await s.store.runs(REF)] == expected

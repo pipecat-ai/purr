@@ -156,7 +156,15 @@ class FakeAgent:
             "Post 1 comment and request changes",
             {"body": "", "comments": [{"path": "bus.py", "line": 42, "body": "Race here"}]},
         )
-        return AgentResult(text="Done.")
+        return AgentResult(
+            text="Done.",
+            cost_usd=0.25,
+            turns=4,
+            duration_ms=1500,
+            api_duration_ms=1200,
+            model="claude-opus-5-5",
+            usage={"input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 300},
+        )
 
 
 class FakeWriter:

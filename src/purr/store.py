@@ -141,6 +141,47 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE prs ADD COLUMN base TEXT NOT NULL DEFAULT '';
     """,
+    # Every PR conversation as it happened, for analysis: each agent run (a
+    # review, a re-review, a resume, one of your messages) and every message in
+    # it. Claude Code's session files stay what sessions resume from. Kept by
+    # repo and number, without foreign keys, like the activity log.
+    """
+    CREATE TABLE runs (
+        id INTEGER PRIMARY KEY,
+        review_id INTEGER,
+        session_id TEXT,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        queued_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        status TEXT NOT NULL,
+        error TEXT,
+        model TEXT,
+        cost_usd REAL,
+        turns INTEGER,
+        duration_ms INTEGER,
+        api_duration_ms INTEGER,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        cache_write_tokens INTEGER
+    );
+    CREATE INDEX runs_by_pr ON runs (repo, number);
+    CREATE TABLE messages (
+        id INTEGER PRIMARY KEY,
+        run_id INTEGER NOT NULL,
+        at TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        author TEXT NOT NULL,
+        data TEXT NOT NULL
+    );
+    CREATE INDEX messages_by_pr ON messages (repo, number);
+    CREATE INDEX messages_by_run ON messages (run_id);
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -156,6 +197,14 @@ _STATE_ORDER = """
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _now_ms() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+# Who wrote each kind of message the agent's stream carries.
+_AUTHORS = {"text": "agent", "thinking": "agent", "tool_use": "agent", "tool_result": "tool"}
 
 
 def _pr(row: aiosqlite.Row) -> PR:
@@ -528,6 +577,95 @@ class Store:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self._fetchall(f"SELECT * FROM activity {where} ORDER BY id", params)
         return [_activity(row) for row in rows]
+
+    # -- Conversations, for analysis ---------------------------------------------
+
+    async def start_run(
+        self, pr: PRRef, *, kind: str, review_id: int | None, session_id: str | None
+    ) -> int:
+        """A run is queued (reviews may wait for a slot); returns its id."""
+        cursor = await self._db.execute(
+            "INSERT INTO runs (review_id, session_id, repo, number, kind, queued_at, status)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'queued')",
+            (review_id, session_id, pr.repo, pr.number, kind, _now_ms()),
+        )
+        await self._db.commit()
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    async def run_started(self, run_id: int) -> None:
+        await self._db.execute(
+            "UPDATE runs SET started_at = ?, status = 'running' WHERE id = ?", (_now_ms(), run_id)
+        )
+        await self._db.commit()
+
+    async def finish_run(
+        self, run_id: int, *, error: str | None = None, result: dict | None = None
+    ) -> None:
+        """A run ended (``error`` if it failed); ``result`` is its ``result`` entry."""
+        result = result or {}
+        usage = result.get("usage") or {}
+        await self._db.execute(
+            "UPDATE runs SET finished_at = ?, status = ?, error = ?, model = ?, cost_usd = ?,"
+            " turns = ?, duration_ms = ?, api_duration_ms = ?, input_tokens = ?,"
+            " output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ? WHERE id = ?",
+            (
+                _now_ms(),
+                "failed" if error else "finished",
+                error,
+                result.get("model"),
+                result.get("cost_usd"),
+                result.get("turns"),
+                result.get("duration_ms"),
+                result.get("api_duration_ms"),
+                usage.get("input_tokens"),
+                usage.get("output_tokens"),
+                usage.get("cache_read_input_tokens"),
+                usage.get("cache_creation_input_tokens"),
+                run_id,
+            ),
+        )
+        await self._db.commit()
+
+    async def interrupt_runs(self) -> None:
+        """Runs cut short by a shutdown (on startup, before anything runs)."""
+        await self._db.execute(
+            "UPDATE runs SET status = 'interrupted' WHERE status IN ('queued', 'running')"
+        )
+        await self._db.commit()
+
+    async def add_message(
+        self, run_id: int, pr: PRRef, entry: dict, *, author: str | None = None
+    ) -> None:
+        """One message of a run: a transcript entry (see purr.review.agent), as it happened."""
+        kind = str(entry.get("kind", "unknown"))
+        await self._db.execute(
+            "INSERT INTO messages (run_id, at, repo, number, kind, author, data)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                _now_ms(),
+                pr.repo,
+                pr.number,
+                kind,
+                author or _AUTHORS.get(kind, "purr"),
+                json.dumps(entry, default=str),
+            ),
+        )
+        await self._db.commit()
+
+    async def runs(self, pr: PRRef) -> list[dict]:
+        rows = await self._fetchall(
+            "SELECT * FROM runs WHERE repo = ? AND number = ? ORDER BY id", (pr.repo, pr.number)
+        )
+        return [dict(row) for row in rows]
+
+    async def messages(self, pr: PRRef) -> list[dict]:
+        rows = await self._fetchall(
+            "SELECT * FROM messages WHERE repo = ? AND number = ? ORDER BY id",
+            (pr.repo, pr.number),
+        )
+        return [{**dict(row), "data": json.loads(row["data"])} for row in rows]
 
     # -- Prompt history --------------------------------------------------------
 

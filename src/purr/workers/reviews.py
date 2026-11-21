@@ -44,6 +44,7 @@ from purr.models import (
 )
 from purr.review.agent import (
     RESUME_PROMPT,
+    AgentResult,
     ReviewAgent,
     ReviewCallbacks,
     describe_tool_use,
@@ -55,6 +56,18 @@ from purr.store import Store
 
 class ReviewError(Exception):
     """A review couldn't be started or didn't complete."""
+
+
+def _metrics(result: AgentResult) -> dict:
+    """A run's numbers, as Store.finish_run takes them."""
+    return {
+        "model": result.model,
+        "cost_usd": result.cost_usd,
+        "turns": result.turns,
+        "duration_ms": result.duration_ms,
+        "api_duration_ms": result.api_duration_ms,
+        "usage": result.usage,
+    }
 
 
 class ReviewWorker(BaseWorker):
@@ -132,6 +145,7 @@ class ReviewWorker(BaseWorker):
         return set(self._running)
 
     async def _startup(self) -> None:
+        await self._store.interrupt_runs()  # cut short by the last shutdown
         # A follow-up cut short (Purr quit mid-turn) leaves its PR "reviewing".
         settled = False
         for pr in await self._store.list_prs(state=PRState.REVIEWING):
@@ -151,7 +165,7 @@ class ReviewWorker(BaseWorker):
                 continue
             if pr.ref not in self._running:
                 logger.info(f"Resuming the review of {pr.ref}")
-                self._launch(pr, review, prompt=RESUME_PROMPT, resume=True)
+                self._launch(pr, review, prompt=RESUME_PROMPT, resume=True, kind="resume")
 
     async def _review_assigned(self) -> None:
         """Start reviews of the open PRs assigned to you that were never reviewed.
@@ -198,7 +212,7 @@ class ReviewWorker(BaseWorker):
             ):
                 return False
             prompt = rereview_prompt(review.head_sha, pr.head_sha)
-            self._launch(pr, review, prompt=prompt, resume=True, followup=True)
+            self._launch(pr, review, prompt=prompt, resume=True, followup=True, kind="rereview")
         await self._progress(ref, "Re-reviewing new commits")
         return True
 
@@ -260,7 +274,7 @@ class ReviewWorker(BaseWorker):
             review = await self._store.latest_review(ref)
             assert review is not None
             await self._store.set_pr_state(ref, PRState.REVIEWING)
-            self._launch(pr, review, prompt=review_prompt(pr), resume=False)
+            self._launch(pr, review, prompt=review_prompt(pr), resume=False, kind="review")
         await self.send_bus_message(ReviewStarted(source=self.name, pr=str(ref)))
         await self.send_bus_message(PRListUpdated(source=self.name))
         return review
@@ -277,7 +291,9 @@ class ReviewWorker(BaseWorker):
             if review is None or pr is None or not review.session_id:
                 raise ReviewError(f"{ref} hasn't been reviewed yet")
             # You're waiting on this one: it doesn't queue behind reviews.
-            self._launch(pr, review, prompt=text, resume=True, followup=True, queued=False)
+            self._launch(
+                pr, review, prompt=text, resume=True, followup=True, queued=False, kind="message"
+            )
 
     def _launch(
         self,
@@ -288,11 +304,17 @@ class ReviewWorker(BaseWorker):
         resume: bool,
         followup: bool = False,
         queued: bool = True,
+        kind: str,
     ):
-        self._running[pr.ref] = self.create_task(
-            self._run(pr, review, prompt=prompt, resume=resume, followup=followup, queued=queued),
-            f"{self}::review::{pr.ref}",
+        """Run the agent on ``pr`` in the background.
+
+        ``kind`` (review, resume, rereview, message) is what the run is
+        recorded as, with every message in it (see Store.start_run).
+        """
+        run = self._run(
+            pr, review, prompt=prompt, resume=resume, followup=followup, queued=queued, kind=kind
         )
+        self._running[pr.ref] = self.create_task(run, f"{self}::review::{pr.ref}")
 
     async def _take_slot(self, ref: PRRef) -> None:
         """Wait for one of the ``max_reviews`` slots, in line behind the others waiting."""
@@ -322,12 +344,24 @@ class ReviewWorker(BaseWorker):
             return None
 
     async def _run(
-        self, pr: PR, review: Review, *, prompt: str, resume: bool, followup: bool, queued: bool
+        self,
+        pr: PR,
+        review: Review,
+        *,
+        prompt: str,
+        resume: bool,
+        followup: bool,
+        queued: bool,
+        kind: str,
     ):
         ref = pr.ref
         submitted: dict = {}
         state_before = pr.state
         slot = False
+        run_id = await self._store.start_run(
+            ref, kind=kind, review_id=review.id, session_id=review.session_id
+        )
+        result: AgentResult | None = None
         try:
             if followup:
                 await self._store.set_pr_state(ref, PRState.REVIEWING)
@@ -335,6 +369,7 @@ class ReviewWorker(BaseWorker):
             if queued:
                 await self._take_slot(ref)
                 slot = True
+            await self._store.run_started(run_id)
             await self._progress(ref, "Checking out the PR")
             worktree = await self._repos.checkout(ref, pr.head_sha)
             assert review.session_id
@@ -342,18 +377,23 @@ class ReviewWorker(BaseWorker):
                 # It never really started: begin again, under the same session ID.
                 resume, prompt = False, review_prompt(pr)
             await self._progress(ref, "Reviewing" if not followup else "Thinking")
+            author = "you" if kind == "message" else "purr"
+            await self._store.add_message(
+                run_id, ref, {"kind": "prompt", "text": prompt}, author=author
+            )
             result = await self._agent.run(
                 pr=pr,
                 worktree=worktree,
                 session_id=review.session_id,
                 resume=resume,
                 prompt=prompt,
-                callbacks=self._callbacks(ref, submitted),
+                callbacks=self._callbacks(ref, submitted, run_id),
                 guidelines=await self._repos.guidelines(ref.repo),
                 plugin=await self._repo_plugin(ref.repo),
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")
+            await self._store.finish_run(run_id, result=_metrics(result))
             if submitted or not followup:
                 summary = submitted.get("summary") or result.text or "No summary."
                 findings: list[Finding] = submitted.get("findings", [])
@@ -373,6 +413,10 @@ class ReviewWorker(BaseWorker):
             raise  # Purr is stopping; the review stays "running" and resumes next time
         except Exception as e:
             logger.exception(f"Review of {ref} failed")
+            await self._store.add_message(run_id, ref, {"kind": "error", "text": str(e)})
+            await self._store.finish_run(
+                run_id, error=str(e), result=_metrics(result) if result else None
+            )
             if followup:
                 await self.send_bus_message(
                     SessionMessage(
@@ -413,8 +457,9 @@ class ReviewWorker(BaseWorker):
                     )
                 )
 
-    def _callbacks(self, ref: PRRef, submitted: dict) -> ReviewCallbacks:
+    def _callbacks(self, ref: PRRef, submitted: dict, run_id: int) -> ReviewCallbacks:
         async def on_message(entry: dict) -> None:
+            await self._store.add_message(run_id, ref, entry)
             await self.send_bus_message(
                 SessionMessage(source=self.name, pr=str(ref), message=entry)
             )
@@ -449,6 +494,15 @@ class ReviewWorker(BaseWorker):
             future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._asks[request_id] = future
             await self._store.set_pr_state(ref, PRState.NEEDS_YOU)
+            asked = {
+                "tool": tool,
+                "input": tool_input,
+                "description": description,
+                "reason": reason,
+            }
+            await self._store.add_message(
+                run_id, ref, {"kind": "permission_request", **asked}, author="agent"
+            )
             await self.send_bus_message(
                 PermissionRequest(
                     source=self.name,
@@ -468,6 +522,16 @@ class ReviewWorker(BaseWorker):
             finally:
                 self._asks.pop(request_id, None)
             await self._store.set_pr_state(ref, PRState.REVIEWING)
+            await self._store.add_message(
+                run_id,
+                ref,
+                {
+                    "kind": "permission_answer",
+                    "allowed": bool(answer),
+                    "answered": answer is not None,
+                },
+                author="you" if answer is not None else "purr",
+            )
             await self.send_bus_message(
                 PermissionResolved(
                     source=self.name,

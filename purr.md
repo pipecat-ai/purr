@@ -113,7 +113,7 @@ Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs expli
 - One worker task per PR, wrapping a Claude Agent SDK session.
 - Each review runs in its **own git worktree** (made from Purr's own clone of the repo, see Repos), checked out at the PR head, so multiple reviews run concurrently without touching each other or the user's working copy.
 - Persist the SDK **session ID** per PR in SQLite so any review can be resumed (from the PR session, by voice, or after an app restart). Closing the app pauses running reviews; they resume on reopen.
-- Transcripts are not copied into SQLite. The SDK keeps each session's transcript (it's a Claude Code session file), and Purr reads it with `get_session_messages(session_id, directory=worktree)`.
+- The SDK keeps each session's transcript (it's a Claude Code session file); that's what sessions resume from and what the PR pane loads, with `get_session_messages(session_id, directory=worktree)`. Purr also records every conversation in SQLite as it happens (`runs` and `messages`, see SQLite store), with times, for analysis.
 - Output of a review:
   - A short summary.
   - A list of findings (with file/line where possible, severity: issue / suggestion / nit).
@@ -240,7 +240,25 @@ Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the
 - `recaps`: since, until, headline, items, created_at
 - `meta`: key/value, e.g. `last_active_at`
 
-Session transcripts are not stored here; they're the SDK's own session files.
+- `runs`: one per time an agent works on a PR: kind (`review`, `resume`, `rereview`, or `message` for one of yours), repo, number, review and session ids, queued_at / started_at / finished_at (UTC, ms; queued to started is time waiting for a slot), status (`queued`, `running`, `finished`, `failed`, `interrupted` by a shutdown), error, and what the SDK reports at the end: model, cost_usd, turns, duration_ms, api_duration_ms, input/output/cache read/cache write tokens.
+- `messages`: every message of every run, in order: at (UTC, ms), run, repo, number, kind (`prompt`, `thinking`, `text`, `tool_use`, `tool_result`, `permission_request`, `permission_answer`, `result`, `error`), author (`purr`, `you`, `agent`, `tool`) and the message itself as JSON (tool results are capped at 2,000 characters, as in the transcript).
+
+Both are written as things happen, so they're there for analysis even if a worktree or Claude Code's session files go. They're kept by repo and number, like `activity`, so they outlive the PR's row. Sessions continued in Claude Code itself (`c`) aren't recorded, and conversations from before these tables aren't either (Claude Code's session files have them, with timestamps, to import if needed). For example, with `sqlite3 ~/.local/share/purr/purr.db`:
+
+```sql
+-- What reviews cost and how long they took, by repo
+SELECT repo, count(*), round(sum(cost_usd), 2), round(avg(duration_ms) / 1000) AS avg_s
+FROM runs WHERE kind = 'review' AND status = 'finished' GROUP BY repo;
+
+-- Which tools the agent reaches for
+SELECT json_extract(data, '$.name') AS tool, count(*) FROM messages
+WHERE kind = 'tool_use' GROUP BY tool ORDER BY 2 DESC;
+
+-- How long permission requests waited for you
+SELECT q.repo, q.number, (julianday(a.at) - julianday(q.at)) * 86400 AS waited_s
+FROM messages q JOIN messages a ON a.run_id = q.run_id AND a.kind = 'permission_answer' AND a.id > q.id
+WHERE q.kind = 'permission_request' GROUP BY q.id;
+```
 
 ## TUI
 

@@ -147,6 +147,10 @@ class AgentResult:
     cost_usd: float | None = None
     turns: int = 0
     denials: list[str] = field(default_factory=list)
+    duration_ms: int | None = None
+    api_duration_ms: int | None = None
+    model: str | None = None
+    usage: dict = field(default_factory=dict)  # tokens, as the API reports them
 
 
 class ReviewAgent(Protocol):
@@ -217,9 +221,17 @@ def transcript_entries(message: Any) -> list[dict]:
                 "text": message.result,
                 "turns": message.num_turns,
                 "cost_usd": message.total_cost_usd,
+                "duration_ms": message.duration_ms,
+                "api_duration_ms": message.duration_api_ms,
+                "model": _models(message),
+                "usage": message.usage or {},
             }
         ]
     return []
+
+
+def _models(message: ResultMessage) -> str | None:
+    return ", ".join(message.model_usage) if message.model_usage else None
 
 
 def history_entries(session_messages: list[Any]) -> list[dict]:
@@ -447,6 +459,10 @@ class ClaudeReviewAgent:
                         denials=[
                             json.dumps(d, default=str) for d in (message.permission_denials or [])
                         ],
+                        duration_ms=message.duration_ms,
+                        api_duration_ms=message.duration_api_ms,
+                        model=_models(message),
+                        usage=message.usage or {},
                     )
         return result
 
