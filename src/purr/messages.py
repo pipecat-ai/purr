@@ -117,11 +117,14 @@ class PermissionRequest(PurrEvent):
 
 @dataclass(kw_only=True)
 class PermissionResolved(PurrEvent):
+    """A permission request was answered, or nobody answered in time (``answered`` false)."""
+
     kind: ClassVar[str] = "session.permission_resolved"
-    recorded: ClassVar[bool] = False
     pr: str
     request_id: str
     allowed: bool
+    answered: bool = True
+    description: str = ""
 
 
 @dataclass(kw_only=True)

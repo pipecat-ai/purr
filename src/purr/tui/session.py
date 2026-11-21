@@ -79,6 +79,9 @@ def render_entry(entry: dict) -> RenderableType | None:
     kind = entry.get("kind")
     if kind == "text":
         return _bullet(Markdown(entry["text"]))
+    if kind == "thinking":
+        # Like Claude Code: the reasoning, dimmed, ahead of what it leads to.
+        return _bullet(Text(entry["text"].strip(), style="dim italic"), style="dim")
     if kind == "user":
         return Text(f"\n> {entry['text']}\n", style="bold")
     if kind == "tool_use":

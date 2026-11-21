@@ -79,6 +79,8 @@ class ReviewWorker(BaseWorker):
         agent: Runs the agent sessions.
         github: Reads a PR's review threads for the agent (none: no threads).
         auto_review: Review PRs assigned to you without being asked.
+        permission_wait: Seconds an agent waits for a permission answer before
+            carrying on without it.
     """
 
     def __init__(
@@ -90,12 +92,14 @@ class ReviewWorker(BaseWorker):
         agent: ReviewAgent,
         github: GitHub | None = None,
         auto_review: bool = True,
+        permission_wait: float = 300,
     ):
         super().__init__(name)
         self._store = store
         self._repos = repos
         self._agent = agent
         self._github = github
+        self._permission_wait = permission_wait
         self._auto_review = auto_review
         self._running: dict[PRRef, asyncio.Task] = {}
         self._start_lock = asyncio.Lock()
@@ -118,6 +122,18 @@ class ReviewWorker(BaseWorker):
         return set(self._running)
 
     async def _startup(self) -> None:
+        # A follow-up cut short (Purr quit mid-turn) leaves its PR "reviewing".
+        settled = False
+        for pr in await self._store.list_prs(state=PRState.REVIEWING):
+            review = await self._store.latest_review(pr.ref)
+            if review is None or review.status != ReviewStatus.RUNNING:
+                pending = await self._store.pending_actions(pr.ref)
+                await self._store.set_pr_state(
+                    pr.ref, PRState.NEEDS_YOU if pending or review is None else PRState.DONE
+                )
+                settled = True
+        if settled:
+            await self.send_bus_message(PRListUpdated(source=self.name))
         for review in await self._store.interrupted_reviews():
             pr = await self._store.get_pr(review.pr)
             if pr is None or pr.gh_state != GHState.OPEN:
@@ -338,6 +354,9 @@ class ReviewWorker(BaseWorker):
             )
             if entry["kind"] == "tool_use":
                 await self._progress(ref, describe_tool_use(entry["name"], entry["input"]))
+            elif entry["kind"] == "thinking":
+                first_line = entry["text"].strip().splitlines()[0]
+                await self._progress(ref, f"Thinking: {first_line}")
 
         async def on_submit(summary: str, findings: list[Finding]) -> None:
             submitted["summary"] = summary
@@ -355,9 +374,12 @@ class ReviewWorker(BaseWorker):
             )
             return action.id
 
-        async def on_ask(tool: str, tool_input: dict, reason: str) -> bool:
-            # The agent waits until the user answers; meanwhile the PR needs them.
+        async def on_ask(tool: str, tool_input: dict, reason: str) -> bool | None:
+            # The agent waits for the user, for a while; meanwhile the PR needs them.
+            # Claude Code itself gives up after about ten minutes, and after that
+            # the session refuses everything, so Purr answers first.
             request_id = uuid.uuid4().hex
+            description = describe_tool_use(tool, tool_input)
             future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._asks[request_id] = future
             await self._store.set_pr_state(ref, PRState.NEEDS_YOU)
@@ -367,23 +389,31 @@ class ReviewWorker(BaseWorker):
                     pr=str(ref),
                     request_id=request_id,
                     tool=tool,
-                    description=describe_tool_use(tool, tool_input),
+                    description=description,
                     reason=reason,
                 )
             )
             await self.send_bus_message(PRListUpdated(source=self.name))
+            answer: bool | None
             try:
-                allowed = await future
+                answer = await asyncio.wait_for(asyncio.shield(future), self._permission_wait)
+            except TimeoutError:
+                answer = None
             finally:
                 self._asks.pop(request_id, None)
             await self._store.set_pr_state(ref, PRState.REVIEWING)
             await self.send_bus_message(
                 PermissionResolved(
-                    source=self.name, pr=str(ref), request_id=request_id, allowed=allowed
+                    source=self.name,
+                    pr=str(ref),
+                    request_id=request_id,
+                    allowed=bool(answer),
+                    answered=answer is not None,
+                    description=description,
                 )
             )
             await self.send_bus_message(PRListUpdated(source=self.name))
-            return allowed
+            return answer
 
         async def on_threads() -> list[dict]:
             if not self._github:

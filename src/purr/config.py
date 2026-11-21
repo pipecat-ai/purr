@@ -33,6 +33,9 @@ class Config:
         review_model: Model for reviews; None uses Claude Code's default.
         review_budget_usd: Optional spending cap per review run.
         away_after: Seconds without activity after which you count as away.
+        permission_wait: Seconds an agent waits for you to allow something before
+            carrying on without it. Claude Code gives up on its own after about
+            ten minutes, so keep this below that.
         config_dir: Directory for files the user edits (review instructions).
             Defaults to ``$PURR_CONFIG_DIR``, else ``$XDG_CONFIG_HOME/purr``,
             else ``~/.config/purr``.
@@ -44,6 +47,7 @@ class Config:
     review_model: str | None = None
     review_budget_usd: float | None = None
     away_after: float = 15 * 60
+    permission_wait: float = 5 * 60
     config_dir: Path = field(default_factory=_default_config_dir)
 
     @classmethod

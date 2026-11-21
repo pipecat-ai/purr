@@ -59,6 +59,8 @@ RECAP_SCHEMA = {
 def is_notable(activity: Activity) -> bool:
     if activity.kind == "pr.changed":
         return activity.data.get("change") in _NOTABLE_CHANGES
+    if activity.kind == "session.permission_resolved":
+        return not activity.data.get("answered", True)  # nobody was there to answer
     return activity.kind in _NOTABLE_KINDS
 
 
@@ -93,6 +95,8 @@ def event_text(activity: Activity) -> str:
             )
         case "session.permission_request":
             return f"agent waiting for permission to: {data.get('description', '')}"
+        case "session.permission_resolved":
+            return f"nobody answered about: {data.get('description', '')}; agent carried on"
     return activity.kind
 
 

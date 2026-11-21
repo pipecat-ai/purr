@@ -17,6 +17,7 @@ from purr.messages import (
     ActionPending,
     ActionResolved,
     PermissionRequest,
+    PermissionResolved,
     PRChanged,
     PurrEvent,
     ReviewFailed,
@@ -96,12 +97,18 @@ async def make(tmp_path):
     """Builds a running setup; ``before_start`` can seed the store first."""
     cleanups = []
 
-    async def build(before_start=None, auto_review=True) -> Setup:
+    async def build(before_start=None, auto_review=True, permission_wait=300) -> Setup:
         store = await Store.open(":memory:")
         agent, repos, client = FakeAgent(), FakeRepos(tmp_path), Client()
         if before_start:
             await before_start(store, agent)
-        worker = ReviewWorker(store=store, repos=repos, agent=agent, auto_review=auto_review)
+        worker = ReviewWorker(
+            store=store,
+            repos=repos,
+            agent=agent,
+            auto_review=auto_review,
+            permission_wait=permission_wait,
+        )
         runner = WorkerRunner(handle_sigint=False)
         await runner.add_workers(ActivityWorker(store=store), worker, client)
         task = asyncio.create_task(runner.run(auto_end=False))
@@ -285,3 +292,31 @@ async def test_new_commits_get_a_rereview_in_the_same_session(make):
     # Same head again: nothing to re-review.
     worker = s.runner.get_worker(REVIEW_WORKER)
     assert await worker.rereview(REF) is False
+
+
+async def test_an_unanswered_permission_request_lets_the_agent_carry_on(make):
+    s = await make(permission_wait=0.1)
+    await s.store.upsert_pr(make_pr())
+    s.agent.ask = ("Bash", {"command": "uv --version"}, "not pre-approved")
+
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.answers == [None]  # "nobody answered", not "no"
+    [resolved] = s.client.of(PermissionResolved)
+    assert resolved.answered is False and resolved.description == "$ uv --version"
+
+
+async def test_a_pr_left_reviewing_by_a_cut_short_follow_up_is_settled(make):
+    async def seed(store, agent):
+        await store.upsert_pr(make_pr())
+        review = await store.start_review(REF)
+        await store.finish_review(review.id, summary="ok", findings=[])
+        await store.set_pr_state(REF, PRState.REVIEWING)
+
+    s = await make(before_start=seed)
+    await eventually(lambda: s.state())
+    for _ in range(100):
+        if await s.state() == PRState.DONE:
+            break
+        await asyncio.sleep(0.01)
+    assert await s.state() == PRState.DONE

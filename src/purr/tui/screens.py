@@ -123,6 +123,7 @@ class ReposView(PurrView):
         if selected:
             self.select_repo(selected)
         self.query_one("#empty").display = not self._watched
+        self.query_one("#legend").display = bool(alerted)
 
     @staticmethod
     def _cells(i: int, summary: RepoSummary, alerted: bool) -> list:

@@ -16,12 +16,14 @@ def test_history_entries_from_a_stored_transcript():
     messages = [
         stored("user", "Review pipecat-ai/pipecat#6924"),
         stored("assistant", [{"type": "thinking", "thinking": ""}]),
+        stored("assistant", [{"type": "thinking", "thinking": "Check the lock file first."}]),
         stored("assistant", [tool_use]),
         stored("user", [result]),
         stored("assistant", [{"type": "text", "text": "I recommend approving."}]),
     ]
     assert history_entries(messages) == [
         {"kind": "user", "text": "Review pipecat-ai/pipecat#6924"},
+        {"kind": "thinking", "text": "Check the lock file first."},
         {"kind": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "gh pr view"}},
         {"kind": "tool_result", "tool_use_id": "t1", "is_error": False, "text": "x"},
         {"kind": "text", "text": "I recommend approving."},
@@ -45,3 +47,22 @@ def test_claude_code_command_resumes_safely():
     assert "--fork-session" not in command  # same session ID, so Purr can pick it up again
     disallowed = command[command.index("--disallowedTools") + 1 :]
     assert "Bash(git push:*)" in disallowed and "Bash(gh pr merge:*)" in disallowed
+
+
+def test_live_thinking_becomes_an_entry():
+    from claude_agent_sdk import AssistantMessage, TextBlock, ThinkingBlock
+
+    from purr.review.agent import transcript_entries
+
+    message = AssistantMessage(
+        content=[
+            ThinkingBlock(thinking="", signature="s"),
+            ThinkingBlock(thinking="The lock bump looks deliberate.", signature="s"),
+            TextBlock(text="Looks good."),
+        ],
+        model="m",
+    )
+    assert transcript_entries(message) == [
+        {"kind": "thinking", "text": "The lock bump looks deliberate."},
+        {"kind": "text", "text": "Looks good."},
+    ]

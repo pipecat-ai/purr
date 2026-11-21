@@ -56,7 +56,6 @@ class PurrApp(App):
     CSS_PATH = "purr.tcss"
     TITLE = "Purr"
     COMMANDS = {PurrSwitcher}
-    COMMAND_PALETTE_DISPLAY = "find"
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),

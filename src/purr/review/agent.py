@@ -22,6 +22,7 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     ResultMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -115,14 +116,15 @@ class ReviewCallbacks:
         on_propose: A proposed GitHub action ``(kind, description, payload)``;
             returns the pending action's ID.
         on_ask: The agent wants a tool that isn't pre-approved ``(tool, input,
-            reason)``; returns whether the user allows it.
+            reason)``; returns whether the user allows it, or None if nobody
+            answered in time.
         on_threads: The PR's review threads, for ``get_review_threads``.
     """
 
     on_message: Callable[[dict], Awaitable[None]]
     on_submit: Callable[[str, list[Finding]], Awaitable[None]]
     on_propose: Callable[[ActionKind, str, dict], Awaitable[str]]
-    on_ask: Callable[[str, dict, str], Awaitable[bool]]
+    on_ask: Callable[[str, dict, str], Awaitable[bool | None]]
     on_threads: Callable[[], Awaitable[list[dict]]]
 
 
@@ -174,6 +176,8 @@ def transcript_entries(message: Any) -> list[dict]:
         for block in message.content:
             if isinstance(block, TextBlock) and block.text.strip():
                 entries.append({"kind": "text", "text": block.text})
+            elif isinstance(block, ThinkingBlock) and block.thinking.strip():
+                entries.append({"kind": "thinking", "text": block.thinking})
             elif isinstance(block, ToolUseBlock):
                 entries.append(
                     {"kind": "tool_use", "id": block.id, "name": block.name, "input": block.input}
@@ -215,6 +219,8 @@ def history_entries(session_messages: list[Any]) -> list[dict]:
             for block in content:
                 if block.get("type") == "text" and str(block.get("text", "")).strip():
                     entries.append({"kind": "text", "text": block["text"]})
+                elif block.get("type") == "thinking" and str(block.get("thinking") or "").strip():
+                    entries.append({"kind": "thinking", "text": block["thinking"]})
                 elif block.get("type") == "tool_use":
                     entries.append(
                         {
@@ -365,11 +371,18 @@ class ClaudeReviewAgent:
         async def can_use_tool(name: str, tool_input: dict, context: Any) -> Any:
             # Reached for calls the policy says need the user ("ask").
             reason = policy.check(name, tool_input).reason
-            if await callbacks.on_ask(name, tool_input, reason):
+            answer = await callbacks.on_ask(name, tool_input, reason)
+            if answer:
                 return PermissionResultAllow()
+            if answer is None:
+                return PermissionResultDeny(
+                    message="The user didn't answer; they may be away. Carry on without "
+                    "it, and at the end say what you wanted to run and why, so they can "
+                    "allow it later."
+                )
             return PermissionResultDeny(
-                message="Not allowed in this review. Carry on without it, and say in your "
-                "findings what you couldn't check."
+                message="The user said no. Carry on without it, and say in your findings "
+                "what you couldn't check."
             )
 
         options = ClaudeAgentOptions(
@@ -391,6 +404,9 @@ class ClaudeReviewAgent:
             # Only the user's own settings: a PR's .claude/settings.json could define
             # hooks, and those run commands.
             setting_sources=["user"],
+            # Summaries of the agent's reasoning, shown in the PR session like
+            # Claude Code does (the default, "omitted", returns them empty).
+            thinking={"type": "adaptive", "display": "summarized"},
             model=self._model,
             max_budget_usd=self._max_budget_usd,
             resume=session_id if resume else None,

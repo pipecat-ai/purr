@@ -133,6 +133,7 @@ class Purr:
                 agent=self._agent,
                 github=self._github,
                 auto_review=self._config.auto_review,
+                permission_wait=self._config.permission_wait,
             ),
             RecapWorker(store=store, agent=self._recap_agent),
         ]
