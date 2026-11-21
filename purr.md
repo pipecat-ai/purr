@@ -198,10 +198,10 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 ┌─ Purr ────────────────────────────────────────────────── 🔔 1 · whisker#112 needs you ─┐
 │                                                                                       │
 │    REPO                       NEEDS YOU   REVIEWING   NOT REVIEWED   LAST ACTIVITY    │
-│  1 ▸ pipecat-ai/pipecat           2           1            3          2 min ago       │
-│  2   pipecat-ai/whisker           1 ●         -            1          just now        │
-│  3   daily-co/daily-x             -           1            -          15 min ago      │
-│  4   pipecat-ai/pipecat-flows     -           -            4          3 h ago         │
+│  1   daily-co/daily-x             -           1            -          15 min ago      │
+│  2 ▸ pipecat-ai/pipecat           2           1            3          2 min ago       │
+│  3   pipecat-ai/pipecat-flows     -           -            4          3 h ago         │
+│  4   pipecat-ai/whisker           1 ●         -            1          just now        │
 │                                                                                       │
 │  ● new since you last looked                                                          │
 │                                                                                       │
@@ -211,7 +211,7 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 ```
 
 - One row per watched repo, plus any repo where a PR is assigned to you.
-- Rows keep a stable order (the config file's order, newly added repos at the end) and a stable number, so `1`–`9` always go to the same repo. Changes show as counts and a ● marker; rows don't move around.
+- Rows are sorted alphabetically by `owner/name` (case-insensitive) and numbered in that order, so the order and the `1`–`9` shortcuts only change when a repo is added or removed. Activity shows as counts and a ● marker; rows never move because of it.
 - Launching `purr` inside a checkout of a watched repo opens that repo directly (`esc` goes up to this list). Launched anywhere else, Purr starts here.
 
 ### Repo screen
@@ -219,7 +219,7 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere else (alerts, recaps, the switcher) as `whisker#112`, the repo name without its owner unless that's ambiguous.
 
 ```
-┌─ Purr › 1 pipecat-ai/pipecat ─────────────────────────── 🔔 1 · whisker#112 needs you ─┐
+┌─ Purr › 2 pipecat-ai/pipecat ─────────────────────────── 🔔 1 · whisker#112 needs you ─┐
 ├─ PRs ─────────────────────────────┬─ #2841: Add message bus ──────────────────────────┤
 │ ⚠ NEEDS YOU (2)                   │ ✓ Review done · 3 findings · 1 pending action     │
 │ ▸ #2841  Message bus         ⚠    │                                                   │
@@ -246,7 +246,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Header**: where you are (`Purr › 1 pipecat-ai/pipecat`) and the latest alert from other repos.
+- **Header**: where you are (`Purr › 2 pipecat-ai/pipecat`) and the latest alert from other repos.
 - **Left pane**: the repo's PRs grouped by state, "Needs you" first.
 - **Right pane**: the selected PR's session, Claude Code style (see PR session): a status line, the transcript, the pending action box, and the prompt.
 - **Status bar**: key hints and mic state.
