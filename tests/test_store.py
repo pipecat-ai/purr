@@ -267,3 +267,12 @@ async def test_assignees_and_the_list_order(store):
     await store.add_repo("pipecat-ai/pipecat")
     [summary] = await store.repo_summaries()
     assert summary.not_reviewed == 2
+
+
+async def test_prompt_history(store):
+    a, b = PRRef("a/b", 1), PRRef("a/b", 2)
+    await store.add_prompt(a, "is it safe?")
+    await store.add_prompt(b, "tests?")
+    await store.add_prompt(a, "and the docs?")
+    assert await store.prompts(a) == [(a, "and the docs?"), (a, "is it safe?")]
+    assert [text for _, text in await store.prompts()] == ["and the docs?", "tests?", "is it safe?"]

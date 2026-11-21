@@ -203,12 +203,12 @@ class ReviewWorker(BaseWorker):
     async def on_review_message(self, message: BusJobRequestMessage) -> None:
         payload = message.payload or {}
         try:
-            await self.send_followup(
-                PRRef.parse(str(payload.get("pr"))), str(payload.get("text", ""))
-            )
+            ref, text = PRRef.parse(str(payload.get("pr"))), str(payload.get("text", ""))
+            await self.send_followup(ref, text)
         except (ReviewError, ValueError) as e:
             await self.send_job_response(message.job_id, {"error": str(e)})
             return
+        await self._store.add_prompt(ref, text)  # for the prompt's history
         await self.send_job_response(message.job_id, {"ok": True})
 
     @job(name=PERMISSION_ANSWER)

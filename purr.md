@@ -132,17 +132,18 @@ How it's built (`src/purr/review/`, `src/purr/workers/reviews.py`):
 
 ## PR session (Claude Code inside a PR)
 
-Opening a PR (`enter`) puts you in a Claude Code-style terminal for that PR. It's the same Agent SDK session the review ran in, working in the PR's worktree, so you pick up where the review left off: ask questions, ask it to dig deeper, run the tests, or change its proposed action.
+Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that PR. It's the same Agent SDK session the review ran in, working in the PR's worktree, so you pick up where the review left off: ask questions, ask it to dig deeper, run the tests, or change its proposed action.
 
 - Looks and behaves like Claude Code: streamed assistant messages, tool calls collapsed to one line (`⎿ Read(src/bus.py)`), the prompt at the bottom with history, and the most useful slash commands.
+- The prompt works like a shell's: `↑`/`↓` go through what you asked on this PR, `ctrl+r` searches everything you've asked on any PR (type to filter, `enter` puts it in the prompt), and `ctrl+a`/`ctrl+e`/`ctrl+b`/`ctrl+f`/`alt+b`/`alt+f` move around the line (`ctrl+k`/`ctrl+u`/`ctrl+w` delete). `page up`/`page down` scroll the transcript while you type. What you ask is kept in the `prompts` table, so the history survives restarts.
 - History comes from the SDK's transcript of the session; new turns stream over the bus as `session.message` events, so the TUI and the voice agent see the same conversation.
 - One conversation per PR. Typed and spoken messages go into the same session (`review.message` job) and queue if a turn is in flight.
 - Same guardrails as the review: anything GitHub-visible becomes a pending action.
 - **Deciding happens in the conversation, not in per-finding cards.** You keep digging with the agent until you agree on what to post; "drop the nit", "reword the race comment", "make it a comment instead" make it propose again, and the new proposal replaces the old one. The transcript shows each proposal in full (verdict, overall comment, every inline comment and thread reply), so `a` posts exactly what you've read.
-- Permission prompts: if the agent wants a tool that isn't pre-approved, the prompt shows inline as in Claude Code (allow once / deny; "always for this PR" later) and the PR moves to **Needs you**. Voice can answer too. The agent waits up to `permission_wait` (5 minutes) and then carries on without it, saying at the end what it wanted to run and why; the recap mentions it. The wait has to be bounded: Claude Code gives up on an unanswered permission request after about 10 minutes, and after that its session refuses every tool call.
+- Permission prompts: if the agent wants a tool that isn't pre-approved, the prompt shows inline as in Claude Code (`a` allow once / `x` deny, the same keys as approving or dismissing a proposal; "always for this PR" later) and the PR moves to **Needs you**. Voice can answer too. The agent waits up to `permission_wait` (5 minutes) and then carries on without it, saying at the end what it wanted to run and why; the recap mentions it. The wait has to be bounded: Claude Code gives up on an unanswered permission request after about 10 minutes, and after that its session refuses every tool call.
 - The agent's reasoning shows in the transcript the way Claude Code shows it: dimmed, ahead of what it leads to. Purr asks for summarized thinking (`thinking={"type": "adaptive", "display": "summarized"}`); the SDK's default returns it empty.
-- `z` zooms the session to full screen; `esc` goes back to the list.
-- **Open in Claude Code** (`o`): Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools`. When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
+- `z` zooms the session to full screen; `esc` goes back a step: prompt → PR → list.
+- **Open in Claude Code** (`c`): Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools`. When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
 
 ## What the agent knows
 
@@ -223,6 +224,7 @@ Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the
 - `reviews`: pr, session_id, worktree path, status, summary, started_at, finished_at
 - `findings`: review, file, line, severity, text
 - `pending_actions`: pr, action_id, kind (comment/request_changes/approve/merge), payload, status
+- `prompts`: at, repo, number, text. What you asked PR agents, for the prompt's history (`↑`/`↓`, `ctrl+r`).
 - `activity`: at, pr (optional), kind, data. Every recorded Purr event; feeds the recaps and each PR's timeline.
 - (`recaps` and `meta` exist as described; `prs.last_seen_at` doesn't yet, so alerts are in memory.)
 - `recaps`: since, until, headline, items, created_at
@@ -283,7 +285,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 │                                                        │ └──────────────────────────────────────────────┘ │
 │                                                        │ > is the race reachable from user code?          │
 ├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤
-│ esc repos · r review · space mark · a approve · x dismiss · d diff · z zoom · o Claude Code · i style      │
+│ esc back · o open · n/p next/prev · / search · r review · a approve · x dismiss · d diff · c Claude Code   │
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -291,7 +293,8 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 - **Left pane**: the repo's PRs grouped by state, "Needs you" first and "Others reviewing" last, newest first within each group. Columns: number (in its own color), title, who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`) against the right edge.
 - **Right pane**: the selected PR. The header has its title, then `by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · labels`, then where its review stands. The transcript starts with the PR's description and the files it changes, so a PR nobody has reviewed yet shows what it's about and you can decide whether to take it; on a reviewed PR it sits above the session (Claude Code style, see PR session), with the pending action box and the prompt below. `d` opens the full diff in your pager (`gh pr diff`).
 - **Details are fetched ahead.** Selecting a PR fetches its details (about 0.5 s) and, in parallel, those of the 10 PRs below it in one request, so moving down the list doesn't wait. They're cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing.
-- **Status bar**: key hints and mic state.
+- **Focus**: each pane has a rounded border, and the one with the focus lights up in the accent color, with its title (`PRs`, `PR`). `o` (or `enter`) on a PR moves the focus into its pane; `esc` brings it back.
+- **Status bar**: key hints for the focused pane, and mic state.
 
 ### Alerts from other repos
 
@@ -309,20 +312,22 @@ Global keys work everywhere, even while typing in a PR prompt:
 - `ctrl+n` jump to the newest alert from another repo.
 - push-to-talk key (hold) for voice.
 
-List keys (letters and numbers act on lists; while a prompt has focus, typing goes to the agent, as in Claude Code):
+List and pane keys (letters and numbers act on lists and panes; while a prompt has focus, typing goes to the agent, as in Claude Code):
 - `0` repo list, `1`–`9` repo by number
 - `+` add a repo, `-` remove one (repo list)
-- `enter` open a repo, or a PR's session with its prompt focused
-- `esc` up one level: PR prompt → PR list → repo list
+- `o` or `enter` open: a repo, or a PR (focus moves into its pane). In a PR's pane, `enter` goes to its prompt.
+- `n` / `p` next / previous: repo, or PR. They work from the PR's pane too, which keeps the focus, so you can read PRs one after another.
+- `/` search the PR list as you type (number, title, author, assignees; every word has to match). `enter` keeps the results and goes back to the list; `esc` clears the search.
+- `esc` back a step: prompt → PR → PR list (clearing a search first) → repo list
+- `page up` / `page down` scroll a page, in either pane (the transcript while typing too)
 - `space` mark/unmark PR
 - `r` start review on marked PRs (or the selected one), assigning you
 - `d` the selected PR's full diff in your pager
-- `a` approve pending action, `x` dismiss
+- `a` / `x` answer the box under the transcript: approve or dismiss a pending action, allow or deny a permission request
 - `z` zoom the PR session to full screen
-- `o` open the PR's session in Claude Code
+- `c` open the PR's session in Claude Code
 - `i` edit your review style or code style (this repo's inside a repo, the general ones at home)
 - `w` open the latest "while you were away" recap
-- `/` filter
 
 ### Fast by default
 
@@ -353,7 +358,7 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher. (Done. Transcripts come from the SDK's session file plus live `session.message` events. Alerts live in memory for now: `prs.last_seen_at` isn't stored yet, so they don't survive a restart.)
 7. "Start from app" also assigns you on GitHub. (Done: `r` on a pool PR starts the review and assigns you.)
 8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`recap.create {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
-9. Open a PR's session in Claude Code (`o`). (Done. `claude --resume` keeps the session ID; `--fork-session` is what would make a new one. It runs with `--setting-sources user`, GitHub writes disallowed, and a note that Purr's own tools aren't available there. Purr keeps running underneath, and reloads the transcript afterwards.)
+9. Open a PR's session in Claude Code (`c`). (Done. `claude --resume` keeps the session ID; `--fork-session` is what would make a new one. It runs with `--setting-sources user`, GitHub writes disallowed, and a note that Purr's own tools aren't available there. Purr keeps running underneath, and reloads the transcript afterwards.)
 10. Voice agent with push-to-talk.
 
 ## Open questions

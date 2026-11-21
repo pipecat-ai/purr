@@ -20,6 +20,7 @@ from purr.models import PR, PendingAction, PRDetails, PRState, Review, ReviewSta
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.bridge import RequestError
 from purr.tui.overview import details_line, render_overview
+from purr.tui.prompt import HistorySearchScreen, PromptInput
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -142,7 +143,14 @@ class PRSession(Vertical):
     it above the session.
     """
 
-    BINDINGS = [Binding("escape", "leave_prompt", "Back to the list", show=False)]
+    BINDINGS = [
+        Binding("escape", "back", "Back"),
+        Binding("enter", "ask", "Ask"),
+        # While typing too (the transcript has its own when focused).
+        Binding("pageup", "page(-1)", "Page up", show=False),
+        Binding("pagedown", "page(1)", "Page down", show=False),
+        Binding("ctrl+r", "search_history", "Search history", show=False),
+    ]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -156,9 +164,10 @@ class PRSession(Vertical):
         yield Static(id="pr-header")
         yield RichLog(id="transcript", wrap=True, markup=False, auto_scroll=True)
         yield Static(id="pr-decision")
-        yield Input(id="prompt", placeholder="Ask the agent about this PR…")
+        yield PromptInput(id="prompt", placeholder="Ask the agent about this PR…")
 
     def on_mount(self) -> None:
+        self.border_title = "PR"
         self.query_one("#pr-decision").display = False
 
     def state(self, pr: PR | None = None) -> SessionState:
@@ -177,6 +186,8 @@ class PRSession(Vertical):
             switching = True
         if switching:
             self.redraw()
+            asked = await self.purr_app.purr.store.prompts(pr.ref)
+            self.query_one(PromptInput).set_history([text for _, text in reversed(asked)])
 
     def redraw(self) -> None:
         """Rewrite the transcript: the overview, then the session."""
@@ -245,7 +256,7 @@ class PRSession(Vertical):
                     (_short(state.ask.description, 120), "yellow"),
                     ("\n", ""),
                     (state.ask.reason or "It isn't pre-approved.", "dim"),
-                    ("\n[y] allow   [n] deny", "bold"),
+                    ("\n[a] allow   [x] deny", "bold"),
                 )
             )
             decision.display = True
@@ -305,8 +316,38 @@ class PRSession(Vertical):
     def focus_prompt(self) -> None:
         self.query_one("#prompt", Input).focus()
 
-    def action_leave_prompt(self) -> None:
-        self.screen.query_one("#prs").focus()
+    def focus_transcript(self) -> None:
+        self.query_one("#transcript").focus()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # Typing a question, enter sends it.
+        return not (action == "ask" and self.query_one("#prompt").has_focus)
+
+    def action_ask(self) -> None:
+        self.focus_prompt()
+
+    def action_page(self, step: int) -> None:
+        log = self.query_one(RichLog)
+        log.scroll_page_down() if step > 0 else log.scroll_page_up()
+
+    async def action_search_history(self) -> None:
+        prompt = self.query_one(PromptInput)
+        asked = await self.purr_app.purr.store.prompts()
+
+        def picked(text: str | None) -> None:
+            if text is not None:
+                prompt.value = text
+                prompt.cursor_position = len(text)
+            prompt.focus()
+
+        self.app.push_screen(HistorySearchScreen(asked, prompt.value), picked)
+
+    def action_back(self) -> None:
+        """From the prompt to the PR, from the PR to the list."""
+        if self.query_one("#prompt").has_focus:
+            self.focus_transcript()
+        elif self.screen.query_one("#prs-pane").display:
+            self.screen.query_one("#prs").focus()
 
     @on(Input.Submitted, "#prompt")
     async def send(self, event: Input.Submitted) -> None:
@@ -319,4 +360,5 @@ class PRSession(Vertical):
             self.notify(str(e), severity="warning")
             return
         event.input.value = ""
+        self.query_one(PromptInput).remember(text)
         self.append(str(self.pr.ref), {"kind": "user", "text": text})

@@ -33,9 +33,33 @@
     height: 1fr;
 }
 
-#prs {
+/* The two panes; the focused one's border lights up. */
+#prs-pane, #session {
+    border: round $foreground 25%;
+    border-title-color: $text-muted;
+
+    &:focus-within {
+        border: round $accent;
+        border-title-color: $accent;
+        border-title-style: bold;
+    }
+}
+
+#prs-pane {
     width: 55%;
     min-width: 60;
+}
+
+#search {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    background: $boost;
+}
+
+#prs {
+    height: 1fr;
     border: none;
     text-wrap: nowrap;
     text-overflow: ellipsis;
@@ -48,7 +72,6 @@
 
 #session {
     width: 1fr;
-    border-left: solid $panel;
 }
 
 #pr-header {
@@ -74,7 +97,7 @@
     margin: 0 1;
 }
 
-AddRepoScreen, ConfirmScreen, RecapScreen, InstructionsScreen {
+AddRepoScreen, ConfirmScreen, RecapScreen, InstructionsScreen, HistorySearchScreen {
     align: center middle;
 }
 
@@ -120,4 +143,17 @@ AddRepoScreen, ConfirmScreen, RecapScreen, InstructionsScreen {
 
 .hint {
     color: $text-muted;
+}
+
+#history {
+    width: 90;
+}
+
+#history-items {
+    height: auto;
+    max-height: 16;
+    margin: 1 0 0 0;
+    border: none;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }

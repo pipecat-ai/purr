@@ -9,6 +9,7 @@ Dialogs are modal screens on top.
 import asyncio
 import os
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 from rich.table import Table
@@ -91,6 +92,12 @@ def _row(*cells: Text | str, number_width: int = 5) -> Table:
     return grid
 
 
+def matches(pr: PR, search: str) -> bool:
+    """Whether every word searched for is in the PR's number, title, author or assignees."""
+    text = f"#{pr.number} {pr.title} {pr.author} {' '.join(pr.assignees)}".lower()
+    return all(word in text for word in search.lower().split())
+
+
 def _columns(number_width: int) -> Table:
     headings = ("", "#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED")
     return _row(*(Text(h, style="dim") for h in headings), number_width=number_width)
@@ -141,7 +148,9 @@ class ReposView(PurrView):
     """Home: one row per repo, alphabetical, with what's going on in each."""
 
     BINDINGS = [
-        Binding("enter", "open", "Open"),
+        Binding("enter,o", "open", "Open", key_display="o"),
+        Binding("n", "move(1)", "Next", show=False),
+        Binding("p", "move(-1)", "Previous", show=False),
         Binding("plus", "add", "Add repo"),
         Binding("minus", "remove", "Remove repo"),
     ]
@@ -216,6 +225,10 @@ class ReposView(PurrView):
         if repo := self.selected_repo():
             await self.purr_app.open_repo(repo)
 
+    def action_move(self, delta: int) -> None:
+        table = self.query_one(DataTable)
+        table.action_cursor_down() if delta > 0 else table.action_cursor_up()
+
     def action_add(self) -> None:
         async def added(name: str | None) -> None:
             if name:
@@ -259,30 +272,42 @@ class RepoView(PurrView):
     """
 
     BINDINGS = [
-        Binding("escape", "app.home", "Repos"),
+        Binding("escape", "back", "Back"),
+        Binding("o", "open", "Open"),
+        Binding("n", "move(1)", "Next"),
+        Binding("p", "move(-1)", "Previous"),
+        Binding("slash", "search", "Search", key_display="/"),
         Binding("r", "review", "Review"),
         Binding("space", "mark", "Mark"),
+        # Whatever the decision box offers: approve or dismiss a proposal,
+        # allow or deny a permission request.
         Binding("a", "approve", "Approve"),
         Binding("x", "dismiss", "Dismiss"),
-        Binding("y", "answer(True)", "Allow", show=False),
-        Binding("n", "answer(False)", "Deny", show=False),
         Binding("d", "diff", "Diff"),
         Binding("z", "zoom", "Zoom"),
-        Binding("o", "open_claude", "Claude Code"),
+        Binding("c", "open_claude", "Claude Code"),
     ]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.repo: str | None = None
-        self._prs: dict[str, PR] = {}  # in list order
+        self._all: list[PR] = []  # the repo's open PRs, as stored
+        self._prs: dict[str, PR] = {}  # the ones listed (matching the search), in list order
         self._number_width = 5  # the widest "#6934" in the list
+        self._search = ""
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
-            yield OptionList(id="prs")
+            with Vertical(id="prs-pane"):
+                yield Input(id="search", placeholder="Search: number, title, author…")
+                yield OptionList(id="prs")
             yield PRSession(id="session")
+
+    def on_mount(self) -> None:
+        self.query_one("#prs-pane").border_title = "PRs"
+        self.query_one("#search").display = False
 
     def focus_main(self) -> None:
         self.query_one(OptionList).focus()
@@ -291,6 +316,8 @@ class RepoView(PurrView):
         return (self.repo, self.purr_app.data_version)
 
     async def show(self, repo: str) -> None:
+        if repo != self.repo:
+            self._set_search("")
         self.repo = repo
         await self.refresh_if_stale()
 
@@ -298,10 +325,19 @@ class RepoView(PurrView):
         if not self.repo:
             return
         await super().reload()
-        prs = await self.purr_app.purr.store.list_prs(repo=self.repo, open_only=True)
+        self._all = await self.purr_app.purr.store.list_prs(repo=self.repo, open_only=True)
+        self._number_width = max((len(f"#{pr.number}") for pr in self._all), default=5)
+        self._list()
+
+    def _list(self) -> None:
+        """Draw the list: the PRs matching the search, grouped."""
+        prs = [pr for pr in self._all if matches(pr, self._search)]
         self._prs = {}
-        self._number_width = max((len(f"#{pr.number}") for pr in prs), default=5)
         options: list[Option] = [Option(_columns(self._number_width), disabled=True)] if prs else []
+        if self._all and not prs:
+            options.append(
+                Option(Text(f"No PRs match “{self._search}”.", style="dim"), disabled=True)
+            )
         for key, icon, label, style in _GROUPS:
             members = [pr for pr in prs if group(pr) == key]
             if not members:
@@ -312,7 +348,7 @@ class RepoView(PurrView):
             options.append(Option(heading, disabled=True))
             options += [Option(self._prompt(pr), id=str(pr.ref)) for pr in members]
             self._prs.update((str(pr.ref), pr) for pr in members)
-        self._marked &= set(self._prs)
+        self._marked &= {str(pr.ref) for pr in self._all}
 
         option_list = self.query_one(OptionList)
         option_list.set_options(options)
@@ -353,7 +389,9 @@ class RepoView(PurrView):
         if pr and self.repo:
             self._selected[self.repo] = str(pr.ref)
             self.purr_app.seen(str(pr.ref))
-            self.run_worker(self.session.show(pr), exclusive=True, group="session")
+            # A callable, not a coroutine: when moving fast, a run cancelled before
+            # it starts must not leave a coroutine behind.
+            self.run_worker(partial(self.session.show, pr), exclusive=True, group="session")
             self._load_details(pr)
 
     @work(exclusive=True, group="details")
@@ -389,12 +427,55 @@ class RepoView(PurrView):
     def session(self) -> PRSession:
         return self.query_one(PRSession)
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # In the PR's pane, it's already open.
+        return not (action == "open" and self.session.has_focus_within)
+
     @on(OptionList.OptionSelected)
-    def _ask(self) -> None:
+    def action_open(self) -> None:
+        """Into the selected PR's pane."""
         if self.selected_pr():
-            self.session.focus_prompt()
+            self.session.focus_transcript()
+
+    # -- Search ---------------------------------------------------------------------
+
+    def _set_search(self, text: str) -> None:
+        search = self.query_one("#search", Input)
+        self._search = text
+        if search.value != text:
+            search.value = text
+        search.display = bool(text) or search.has_focus
+
+    def action_search(self) -> None:
+        search = self.query_one("#search", Input)
+        search.display = True
+        search.focus()
+
+    @on(Input.Changed, "#search")
+    def _searching(self, event: Input.Changed) -> None:
+        self._search = event.value
+        self._list()
+
+    @on(Input.Submitted, "#search")
+    def _searched(self) -> None:
+        self.query_one(OptionList).focus()
+        self._set_search(self._search.strip())
+
+    async def action_back(self) -> None:
+        """Out of the search, then out of the repo."""
+        if self._search or self.query_one("#search").has_focus:
+            self._set_search("")
+            self.query_one(OptionList).focus()
+            self._list()
+        else:
+            await self.purr_app.action_home()
 
     # -- Keys -----------------------------------------------------------------------
+
+    def action_move(self, delta: int) -> None:
+        """The next or previous PR, from either pane."""
+        option_list = self.query_one(OptionList)
+        option_list.action_cursor_down() if delta > 0 else option_list.action_cursor_up()
 
     def action_mark(self) -> None:
         pr = self.selected_pr()
@@ -438,8 +519,17 @@ class RepoView(PurrView):
         if targets:
             self.notify(f"Reviewing {len(targets)} PR{'s' if len(targets) != 1 else ''}")
 
+    def _asking(self) -> SessionState | None:
+        """The shown PR's session, if its agent is waiting on a permission answer."""
+        pr = self.selected_pr()
+        state = self.purr_app.sessions.get(str(pr.ref)) if pr else None
+        return state if state and state.ask else None
+
     @work(group="keys")
     async def action_approve(self) -> None:
+        if state := self._asking():
+            await self._answer(state, True)
+            return
         pr = self.selected_pr()
         actions = await self.purr_app.purr.store.pending_actions(pr.ref) if pr else []
         if not actions:
@@ -455,6 +545,9 @@ class RepoView(PurrView):
 
     @work(group="keys")
     async def action_dismiss(self) -> None:
+        if state := self._asking():
+            await self._answer(state, False)
+            return
         pr = self.selected_pr()
         actions = await self.purr_app.purr.store.pending_actions(pr.ref) if pr else []
         if actions:
@@ -463,15 +556,12 @@ class RepoView(PurrView):
             except RequestError as e:
                 self.notify(str(e), severity="warning")
 
-    @work(group="keys")
-    async def action_answer(self, allow: bool) -> None:
-        pr = self.selected_pr()
-        ask = self.purr_app.sessions.get(str(pr.ref)) if pr else None
-        if ask and ask.ask:
-            try:
-                await self.purr_app.bus.answer(ask.ask.request_id, allow)
-            except RequestError as e:
-                self.notify(str(e), severity="warning")
+    async def _answer(self, state: SessionState, allow: bool) -> None:
+        assert state.ask
+        try:
+            await self.purr_app.bus.answer(state.ask.request_id, allow)
+        except RequestError as e:
+            self.notify(str(e), severity="warning")
 
     async def action_open_claude(self) -> None:
         pr = self.selected_pr()
@@ -512,10 +602,12 @@ class RepoView(PurrView):
             await process.wait()
 
     def action_zoom(self) -> None:
-        option_list = self.query_one(OptionList)
-        option_list.display = not option_list.display
-        if not option_list.display:
-            self.session.focus_prompt()
+        pane = self.query_one("#prs-pane")
+        pane.display = not pane.display
+        if pane.display:
+            self.query_one(OptionList).focus()
+        elif not self.session.has_focus_within:
+            self.session.focus_transcript()
 
 
 class MainScreen(Screen):

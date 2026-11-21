@@ -126,6 +126,18 @@ MIGRATIONS: list[str] = [
     ALTER TABLE prs ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
     ALTER TABLE prs ADD COLUMN assignees TEXT NOT NULL DEFAULT '[]';
     """,
+    # What you asked PR agents, for the prompt's history. Kept by repo and
+    # number, not PR id, so it outlives the PR's row.
+    """
+    CREATE TABLE prompts (
+        id INTEGER PRIMARY KEY,
+        at TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        text TEXT NOT NULL
+    );
+    CREATE INDEX prompts_by_pr ON prompts (repo, number);
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -510,6 +522,27 @@ class Store:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self._fetchall(f"SELECT * FROM activity {where} ORDER BY id", params)
         return [_activity(row) for row in rows]
+
+    # -- Prompt history --------------------------------------------------------
+
+    async def add_prompt(self, pr: PRRef, text: str) -> None:
+        """Remember something you asked a PR's agent."""
+        await self._db.execute(
+            "INSERT INTO prompts (at, repo, number, text) VALUES (?, ?, ?, ?)",
+            (_now(), pr.repo, pr.number, text),
+        )
+        await self._db.commit()
+
+    async def prompts(
+        self, pr: PRRef | None = None, *, limit: int = 500
+    ) -> list[tuple[PRRef, str]]:
+        """What you asked, newest first: on one PR, or on any."""
+        where, params = ("WHERE repo = ? AND number = ?", [pr.repo, pr.number]) if pr else ("", [])
+        rows = await self._fetchall(
+            f"SELECT repo, number, text FROM prompts {where} ORDER BY id DESC LIMIT ?",
+            [*params, limit],
+        )
+        return [(PRRef(row["repo"], row["number"]), row["text"]) for row in rows]
 
     # -- Meta and recaps --------------------------------------------------------
 

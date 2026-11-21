@@ -9,6 +9,7 @@ from textual.widgets import Input, OptionList
 from purr.app import Purr
 from purr.config import Config
 from purr.tui import PurrApp
+from purr.tui.prompt import HistorySearchScreen
 from purr.tui.screens import AddRepoScreen, ConfirmScreen, MainScreen
 from tests.fakes import FakeAgent, FakeGitHub, FakeRecapAgent, FakeRepos, FakeWriter, remote
 
@@ -144,6 +145,10 @@ def transcript(app: PurrApp) -> str:
     return "\n".join(strip.text for strip in log.lines)
 
 
+def focused(app: PurrApp) -> str | None:
+    return app.focused.id if app.focused else None
+
+
 def decision(app: PurrApp) -> str:
     box = app.main.repo.session.query_one("#pr-decision")
     return str(box.render()) if box.display else ""
@@ -187,20 +192,67 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert writer.reviews[0]["event"] == "REQUEST_CHANGES"
         await until(pilot, lambda: not decision(app))
 
-        # Next review asks for permission first; y allows it.
+        # Next review asks for permission first; a allows it, like approving.
         agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
         await pilot.press("r")
-        await until(pilot, lambda: "[y] allow" in decision(app))
+        await until(pilot, lambda: "[a] allow" in decision(app))
         assert "uv run pytest" in decision(app)
-        await pilot.press("y")
+        await pilot.press("a")
         await until(pilot, lambda: agent.answers == [True])
+        agent.ask = None
 
-        # enter goes to the prompt; a follow-up continues the session.
+        # enter (or o) opens the PR's pane, enter again goes to its prompt, and a
+        # follow-up continues the session. esc goes back a step at a time.
         await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
+        session = app.main.repo.session
         await pilot.press("enter")
+        assert focused(app) == "transcript" and session.has_focus_within
+        await pilot.press("enter")
+        assert focused(app) == "prompt"
         await pilot.press(*"is it safe?", "enter")
         await until(pilot, lambda: agent.runs[-1]["prompt"] == "is it safe?")
         assert "> is it safe?" in transcript(app)
+
+        # The prompt keeps a history: up and down, like a shell...
+        await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
+        await pilot.press(*"tests?", "enter")
+        await until(pilot, lambda: agent.runs[-1]["prompt"] == "tests?")
+        prompt = app.main.repo.session.query_one("#prompt")
+        await pilot.press(*"draft")
+        await pilot.press("up")
+        assert prompt.value == "tests?"
+        await pilot.press("up", "up")
+        assert prompt.value == "is it safe?"
+        await pilot.press("down", "down")
+        assert prompt.value == "draft"
+        # ...readline keys move around the line...
+        await pilot.press("ctrl+a", "ctrl+f", "ctrl+f")
+        assert prompt.cursor_position == 2
+        await pilot.press("ctrl+e", "ctrl+b")
+        assert prompt.cursor_position == 4
+        # ...and ctrl+r searches everything asked, on any PR.
+        while len(await app.purr.store.prompts()) < 2:  # recorded by the reviews worker
+            await pilot.pause(0.02)
+        await pilot.press("ctrl+u", "ctrl+r")
+        await until(pilot, lambda: isinstance(app.screen, HistorySearchScreen))
+        await pilot.press(*"safe", "enter")
+        await until(pilot, lambda: isinstance(app.screen, MainScreen))
+        assert prompt.value == "is it safe?" and focused(app) == "prompt"
+
+        # Page up and down scroll the transcript while typing.
+        log = app.main.repo.session.query_one("#transcript")
+        for i in range(60):
+            log.write(f"line {i}")
+        await pilot.pause(0.05)
+        bottom = log.scroll_y
+        await pilot.press("pageup")
+        await until(pilot, lambda: log.scroll_y < bottom)
+        assert focused(app) == "prompt"
+
+        await pilot.press("escape")
+        assert focused(app) == "transcript"
+        await pilot.press("escape")
+        assert focused(app) == "prs" and not session.has_focus_within
 
 
 async def test_alerts_and_the_switcher(tmp_path):
@@ -327,3 +379,54 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         await pilot.press("n")
         await until(pilot, lambda: isinstance(app.screen, MainScreen))
         assert app.purr.agent.runs == []
+
+
+async def test_moving_around_and_searching(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [
+        remote(1, title="Message bus"),
+        remote(2, title="Zoom STT fix"),
+        remote(3, title="Bus shutdown race"),
+    ]
+    async with app.run_test(size=(160, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("o")  # o opens the repo, like enter
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        repo = app.main.repo
+
+        def shown() -> int | None:
+            return repo.session.pr.number if repo.session.pr else None
+
+        # n and p move through the list, newest first...
+        await until(pilot, lambda: shown() == 3)
+        await pilot.press("n")
+        await until(pilot, lambda: shown() == 2)
+        # ...and from the PR's pane too, which keeps the focus.
+        await pilot.press("o")
+        assert focused(app) == "transcript"
+        await pilot.press("n")
+        await until(pilot, lambda: shown() == 1)
+        await pilot.press("p", "p")
+        await until(pilot, lambda: shown() == 3)
+        assert focused(app) == "transcript"
+
+        # / searches the list (title, author, number), and esc clears it.
+        await pilot.press("slash")
+        assert focused(app) == "search"
+        await pilot.press(*"bus")
+        await until(pilot, lambda: pr_ids(app) == ["pipecat-ai/pipecat#3", "pipecat-ai/pipecat#1"])
+        await pilot.press("enter")
+        assert focused(app) == "prs"
+        await pilot.press("n")
+        await until(pilot, lambda: shown() == 1)
+        await pilot.press("escape")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        assert in_repo(app) and not repo.query_one("#search").display
+        await pilot.press("slash", *"nothing like it")
+        await until(pilot, lambda: pr_ids(app) == [])
+        assert "No PRs match" in "\n".join(option_texts(app))
+        await pilot.press("escape")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        await pilot.press("escape")
+        await until(pilot, lambda: home(app))
