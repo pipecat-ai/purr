@@ -19,6 +19,7 @@ from purr.messages import (
     GITHUB_WORKER,
     PR_ASSIGN,
     PR_DETAILS,
+    PR_DIFF,
     REPO_ADD,
     REPO_REMOVE,
     ActionResolved,
@@ -40,6 +41,10 @@ def _since(synced_at: str) -> str:
     """The ``updated:>=`` bound for an incremental search, in GitHub's format."""
     start = datetime.fromisoformat(synced_at) - INCREMENTAL_OVERLAP
     return start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Enough for any diff worth reading in a terminal.
+MAX_DIFF_CHARS = 1_000_000
 
 
 class GitHubWorker(BaseWorker):
@@ -232,6 +237,17 @@ class GitHubWorker(BaseWorker):
             return
         payload = {str(ref): dataclasses.asdict(d) for ref, d in details.items()}
         await self.send_job_response(message.job_id, {"details": payload})
+
+    @job(name=PR_DIFF)
+    async def on_pr_diff(self, message: BusJobRequestMessage) -> None:
+        try:
+            ref = PRRef.parse(str((message.payload or {}).get("pr")))
+            diff = await self._github.pr_diff(ref)
+        except (ValueError, GitHubError) as e:
+            await self._reject(message, f"Couldn't read the diff from GitHub: {e}")
+            return
+        # The UI shows the start of it; `d` opens all of it in a pager.
+        await self.send_job_response(message.job_id, {"diff": diff[:MAX_DIFF_CHARS]})
 
     # -- Approved actions --------------------------------------------------------
 

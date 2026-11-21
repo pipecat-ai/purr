@@ -180,6 +180,22 @@ class GitHub:
             raise GitHubError("; ".join(e.get("message", str(e)) for e in errors) or str(body))
         return body
 
+    async def pr_diff(self, ref: PRRef) -> str:
+        """The PR's unified diff (what ``gh pr diff`` shows). GitHub refuses very big ones."""
+        args = [self._gh, "api", f"repos/{ref.repo}/pulls/{ref.number}"]
+        args += ["-H", "Accept: application/vnd.github.diff"]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except FileNotFoundError as e:
+            raise GitHubError(f"GitHub CLI not found ({self._gh})") from e
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            message = stderr.decode(errors="replace").strip().removeprefix("gh: ")
+            raise GitHubError(message or f"gh exited with {process.returncode}")
+        return stdout.decode(errors="replace")
+
     async def repo_name(self, name: str) -> str | None:
         """A repo's canonical ``owner/name``; None if it doesn't exist or you can't see it."""
         owner, _, repo = name.partition("/")

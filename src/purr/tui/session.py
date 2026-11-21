@@ -13,14 +13,14 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import RichLog, Static
 
 from purr.messages import PermissionRequest
 from purr.models import PR, PendingAction, PRDetails, PRState, Review, ReviewStatus
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.bridge import RequestError
 from purr.tui.overview import details_line, render_overview
-from purr.tui.prompt import HistorySearchScreen, PromptInput
+from purr.tui.prompt import HistorySearchScreen, PromptArea
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -39,6 +39,7 @@ class SessionState:
     progress: str | None = None
     ask: PermissionRequest | None = None
     details_error: str | None = None  # why the description couldn't be loaded
+    diff_error: str | None = None  # why the diff couldn't be
 
 
 def _bullet(body: RenderableType, style: str = "") -> Table:
@@ -87,7 +88,7 @@ def render_entry(entry: dict) -> RenderableType | None:
         # Like Claude Code: the reasoning, dimmed, ahead of what it leads to.
         return _bullet(Text(entry["text"].strip(), style="dim italic"), style="dim")
     if kind == "user":
-        return Text(f"\n> {entry['text']}\n", style="bold")
+        return Text(f"\n> {entry['text'].replace(chr(10), chr(10) + '  ')}\n", style="bold")
     if kind == "tool_use":
         name, tool_input = entry.get("name", ""), entry.get("input") or {}
         if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
@@ -146,9 +147,9 @@ class PRSession(Vertical):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("enter", "ask", "Ask"),
-        # While typing too (the transcript has its own when focused).
-        Binding("pageup", "page(-1)", "Page up", show=False),
-        Binding("pagedown", "page(1)", "Page down", show=False),
+        # The transcript, wherever the focus is in the pane, typing included.
+        Binding("pageup", "page(-1)", "Page up", show=False, priority=True),
+        Binding("pagedown", "page(1)", "Page down", show=False, priority=True),
         Binding("ctrl+r", "search_history", "Search history", show=False),
     ]
 
@@ -164,7 +165,9 @@ class PRSession(Vertical):
         yield Static(id="pr-header")
         yield RichLog(id="transcript", wrap=True, markup=False, auto_scroll=True)
         yield Static(id="pr-decision")
-        yield PromptInput(id="prompt", placeholder="Ask the agent about this PR…")
+        yield PromptArea(
+            id="prompt", placeholder="Ask the agent about this PR…  (ctrl+j: new line)"
+        )
 
     def on_mount(self) -> None:
         self.border_title = "PR"
@@ -187,7 +190,7 @@ class PRSession(Vertical):
         if switching:
             self.redraw()
             asked = await self.purr_app.purr.store.prompts(pr.ref)
-            self.query_one(PromptInput).set_history([text for _, text in reversed(asked)])
+            self.query_one(PromptArea).set_history([text for _, text in reversed(asked)])
 
     def redraw(self) -> None:
         """Rewrite the transcript: the overview, then the session."""
@@ -196,7 +199,9 @@ class PRSession(Vertical):
         log = self.query_one(RichLog)
         log.clear()
         details = self.purr_app.details.get(self.pr)
-        log.write(render_overview(details, state.details_error), scroll_end=False)
+        diff = self.purr_app.details.diff(self.pr)
+        overview = render_overview(details, state.details_error, diff, state.diff_error)
+        log.write(overview, scroll_end=False)
         for entry in state.entries or []:
             self._write(entry)
         if not state.entries:
@@ -314,7 +319,7 @@ class PRSession(Vertical):
         return text
 
     def focus_prompt(self) -> None:
-        self.query_one("#prompt", Input).focus()
+        self.query_one(PromptArea).focus()
 
     def focus_transcript(self) -> None:
         self.query_one("#transcript").focus()
@@ -331,16 +336,15 @@ class PRSession(Vertical):
         log.scroll_page_down() if step > 0 else log.scroll_page_up()
 
     async def action_search_history(self) -> None:
-        prompt = self.query_one(PromptInput)
+        prompt = self.query_one(PromptArea)
         asked = await self.purr_app.purr.store.prompts()
 
         def picked(text: str | None) -> None:
             if text is not None:
-                prompt.value = text
-                prompt.cursor_position = len(text)
+                prompt.set_text(text)
             prompt.focus()
 
-        self.app.push_screen(HistorySearchScreen(asked, prompt.value), picked)
+        self.app.push_screen(HistorySearchScreen(asked, prompt.text), picked)
 
     def action_back(self) -> None:
         """From the prompt to the PR, from the PR to the list."""
@@ -349,9 +353,9 @@ class PRSession(Vertical):
         elif self.screen.query_one("#prs-pane").display:
             self.screen.query_one("#prs").focus()
 
-    @on(Input.Submitted, "#prompt")
-    async def send(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+    @on(PromptArea.Submitted)
+    async def send(self, event: PromptArea.Submitted) -> None:
+        text = event.text.strip()
         if not text or not self.pr:
             return
         try:
@@ -359,6 +363,6 @@ class PRSession(Vertical):
         except RequestError as e:
             self.notify(str(e), severity="warning")
             return
-        event.input.value = ""
-        self.query_one(PromptInput).remember(text)
+        event.prompt.clear()
+        event.prompt.remember(text)
         self.append(str(self.pr.ref), {"kind": "user", "text": text})

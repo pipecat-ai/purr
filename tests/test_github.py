@@ -213,3 +213,16 @@ async def test_pr_details():
             checks="FAILURE",
         )
     }
+
+
+async def test_pr_diff(tmp_path):
+    gh = tmp_path / "gh"
+    gh.write_text(
+        '#!/bin/sh\nif [ "$2" = "repos/a/b/pulls/2" ]; then echo "diff --git a/x b/x"; exit 0; fi\n'
+        'echo "gh: Sorry, the diff exceeded the maximum number of files (300)" >&2; exit 1\n'
+    )
+    gh.chmod(0o755)
+    github = GitHub(gh=str(gh))
+    assert await github.pr_diff(PRRef("a/b", 2)) == "diff --git a/x b/x\n"
+    with pytest.raises(GitHubError, match="^Sorry, the diff exceeded"):
+        await github.pr_diff(PRRef("a/b", 3))

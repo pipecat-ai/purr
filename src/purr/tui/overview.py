@@ -1,24 +1,30 @@
-"""What a PR is about, to decide whether to review it: description, files, CI.
+"""What a PR is about, to decide whether to review it: description, diff, CI.
 
-Details come from GitHub on demand (the PR list's polls stay lean), so the UI
-keeps them in a :class:`DetailsCache` and fetches ahead of the cursor.
+Details and diffs come from GitHub on demand (the PR list's polls stay lean),
+so the UI keeps them in a :class:`DetailsCache` and fetches ahead of the cursor.
 """
 
 import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from fnmatch import fnmatch
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
-from rich.table import Table
+from rich.rule import Rule
 from rich.text import Text
 
 from purr.models import PR, PRDetails
 
 # CI moves on without the PR's updated_at changing, so details also expire.
 STALE_AFTER = 120
-FILES_SHOWN = 30
+# Lines of diff shown; `d` opens all of it in a pager.
+DIFF_LINES = 3000
+# Diffs kept in memory (they only change with the PR's head).
+DIFFS_KEPT = 50
+# Generated files whose diff is noise: just their name and size.
+COLLAPSED = ("*.lock", "package-lock.json", "pnpm-lock.yaml", "go.sum", "*.min.js", "*.svg")
 
 _HTML_COMMENTS = re.compile(r"<!--.*?-->", re.DOTALL)  # PR templates are full of them
 
@@ -62,6 +68,8 @@ class DetailsCache:
     def __init__(self):
         self._entries: dict[str, _Entry] = {}
         self._fetching: set[str] = set()
+        self._diffs: dict[str, tuple[str, str]] = {}  # ref -> (head sha, diff), oldest first
+        self._fetching_diffs: set[str] = set()
 
     def get(self, pr: PR) -> PRDetails | None:
         entry = self._entries.get(str(pr.ref))
@@ -90,6 +98,30 @@ class DetailsCache:
         self._entries[str(pr.ref)] = _Entry(details, pr.updated_at, time.monotonic())
         return old is None or old.details != details
 
+    def diff(self, pr: PR) -> str | None:
+        """The PR's diff at its current head, if fetched."""
+        head, diff = self._diffs.get(str(pr.ref), ("", ""))
+        return diff if head == pr.head_sha else None
+
+    def claim_diffs(self, prs: list[PR]) -> list[PR]:
+        """The PRs whose diff is worth fetching, marked as on their way."""
+        claimed = [
+            pr for pr in prs if self.diff(pr) is None and str(pr.ref) not in self._fetching_diffs
+        ]
+        self._fetching_diffs.update(str(pr.ref) for pr in claimed)
+        return claimed
+
+    def put_diff(self, pr: PR, diff: str | None) -> bool:
+        """Store a fetched diff (None: the fetch failed). Returns whether it's new."""
+        self._fetching_diffs.discard(str(pr.ref))
+        if diff is None:
+            return False
+        self._diffs.pop(str(pr.ref), None)
+        self._diffs[str(pr.ref)] = (pr.head_sha, diff)
+        while len(self._diffs) > DIFFS_KEPT:
+            del self._diffs[next(iter(self._diffs))]
+        return True
+
 
 def details_line(pr: PR, details: PRDetails | None) -> Text:
     """``by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · bug``"""
@@ -116,36 +148,89 @@ def details_line(pr: PR, details: PRDetails | None) -> Text:
     return text
 
 
-def _files(details: PRDetails) -> Table:
-    grid = Table.grid(padding=(0, 1))
-    grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-    grid.add_column(justify="right", style="green")
-    grid.add_column(justify="right", style="red")
-    for change in details.files[:FILES_SHOWN]:
-        grid.add_row(change.path, f"+{change.additions}", f"−{change.deletions}")
-    return grid
+_FILE_NOTES = {
+    "new file mode": "new file",
+    "deleted file mode": "deleted",
+    "rename from": "renamed from",
+    "Binary files": "binary",
+}
+_SKIPPED = ("index ", "--- ", "+++ ", "old mode", "new mode", "similarity index", "rename to")
 
 
-def render_overview(details: PRDetails | None, error: str | None = None) -> RenderableType:
-    """The description, then the files changed."""
+def _file_rule(path: str, details: PRDetails | None) -> Rule:
+    title = Text(path, style="bold")
+    change = next((f for f in details.files if f.path == path), None) if details else None
+    if change:
+        title.append(f"  +{change.additions}", style="green")
+        title.append(f" −{change.deletions}", style="red")
+    return Rule(title, align="left", style="dim")
+
+
+def render_diff(diff: str, details: PRDetails | None = None) -> RenderableType:
+    """A unified diff the way ``git diff`` colors it, a rule per file."""
+    parts: list[RenderableType] = []
+    lines = diff.splitlines()
+    hunk: Text | None = None
+    collapsed = False
+    for line in lines[:DIFF_LINES]:
+        if line.startswith("diff --git "):
+            path = line.rpartition(" b/")[2]
+            parts.append(_file_rule(path, details))
+            collapsed = any(fnmatch(path.rpartition("/")[2], pattern) for pattern in COLLAPSED)
+            hunk = Text()
+            if collapsed:
+                hunk.append("generated, not shown\n", style="dim")
+            parts.append(hunk)
+            continue
+        if hunk is None or collapsed or line.startswith(_SKIPPED):
+            continue
+        note = next((n for prefix, n in _FILE_NOTES.items() if line.startswith(prefix)), None)
+        if note:
+            rest = line.removeprefix("rename from ") if note == "renamed from" else ""
+            hunk.append(f"{note} {rest}".rstrip() + "\n", style="dim italic")
+        elif line.startswith("@@"):
+            hunk.append(line + "\n", style="cyan")
+        elif line.startswith("+"):
+            hunk.append(line + "\n", style="green")
+        elif line.startswith("-"):
+            hunk.append(line + "\n", style="red")
+        elif line.startswith("\\"):
+            hunk.append(line + "\n", style="dim")
+        else:
+            hunk.append(line + "\n")
+    if (more := len(lines) - DIFF_LINES) > 0:
+        parts.append(Text(f"… {more} more lines. d opens the whole diff.", style="dim"))
+    return Group(*parts)
+
+
+def render_overview(
+    details: PRDetails | None,
+    error: str | None = None,
+    diff: str | None = None,
+    diff_error: str | None = None,
+) -> RenderableType:
+    """The description, then the diff."""
     if details is None:
         if error:
             return Text(f"Couldn't load the description: {error}", style="red")
         return Text("Loading the description…", style="dim")
     body = _HTML_COMMENTS.sub("", details.body).strip()
+    files = f"{details.changed_files} file{'s' if details.changed_files != 1 else ''} changed"
     parts: list[RenderableType] = [
         Markdown(body) if body else Text("No description.", style="dim italic"),
         Text(""),
         Text.assemble(
-            (
-                f"{details.changed_files} file{'s' if details.changed_files != 1 else ''} changed",
-                "bold",
-            ),
-            ("  d full diff", "dim"),
+            (files, "bold"),
+            (f"  +{details.additions}", "green"),
+            (f" −{details.deletions}", "red"),
+            ("  d opens it in your pager", "dim"),
         ),
-        _files(details),
     ]
-    if (more := details.changed_files - min(len(details.files), FILES_SHOWN)) > 0:
-        parts.append(Text(f"… and {more} more", style="dim"))
+    if diff is not None:
+        parts.append(render_diff(diff, details))
+    elif diff_error:
+        parts.append(Text(f"Couldn't load the diff: {diff_error}", style="red"))
+    else:
+        parts.append(Text("Loading the diff…", style="dim"))
     parts.append(Text(""))
     return Group(*parts)

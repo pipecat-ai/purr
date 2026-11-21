@@ -43,6 +43,7 @@ _GROUPS = [
 ]
 _ICONS = {key: icon for key, icon, *_ in _GROUPS}
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
+DIFFS_AHEAD = 3  # of those, whose diffs too (one request each, and bigger)
 
 
 def group(pr: PR) -> str:
@@ -401,9 +402,12 @@ class RepoView(PurrView):
         order = list(self._prs)
         index = order.index(str(pr.ref)) if str(pr.ref) in order else 0
         nearby = [self._prs[ref] for ref in order[index + 1 : index + 1 + NEARBY]]
-        # The PR on its own (it's the one being waited for) and the rest at once.
-        batches = [self.purr_app.details.claim(batch) for batch in ([pr], nearby)]
+        # The PR on its own (it's the one being waited for) and the rest at once;
+        # diffs one by one, the PR's and the next few.
+        cache = self.purr_app.details
+        batches = [cache.claim(batch) for batch in ([pr], nearby)]
         fetches = [self._fetch_details(batch) for batch in batches if batch]
+        fetches += [self._fetch_diff(p) for p in cache.claim_diffs([pr, *nearby[:DIFFS_AHEAD]])]
         if fetches:
             # Shielded: once asked, the answers are worth keeping even if the
             # cursor has moved on.
@@ -423,13 +427,28 @@ class RepoView(PurrView):
             if changed and shown and shown.ref == pr.ref:
                 await self.session.details_changed()
 
+    async def _fetch_diff(self, pr: PR) -> None:
+        try:
+            diff, error = await self.purr_app.bus.diff(pr.ref), None
+        except Exception as e:  # never let a background fetch take the UI down
+            diff, error = None, str(e) or type(e).__name__
+        state = self.purr_app.sessions.setdefault(str(pr.ref), SessionState())
+        changed = self.purr_app.details.put_diff(pr, diff) or state.diff_error != error
+        state.diff_error = error
+        shown = self.session.pr
+        if changed and shown and shown.ref == pr.ref:
+            await self.session.details_changed()
+
     @property
     def session(self) -> PRSession:
         return self.query_one(PRSession)
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # In the PR's pane, it's already open.
-        return not (action == "open" and self.session.has_focus_within)
+        if action == "open":  # in the PR's pane, it's already open
+            return not self.session.has_focus_within
+        if action == "search":  # while typing, / is a slash
+            return not self.session.query_one("#prompt").has_focus
+        return True
 
     @on(OptionList.OptionSelected)
     def action_open(self) -> None:

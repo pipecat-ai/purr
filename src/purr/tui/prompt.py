@@ -1,39 +1,74 @@
-"""The PR session's prompt: a shell-style line with history.
+"""The PR session's prompt: several lines, with a shell-style history.
 
-↑/↓ go through what you asked on this PR, ctrl+r searches everything you've
-asked on any PR, and the usual readline keys move around the line (ctrl+a/e,
-ctrl+b/f, alt+b/f, plus Textual's ctrl+k/u/w).
+``enter`` sends; ``ctrl+j`` (or ``shift+enter``/``alt+enter`` where the terminal
+tells them apart, or a ``\\`` at the end of the line) starts a new line, and
+pasting keeps the lines. ↑/↓ on the first/last line go through what you asked on
+this PR, ctrl+r searches everything you've asked on any PR, and the usual
+readline keys move around (ctrl+a/e, ctrl+b/f, alt+b/f, ctrl+k/u/w).
 """
 
+from dataclasses import dataclass
+
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, OptionList
+from textual.widgets import Input, Label, OptionList, TextArea
 from textual.widgets.option_list import Option
 
 from purr.models import PRRef
 
+NEWLINE_KEYS = ("ctrl+j", "shift+enter", "alt+enter")
 
-class PromptInput(Input):
-    """An input line with history, newest last, like a shell's."""
+
+class PromptArea(TextArea):
+    """Where you type to the PR's agent: several lines, and history newest last."""
+
+    @dataclass
+    class Submitted(Message):
+        prompt: "PromptArea"
+        text: str
 
     BINDINGS = [
-        Binding("up", "history(-1)", "Older", show=False),
-        Binding("down", "history(1)", "Newer", show=False),
+        Binding("up", "older", "Older", show=False),
+        Binding("down", "newer", "Newer", show=False),
         Binding("ctrl+b", "cursor_left", "Back a character", show=False),
         Binding("ctrl+f", "cursor_right", "Forward a character", show=False),
-        Binding("alt+b", "cursor_left_word", "Back a word", show=False),
-        Binding("alt+f", "cursor_right_word", "Forward a word", show=False),
+        Binding("alt+b", "cursor_word_left", "Back a word", show=False),
+        Binding("alt+f", "cursor_word_right", "Forward a word", show=False),
     ]
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(soft_wrap=True, tab_behavior="focus", show_line_numbers=False, **kwargs)
         self._history: list[str] = []
-        self._position = 0  # len(history): the line being written
-        self._draft = ""  # that line, while looking back
+        self._position = 0  # len(history): the text being written
+        self._draft = ""  # that text, while looking back
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            row, column = self.cursor_location
+            if column and self.document.get_line(row)[column - 1] == "\\":
+                # Like Claude Code: a backslash at the end continues on a new line.
+                self.delete((row, column - 1), (row, column))
+                self.insert("\n")
+            else:
+                self.post_message(self.Submitted(self, self.text))
+            return
+        if event.key in NEWLINE_KEYS:
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
+            return
+        await super()._on_key(event)
+
+    def set_text(self, text: str) -> None:
+        self.load_text(text)
+        self.move_cursor(self.document.end)
 
     def set_history(self, history: list[str]) -> None:
         """What was asked, oldest first."""
@@ -48,15 +83,30 @@ class PromptInput(Input):
         self._position = len(self._history)
         self._draft = ""
 
-    def action_history(self, step: int) -> None:
+    def action_older(self) -> None:
+        if self.cursor_location[0] > 0:
+            self.action_cursor_up()
+        else:
+            self._step(-1)
+
+    def action_newer(self) -> None:
+        if self.cursor_location[0] < self.document.line_count - 1:
+            self.action_cursor_down()
+        else:
+            self._step(1)
+
+    def _step(self, step: int) -> None:
         position = min(max(self._position + step, 0), len(self._history))
         if position == self._position:
             return
         if self._position == len(self._history):
-            self._draft = self.value
+            self._draft = self.text
         self._position = position
-        self.value = self._history[position] if position < len(self._history) else self._draft
-        self.cursor_position = len(self.value)
+        self.set_text(self._history[position] if position < len(self._history) else self._draft)
+
+
+def _one_line(text: str) -> str:
+    return " ⏎ ".join(line for line in text.splitlines() if line.strip())
 
 
 def short_ref(ref: PRRef) -> str:
@@ -98,7 +148,7 @@ class HistorySearchScreen(ModalScreen[str | None]):
     def _show(self, query: str) -> None:
         words = query.lower().split()
         options = [
-            Option(Text.assemble((f"{short_ref(ref):<18}", "dim"), text), id=str(i))
+            Option(Text.assemble((f"{short_ref(ref):<18}", "dim"), _one_line(text)), id=str(i))
             for i, (ref, text) in enumerate(self._prompts)
             if all(word in text.lower() for word in words)
         ]

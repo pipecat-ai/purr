@@ -13,6 +13,7 @@ from purr.messages import (
     PERMISSION_ANSWER,
     PR_ASSIGN,
     PR_DETAILS,
+    PR_DIFF,
     RECAP_CREATE,
     RECAP_WORKER,
     REPO_ADD,
@@ -73,6 +74,11 @@ class UIWorker(BaseWorker):
         """Description, files and CI of these PRs, keyed by ``owner/repo#123``."""
         response = await self._job(GITHUB_WORKER, PR_DETAILS, {"prs": [str(pr) for pr in prs]})
         return {ref: PRDetails.from_dict(d) for ref, d in response["details"].items()}
+
+    async def diff(self, pr: PRRef) -> str:
+        """The PR's unified diff."""
+        response = await self._job(GITHUB_WORKER, PR_DIFF, {"pr": str(pr)})
+        return str(response.get("diff") or "")
 
     async def send_message(self, pr: PRRef, text: str) -> None:
         await self._job(REVIEW_WORKER, REVIEW_MESSAGE, {"pr": str(pr), "text": text})

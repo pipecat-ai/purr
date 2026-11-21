@@ -220,16 +220,16 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         prompt = app.main.repo.session.query_one("#prompt")
         await pilot.press(*"draft")
         await pilot.press("up")
-        assert prompt.value == "tests?"
+        assert prompt.text == "tests?"
         await pilot.press("up", "up")
-        assert prompt.value == "is it safe?"
+        assert prompt.text == "is it safe?"
         await pilot.press("down", "down")
-        assert prompt.value == "draft"
+        assert prompt.text == "draft"
         # ...readline keys move around the line...
         await pilot.press("ctrl+a", "ctrl+f", "ctrl+f")
-        assert prompt.cursor_position == 2
+        assert prompt.cursor_location == (0, 2)
         await pilot.press("ctrl+e", "ctrl+b")
-        assert prompt.cursor_position == 4
+        assert prompt.cursor_location == (0, 4)
         # ...and ctrl+r searches everything asked, on any PR.
         while len(await app.purr.store.prompts()) < 2:  # recorded by the reviews worker
             await pilot.pause(0.02)
@@ -237,7 +237,16 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: isinstance(app.screen, HistorySearchScreen))
         await pilot.press(*"safe", "enter")
         await until(pilot, lambda: isinstance(app.screen, MainScreen))
-        assert prompt.value == "is it safe?" and focused(app) == "prompt"
+        assert prompt.text == "is it safe?" and focused(app) == "prompt"
+
+        # Several lines: ctrl+j, or a backslash at the end, starts a new one.
+        await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
+        await pilot.press("ctrl+u", *"first", "ctrl+j", *"second\\", "enter", *"third", "enter")
+        await until(pilot, lambda: agent.runs[-1]["prompt"] == "first\nsecond\nthird")
+        assert prompt.text == ""
+        # ↑ on the first line goes back in history; on a later line, up a line.
+        await pilot.press("up")
+        assert prompt.text == "first\nsecond\nthird"
 
         # Page up and down scroll the transcript while typing.
         log = app.main.repo.session.query_one("#transcript")
@@ -344,6 +353,10 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         files=(FileChange("src/bus.py", 22, 4),),
         checks="SUCCESS",
     )
+    github.diffs[PRRef("pipecat-ai/pipecat", 1)] = (
+        "diff --git a/src/bus.py b/src/bus.py\n--- a/src/bus.py\n+++ b/src/bus.py\n"
+        "@@ -1 +1 @@\n-    pass\n+    self.lock = asyncio.Lock()\n"
+    )
 
     async with app.run_test(size=(180, 45)) as pilot:
         await app.bus.add_repo("pipecat-ai/pipecat")
@@ -363,7 +376,9 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         app.main.repo.select("pipecat-ai/pipecat#1", repo="pipecat-ai/pipecat")
         await until(pilot, lambda: "Fixes a race in the bus." in transcript(app))
         assert "template stuff" not in transcript(app)
-        assert "src/bus.py" in transcript(app)
+        # Then its diff, after the description.
+        await until(pilot, lambda: "+    self.lock = asyncio.Lock()" in transcript(app))
+        assert transcript(app).index("Fixes a race") < transcript(app).index("src/bus.py")
         header = str(app.main.repo.session.query_one("#pr-header").render())
         assert "main ← fix-bus" in header and "✓ checks pass" in header
         assert "by alice" in header and "r to review it and take it" in header

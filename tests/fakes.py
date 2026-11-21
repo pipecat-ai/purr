@@ -25,6 +25,8 @@ class FakeGitHub:
         self.open: dict[str, list[RemotePR]] = {}
         self.details: dict = {}  # PRRef -> PRDetails
         self.details_calls: list[list] = []
+        self.diffs: dict = {}  # PRRef -> unified diff
+        self.diff_calls: list = []
         self.updates: dict[str, list[RemotePR]] = {}
         self.assigned: list[RemotePR] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
@@ -55,6 +57,10 @@ class FakeGitHub:
         refs = list(refs)
         self.details_calls.append(refs)
         return {ref: self.details[ref] for ref in refs if ref in self.details}
+
+    async def pr_diff(self, ref):
+        self.diff_calls.append(ref)
+        return self.diffs.get(ref, "")
 
     async def review_threads(self, ref):
         return list(getattr(self, "threads", []))

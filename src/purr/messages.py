@@ -40,6 +40,9 @@ PR_ASSIGN = "pr.assign"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: as
 # Description, files and CI of some PRs, read from GitHub (see purr.models.PRDetails):
 # payload: {"prs": ["owner/repo#123", ...]} -> {"details": {"owner/repo#123": {...}}}
 PR_DETAILS = "pr.details"
+# A PR's unified diff, as `gh pr diff` shows it:
+# payload: {"pr": "owner/repo#123"} -> {"diff": "..."}
+PR_DIFF = "pr.diff"
 
 # Job names handled by REVIEW_WORKER.
 REVIEW_START = "review.start"  # payload: {"pr": "owner/repo#123"}
