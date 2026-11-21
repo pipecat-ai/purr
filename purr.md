@@ -264,22 +264,22 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 
 ```
 ┌─ Purr › 2 pipecat-ai/pipecat ───────────────────────────────────────────── 🔔 1 · whisker#112 needs you ─┐
-│   #      TITLE                  ASSIGNED AUTHOR OPENED │ #2841  Add message bus                          │
+│   #       TITLE               ASSIGNED   AUTHOR OPENED │ #2841  Add message bus                          │
 │ ⚠ NEEDS YOU (1)                                        │ by alice · opened 3d ago · main ← bus · +412 −30 │
-│ ⚠ #2841  Add message bus        you      alice      3d │ ✓ Review done · 3 findings · 1 pending action    │
+│ ⚠ #2841   Add message bus     you        alice      3d │ ✓ Review done · 3 findings · 1 pending action    │
 │                                                        │                                                  │
 │ ● REVIEWING (1)                                        │ Adds a message bus so workers can talk without   │
-│ ● #2850  TTS context            you      bob        1d │ knowing about each other. …                      │
+│ ● #2850   TTS context         you        bob        1d │ knowing about each other. …                      │
 │                                                        │                                                  │
 │ ○ NOT REVIEWED (2)                                     │ 3 files changed  d full diff                     │
-│ ○ #2861  Docs typo                       carol      2h │ src/pipecat/bus/bus.py                +380 −12   │
-│ ○ #2855  Evals report                    dave       5h │ …                                                │
+│ ○ #2861   Docs typo                      carol      2h │ src/pipecat/bus/bus.py                +380 −12   │
+│ ○ #2855   Evals report                   dave       5h │ …                                                │
 │                                                        │                                                  │
 │ ✓ DONE (1)                                             │ ⏺ Clean refactor, tests pass. Concerns:          │
-│ ✓ #2833  Frame cleanup          you      erin       6d │   1. Race in bus.subscribe() on shutdown         │
+│ ✓ #2833   Frame cleanup       you        erin       6d │   1. Race in bus.subscribe() on shutdown         │
 │                                                        │ ┌──────────────────────────────────────────────┐ │
 │ ◌ OTHERS REVIEWING (1)                                 │ │ Post 3 comments and request changes?          │ │
-│ ◌ #2790  Krisp filter           grace    frank      2w │ │ [a] approve   [x] dismiss                     │ │
+│ ◌ #2790   Krisp filter        grace      frank      2w │ │ [a] approve   [x] dismiss                     │ │
 │                                                        │ └──────────────────────────────────────────────┘ │
 │                                                        │ > is the race reachable from user code?          │
 ├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤

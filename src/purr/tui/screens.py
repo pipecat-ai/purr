@@ -62,24 +62,38 @@ def _assignees(pr: PR) -> Text:
     return first.append(f" +{rest}", style="dim") if rest else first
 
 
-TITLE_GAP = 3
+GAP = 3  # spaces between the number, title, assignees and author
 
 
-def _row(*cells: Text | str) -> Table:
-    """A PR list row: mark, number, title, assignees, author, opened (on the right edge)."""
-    grid = Table.grid(padding=(0, 1), expand=True)
-    grid.add_column(width=1)
-    grid.add_column(width=6)
-    grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-    grid.add_column(width=TITLE_GAP)  # room after the title, so the row isn't a wall of text
-    grid.add_column(width=10, no_wrap=True, overflow="ellipsis")
-    grid.add_column(width=14, no_wrap=True, overflow="ellipsis")
-    grid.add_column(width=6, justify="right")
-    grid.add_row(*cells[:3], "", *cells[3:])
+def _row(*cells: Text | str, number_width: int = 5) -> Table:
+    """A PR list row: mark, number, title, assignees, author, opened (on the right edge).
+
+    ``number_width`` is the widest PR number's in the list (``#6934`` is 5).
+    """
+    columns = [
+        {"width": 1},
+        {"width": number_width},
+        {"ratio": 1, "no_wrap": True, "overflow": "ellipsis"},
+        {"width": len("ASSIGNED"), "no_wrap": True, "overflow": "ellipsis"},
+        {"width": 14, "no_wrap": True, "overflow": "ellipsis"},
+        {"width": 6, "justify": "right"},
+    ]
+    gaps = [1, GAP, GAP, GAP, 1]
+    grid = Table.grid(expand=True)
+    row: list[Text | str] = []
+    for column, cell, gap in zip(columns, cells, [*gaps, 0], strict=True):
+        grid.add_column(**column)
+        row.append(cell)
+        if gap:
+            grid.add_column(width=gap)
+            row.append("")
+    grid.add_row(*row)
     return grid
 
 
-_COLUMNS = _row(*(Text(h, style="dim") for h in ("", "#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED")))
+def _columns(number_width: int) -> Table:
+    headings = ("", "#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED")
+    return _row(*(Text(h, style="dim") for h in headings), number_width=number_width)
 
 
 def ago(timestamp: str | None) -> str:
@@ -261,6 +275,7 @@ class RepoView(PurrView):
         super().__init__(**kwargs)
         self.repo: str | None = None
         self._prs: dict[str, PR] = {}  # in list order
+        self._number_width = 5  # the widest "#6934" in the list
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
 
@@ -285,7 +300,8 @@ class RepoView(PurrView):
         await super().reload()
         prs = await self.purr_app.purr.store.list_prs(repo=self.repo, open_only=True)
         self._prs = {}
-        options: list[Option] = [Option(_COLUMNS, disabled=True)] if prs else []
+        self._number_width = max((len(f"#{pr.number}") for pr in prs), default=5)
+        options: list[Option] = [Option(_columns(self._number_width), disabled=True)] if prs else []
         for key, icon, label, style in _GROUPS:
             members = [pr for pr in prs if group(pr) == key]
             if not members:
@@ -317,6 +333,7 @@ class RepoView(PurrView):
             _assignees(pr),
             Text(pr.author, style="dim"),
             Text(short_age(pr.created_at), style="dim"),
+            number_width=self._number_width,
         )
 
     def selected_pr(self) -> PR | None:
