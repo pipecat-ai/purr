@@ -143,9 +143,19 @@ Opening a PR (`enter`) puts you in a Claude Code-style terminal for that PR. It'
 - `z` zooms the session to full screen; `esc` goes back to the list.
 - **Open in Claude Code** (`o`): Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools`. When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
 
-## Your review style
+## What the agent knows
 
-Instructions for how you like reviews, like a CLAUDE.md for reviews: plain Markdown, one file for all repos (`~/.config/purr/review.md`) and an optional one per repo (`~/.config/purr/repos/<owner>/<name>.md`). Both are added to the review agent's system prompt, after Purr's defaults, which they override. They're sent with every turn, so edits apply to sessions already under way. `i` opens the right one in `$EDITOR` (the repo's inside a repo, the general one at home), creating it with a short how-to in an HTML comment that isn't sent to the agent.
+Each PR's chat is Claude Code: the Agent SDK with Claude Code's own system prompt (`claude_code` preset) and built-in tools, plus what it needs for reviewing, in this order:
+
+1. **Purr's review instructions**: how to review, the `submit_review` / `propose_action` / `get_review_threads` tools, read linked issues, never touch GitHub.
+2. **The repo's own guidelines**: its `CLAUDE.md` and `AGENTS.md` (with `@file` imports resolved, as Claude Code does), read from the default branch rather than the PR, so a PR can't rewrite the rules it's reviewed against. For pipecat that's AGENTS.md: docstrings, deprecations, writing for future readers.
+3. **Your instructions**, which take precedence: plain Markdown files, like a CLAUDE.md, each for all repos and optionally per repo:
+   - **Review style** (`review.md`): how reviews should go (tone, what to raise, what to skip).
+   - **Code style** (`code.md`): what good code looks like to you, which reviews hold the PR to. Yours starts with: prefer a generic solution over special cases, avoid piling up flags to keep state, keep functions short.
+
+   They live in `~/.config/purr/` (`review.md`, `code.md`) and `~/.config/purr/repos/<owner>/<name>/` for one repo. `i` asks which one to edit (`r` review style, `c` code style) and opens it in `$EDITOR`: the repo's inside a repo, the general one at home. New files start with a short how-to in an HTML comment that isn't sent to the agent. Everything here is sent with every turn, so edits apply to sessions already under way.
+
+Where it differs from Claude Code on purpose: project settings (`.claude/settings.json`, hooks, skills) from the PR's checkout aren't loaded, since the PR could tamper with them, and tool permissions follow Purr's review policy.
 
 ## While you were away
 
@@ -308,7 +318,7 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 - `a` approve pending action, `x` dismiss
 - `z` zoom the PR session to full screen
 - `o` open the PR's session in Claude Code
-- `i` edit your review instructions (this repo's inside a repo, the general ones at home)
+- `i` edit your review style or code style (this repo's inside a repo, the general ones at home)
 - `w` open the latest "while you were away" recap
 - `/` filter
 
@@ -352,5 +362,5 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 - STT/LLM/TTS choices for the voice agent.
 - How long without activity counts as "away" (default 15 minutes?).
 - Which slash commands the PR session supports at first (`/clear`, `/compact`, `/model`, ...).
-- The repo's own CLAUDE.md isn't loaded in reviews: it comes with project settings, which are off because a PR could tamper with them. Load CLAUDE.md from the base branch instead (the PR can't change that)?
+- Load the repo's own Claude Code skills (pipecat has a `code-review` skill) from the default branch too?
 - Should comments Purr posts carry a marker saying they were written with AI? Today they're posted as the user, with no marker.

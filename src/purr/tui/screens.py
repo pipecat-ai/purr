@@ -494,3 +494,30 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def action_answer(self, yes: bool) -> None:
         self.dismiss(yes)
+
+
+class InstructionsScreen(ModalScreen):
+    """Which instructions to edit: how you like reviews, or how you like code."""
+
+    BINDINGS = [
+        Binding("r", "pick('review')", "Review style"),
+        Binding("c", "pick('code')", "Code style"),
+        Binding("escape", "pick('')", "Cancel", show=False),
+    ]
+
+    def __init__(self, repo: str | None):
+        super().__init__()
+        self._repo = repo
+
+    def compose(self) -> ComposeResult:
+        scope = f"for [b]{self._repo}[/b]" if self._repo else "for [b]all repos[/b]"
+        with Vertical(classes="dialog"):
+            yield Label(f"Your instructions {scope}")
+            yield Label("[b]r[/b]  review style: how reviews should go")
+            yield Label("[b]c[/b]  code style: what good code looks like to you")
+            yield Label("Opens in $EDITOR. Repo files add to the general ones.", classes="hint")
+
+    def action_pick(self, kind: str) -> None:
+        from purr.review.instructions import Kind
+
+        self.dismiss(Kind(kind) if kind else None)

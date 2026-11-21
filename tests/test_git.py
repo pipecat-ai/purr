@@ -62,3 +62,28 @@ async def test_unknown_pr_fails(tmp_path, upstream):
     repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
     with pytest.raises(GitError):
         await repos.checkout(PRRef("a/b", 99), "0" * 40)
+
+
+async def test_guidelines_come_from_the_default_branch(tmp_path, upstream):
+    (upstream / "CLAUDE.md").write_text("@AGENTS.md\n")
+    (upstream / "AGENTS.md").write_text("Use Google-style docstrings.\n")
+    git(upstream, "add", ".")
+    git(upstream, "commit", "-qm", "guidelines")
+    # The PR tries to relax them; reviews still see main's.
+    git(upstream, "checkout", "-q", "feature")
+    (upstream / "AGENTS.md").write_text("Anything goes.\n")
+    git(upstream, "add", ".")
+    git(upstream, "commit", "-qm", "relax")
+    git(upstream, "update-ref", "refs/pull/7/head", "HEAD")
+    git(upstream, "checkout", "-q", "main")
+
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    await repos.checkout(PRRef("a/b", 7), git(upstream, "rev-parse", "refs/pull/7/head"))
+    guidelines = await repos.guidelines("a/b")
+    assert guidelines == "### AGENTS.md\n\nUse Google-style docstrings."
+
+
+async def test_no_guidelines(tmp_path, upstream):
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    await repos.checkout(PRRef("a/b", 7), git(upstream, "rev-parse", "refs/pull/7/head"))
+    assert await repos.guidelines("a/b") == ""

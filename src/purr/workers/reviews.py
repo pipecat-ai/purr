@@ -287,6 +287,7 @@ class ReviewWorker(BaseWorker):
                 resume=resume,
                 prompt=prompt,
                 callbacks=self._callbacks(ref, submitted),
+                guidelines=await self._repos.guidelines(ref.repo),
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")

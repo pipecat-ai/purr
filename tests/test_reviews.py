@@ -320,3 +320,12 @@ async def test_a_pr_left_reviewing_by_a_cut_short_follow_up_is_settled(make):
             break
         await asyncio.sleep(0.01)
     assert await s.state() == PRState.DONE
+
+
+async def test_reviews_get_the_repo_guidelines(make):
+    s = await make()
+    s.repos.repo_guidelines = "### AGENTS.md\n\nUse Google-style docstrings."
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert "Google-style" in s.agent.runs[0]["guidelines"]

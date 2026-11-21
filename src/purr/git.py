@@ -7,6 +7,7 @@ checked out, and the user's own checkouts are never touched.
 """
 
 import asyncio
+import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +19,13 @@ from purr.models import PRRef
 
 class GitError(Exception):
     """A git command failed."""
+
+
+# The repo's default branch, as of the last checkout.
+BASE_REF = "refs/purr/base"
+GUIDELINE_FILES = ("CLAUDE.md", "AGENTS.md")
+_IMPORT = re.compile(r"^@(\S+)\s*$", re.MULTILINE)
+_GUIDELINES_LIMIT = 30_000
 
 
 def gh_clone(repo: str, dest: Path) -> list[str]:
@@ -54,12 +62,14 @@ class GitRepos:
                 logger.info(f"Cloning {ref.repo} into {clone}")
                 clone.parent.mkdir(parents=True, exist_ok=True)
                 await self._run(*self._clone_command(ref.repo, clone))
+            # The PR's head, and the default branch (where trusted guidelines live).
             await self._git(
                 clone,
                 "fetch",
                 "--quiet",
                 "origin",
                 f"+refs/pull/{ref.number}/head:refs/purr/pull/{ref.number}",
+                f"+HEAD:{BASE_REF}",
             )
             path = self.worktree_path(ref)
             if (path / ".git").exists():
@@ -73,6 +83,35 @@ class GitRepos:
                     clone, "worktree", "add", "--quiet", "--detach", str(path), head_sha
                 )
             return path
+
+    async def guidelines(self, repo: str) -> str:
+        """The repo's CLAUDE.md / AGENTS.md from its default branch, with ``@file`` imports.
+
+        Read from the default branch rather than the PR, so a PR can't rewrite
+        the rules it's reviewed against. Empty if there are none.
+        """
+        clone = self.clone_path(repo)
+        seen: set[str] = set()
+        parts: list[str] = []
+
+        async def read(name: str) -> None:
+            if name in seen:
+                return
+            seen.add(name)
+            try:
+                text = await self._git(clone, "show", f"{BASE_REF}:{name}")
+            except GitError:
+                return  # no such file
+            # `@AGENTS.md` on a line of its own imports that file, as in Claude Code.
+            for imported in _IMPORT.findall(text):
+                await read(imported.removeprefix("./"))
+            text = _IMPORT.sub("", text).strip()
+            if text:
+                parts.append(f"### {name}\n\n{text}")
+
+        for name in GUIDELINE_FILES:
+            await read(name)
+        return "\n\n".join(parts)[:_GUIDELINES_LIMIT]
 
     async def _git(self, cwd: Path, *args: str) -> str:
         return await self._run("git", "-C", str(cwd), *args)

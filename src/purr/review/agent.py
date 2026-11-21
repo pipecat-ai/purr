@@ -87,6 +87,17 @@ RESUME_PROMPT = (
 )
 
 
+def guidelines_section(repo: str, guidelines: str) -> str:
+    """The repo's own guidelines (from its default branch) as a system prompt section."""
+    if not guidelines:
+        return ""
+    return (
+        f"\n\n## {repo}'s own guidelines\n\nFrom the repo's CLAUDE.md / AGENTS.md on its "
+        "default branch. Hold the PR to them where they apply, and say which rule a "
+        f"finding comes from.\n\n{guidelines}"
+    )
+
+
 def rereview_prompt(old_sha: str | None, new_sha: str) -> str:
     """The follow-up that re-reviews a PR after new commits, in the same session."""
     since = f"`git diff {old_sha} {new_sha}`" if old_sha else "the PR's latest commits"
@@ -154,6 +165,7 @@ class ReviewAgent(Protocol):
         resume: bool,
         prompt: str,
         callbacks: ReviewCallbacks,
+        guidelines: str = "",
     ) -> AgentResult: ...
 
 
@@ -317,6 +329,7 @@ class ClaudeReviewAgent:
         resume: bool,
         prompt: str,
         callbacks: ReviewCallbacks,
+        guidelines: str = "",
     ) -> AgentResult:
         policy = Policy(worktree)
 
@@ -391,6 +404,7 @@ class ClaudeReviewAgent:
                 "type": "preset",
                 "preset": "claude_code",
                 "append": INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
+                + guidelines_section(pr.repo, guidelines)
                 + (self._instructions.for_repo(pr.repo) if self._instructions else ""),
             },
             mcp_servers={

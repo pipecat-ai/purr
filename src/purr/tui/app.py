@@ -27,9 +27,10 @@ from purr.messages import (
     SessionMessage,
 )
 from purr.models import PRChange, PRRef
+from purr.review.instructions import Kind
 from purr.tui.bridge import BusEvent, RequestError, UIWorker
 from purr.tui.recap import RecapScreen
-from purr.tui.screens import ConfirmScreen, MainScreen
+from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen
 from purr.tui.session import SessionState
 from purr.tui.switcher import PurrSwitcher, short_name
 from purr.workers.recap import LAST_ACTIVE
@@ -135,14 +136,17 @@ class PurrApp(App):
             self.run_worker(self.bus.active())
 
     async def action_instructions(self) -> None:
-        """Edit how you like reviews: this repo's file inside a repo, the general one at home."""
+        """Edit your review or code style: this repo's inside a repo, the general ones at home."""
         if self._modal_open():
             return
-        instructions = self.purr.instructions
-        if self.location:
-            path = instructions.ensure(instructions.repo_path(self.location), repo=self.location)
-        else:
-            path = instructions.ensure(instructions.global_path())
+
+        async def chosen(kind: Kind | None) -> None:
+            if kind:
+                await self._edit(self.purr.instructions.ensure(kind, self.location))
+
+        await self.push_screen(InstructionsScreen(self.location), chosen)
+
+    async def _edit(self, path: Path) -> None:
         editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi")
         with self.suspend():
             process = await asyncio.create_subprocess_exec(*editor, str(path))

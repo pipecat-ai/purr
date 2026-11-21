@@ -59,6 +59,9 @@ class FakeRepos:
     def worktree_path(self, ref):
         return self.root / "worktrees" / ref.repo / str(ref.number)
 
+    async def guidelines(self, repo):
+        return getattr(self, "repo_guidelines", "")
+
     async def checkout(self, ref, head_sha):
         path = self.worktree_path(ref)
         path.mkdir(parents=True, exist_ok=True)
@@ -89,12 +92,18 @@ class FakeAgent:
     def history(self, session_id, worktree):
         return list(self.entries.get(session_id, []))
 
-    async def run(self, *, pr, worktree, session_id, resume, prompt, callbacks):
+    async def run(self, *, pr, worktree, session_id, resume, prompt, callbacks, guidelines=""):
         from purr.models import ActionKind, Finding, Severity
         from purr.review.agent import AgentResult
 
         self.runs.append(
-            {"pr": pr.ref, "session_id": session_id, "resume": resume, "prompt": prompt}
+            {
+                "pr": pr.ref,
+                "session_id": session_id,
+                "resume": resume,
+                "prompt": prompt,
+                "guidelines": guidelines,
+            }
         )
         self.sessions.add(session_id)
         if self.gate:

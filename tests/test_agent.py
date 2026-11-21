@@ -66,3 +66,11 @@ def test_live_thinking_becomes_an_entry():
         {"kind": "thinking", "text": "The lock bump looks deliberate."},
         {"kind": "text", "text": "Looks good."},
     ]
+
+
+def test_guidelines_section():
+    from purr.review.agent import guidelines_section
+
+    assert guidelines_section("a/b", "") == ""
+    section = guidelines_section("a/b", "### AGENTS.md\n\nShort functions.")
+    assert "a/b's own guidelines" in section and "Short functions." in section

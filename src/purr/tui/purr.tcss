@@ -74,7 +74,7 @@
     margin: 0 1;
 }
 
-AddRepoScreen, ConfirmScreen, RecapScreen {
+AddRepoScreen, ConfirmScreen, RecapScreen, InstructionsScreen {
     align: center middle;
 }
 
