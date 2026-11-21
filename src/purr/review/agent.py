@@ -166,6 +166,7 @@ class ReviewAgent(Protocol):
         prompt: str,
         callbacks: ReviewCallbacks,
         guidelines: str = "",
+        plugin: Path | None = None,
     ) -> AgentResult: ...
 
 
@@ -330,8 +331,9 @@ class ClaudeReviewAgent:
         prompt: str,
         callbacks: ReviewCallbacks,
         guidelines: str = "",
+        plugin: Path | None = None,
     ) -> AgentResult:
-        policy = Policy(worktree)
+        policy = Policy(worktree, readable=[plugin] if plugin else [])
 
         @tool(
             SUBMIT_REVIEW,
@@ -412,11 +414,13 @@ class ClaudeReviewAgent:
                     PURR_SERVER, tools=[submit_review, propose_action, get_review_threads]
                 )
             },
+            # The repo's own skills and agents, from its default branch.
+            plugins=[{"type": "local", "path": str(plugin)}] if plugin else [],
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]},
             can_use_tool=can_use_tool,
             permission_mode="default",
             # Only the user's own settings: a PR's .claude/settings.json could define
-            # hooks, and those run commands.
+            # hooks, and those run commands. The repo's skills come in as a plugin.
             setting_sources=["user"],
             # Summaries of the agent's reasoning, shown in the PR session like
             # Claude Code does (the default, "omitted", returns them empty).

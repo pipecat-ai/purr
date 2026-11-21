@@ -73,6 +73,11 @@ class FakeRepos:
     async def guidelines(self, repo):
         return getattr(self, "repo_guidelines", "")
 
+    async def plugin(self, repo):
+        if isinstance(error := getattr(self, "plugin_error", None), Exception):
+            raise error
+        return getattr(self, "repo_plugin", None)
+
     async def checkout(self, ref, head_sha):
         path = self.worktree_path(ref)
         path.mkdir(parents=True, exist_ok=True)
@@ -103,7 +108,9 @@ class FakeAgent:
     def history(self, session_id, worktree):
         return list(self.entries.get(session_id, []))
 
-    async def run(self, *, pr, worktree, session_id, resume, prompt, callbacks, guidelines=""):
+    async def run(
+        self, *, pr, worktree, session_id, resume, prompt, callbacks, guidelines="", plugin=None
+    ):
         from purr.models import ActionKind, Finding, Severity
         from purr.review.agent import AgentResult
 
@@ -114,6 +121,7 @@ class FakeAgent:
                 "resume": resume,
                 "prompt": prompt,
                 "guidelines": guidelines,
+                "plugin": plugin,
             }
         )
         self.sessions.add(session_id)

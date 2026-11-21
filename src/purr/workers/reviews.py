@@ -3,6 +3,7 @@
 import asyncio
 import uuid
 from dataclasses import asdict
+from pathlib import Path
 
 from loguru import logger
 from pipecat.bus import BusJobRequestMessage, BusMessage
@@ -265,6 +266,14 @@ class ReviewWorker(BaseWorker):
 
     # -- Running ----------------------------------------------------------------------
 
+    async def _repo_plugin(self, repo: str) -> Path | None:
+        """The repo's skills and agents; a review goes ahead without them if they fail."""
+        try:
+            return await self._repos.plugin(repo)
+        except Exception as e:
+            logger.warning(f"Couldn't load {repo}'s skills and agents: {e}")
+            return None
+
     async def _run(self, pr: PR, review: Review, *, prompt: str, resume: bool, followup: bool):
         ref = pr.ref
         submitted: dict = {}
@@ -288,6 +297,7 @@ class ReviewWorker(BaseWorker):
                 prompt=prompt,
                 callbacks=self._callbacks(ref, submitted),
                 guidelines=await self._repos.guidelines(ref.repo),
+                plugin=await self._repo_plugin(ref.repo),
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")

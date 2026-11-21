@@ -2,8 +2,9 @@
 
 Reviews run on code from anyone who opens a PR, so the defaults are strict:
 
-- **Allowed** without asking: reading and searching inside the PR's worktree,
-  read-only git and ``gh`` commands, and a few read-only shell tools.
+- **Allowed** without asking: reading and searching inside the PR's worktree
+  (and the repo's own skills), loading skills, read-only git and ``gh``
+  commands, and a few read-only shell tools.
 - **Denied**, always: anything visible on GitHub (reviews, comments, merges,
   ``gh api`` writes, ``git push``) and reading GitHub credentials. The agent
   proposes those as pending actions instead; the app runs them once you approve.
@@ -16,6 +17,7 @@ against mistakes and prompt injection in PR content, not a sandbox.
 
 import re
 import shlex
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -44,7 +46,8 @@ GITHUB_WRITE_REASON = (
 
 # Tools that only read. Path-taking ones are still checked against the worktree.
 _READ_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead"}
-_SAFE_TOOLS = {"TodoWrite", "WebSearch", "Task", "Agent", "ToolSearch"}
+# Skill only loads a skill's instructions; what it then runs is checked as usual.
+_SAFE_TOOLS = {"TodoWrite", "WebSearch", "Task", "Agent", "ToolSearch", "Skill"}
 
 # Spotted anywhere in a command, even inside quotes or nested shells.
 _GITHUB_WRITES = [
@@ -122,10 +125,16 @@ _FIND_ACTIONS = {"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-f
 
 
 class Policy:
-    """Decides on each tool call a review agent makes in ``worktree``."""
+    """Decides on each tool call a review agent makes in ``worktree``.
 
-    def __init__(self, worktree: Path):
+    Args:
+        worktree: The PR's worktree, where the agent works.
+        readable: Other directories it may read without asking (the repo's skills).
+    """
+
+    def __init__(self, worktree: Path, readable: Iterable[Path] = ()):
         self._worktree = worktree.resolve()
+        self._roots = [self._worktree, *(path.resolve() for path in readable)]
 
     def check(self, tool: str, tool_input: dict) -> Verdict:
         if tool.startswith(PURR_TOOL_PREFIX) or tool in _SAFE_TOOLS:
@@ -194,4 +203,4 @@ class Policy:
 
     def _inside(self, path: str) -> bool:
         resolved = (self._worktree / Path(path).expanduser()).resolve()
-        return resolved == self._worktree or self._worktree in resolved.parents
+        return any(resolved == root or root in resolved.parents for root in self._roots)

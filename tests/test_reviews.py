@@ -329,3 +329,21 @@ async def test_reviews_get_the_repo_guidelines(make):
     await s.client.request(REVIEW_START, {"pr": str(REF)})
     await eventually(lambda: s.client.of(ReviewFinished))
     assert "Google-style" in s.agent.runs[0]["guidelines"]
+
+
+async def test_reviews_get_the_repo_plugin(make, tmp_path):
+    s = await make()
+    s.repos.repo_plugin = tmp_path / "plugin"
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["plugin"] == tmp_path / "plugin"
+
+
+async def test_reviews_go_ahead_without_the_repo_plugin(make):
+    s = await make()
+    s.repos.plugin_error = OSError("disk full")
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["plugin"] is None

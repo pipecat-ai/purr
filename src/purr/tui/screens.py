@@ -62,16 +62,20 @@ def _assignees(pr: PR) -> Text:
     return first.append(f" +{rest}", style="dim") if rest else first
 
 
+TITLE_GAP = 3
+
+
 def _row(*cells: Text | str) -> Table:
     """A PR list row: mark, number, title, assignees, author, opened (on the right edge)."""
     grid = Table.grid(padding=(0, 1), expand=True)
     grid.add_column(width=1)
     grid.add_column(width=6)
     grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+    grid.add_column(width=TITLE_GAP)  # room after the title, so the row isn't a wall of text
     grid.add_column(width=10, no_wrap=True, overflow="ellipsis")
     grid.add_column(width=14, no_wrap=True, overflow="ellipsis")
     grid.add_column(width=6, justify="right")
-    grid.add_row(*cells)
+    grid.add_row(*cells[:3], "", *cells[3:])
     return grid
 
 

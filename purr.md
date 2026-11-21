@@ -119,10 +119,11 @@ How it's built (`src/purr/review/`, `src/purr/workers/reviews.py`):
 - The agent reports through two in-process tools: `submit_review {summary, findings}` and `propose_action {kind: request_changes|approve|comment, description, body, comments}`. A new proposal (or a new review) dismisses the previous pending one.
 - The session ID is a UUID Purr picks before starting, stored right away, so even a review that dies early can be resumed (`resume=`), or restarted under the same ID if no transcript was written yet.
 - **Permission policy** (`review/policy.py`), applied in a PreToolUse hook to every tool call. PRs in the pool can come from anyone, so a background review doesn't run their code:
-  - *Allowed without asking:* reading and searching inside the worktree; read-only git and `gh` commands; read-only shell tools (`ls`, `cat`, `grep`, `rg`, `find` without `-exec`/`-delete`, ...). Chains and pipes are fine when every command in them is read-only. Commands are tokenized quote-aware and line by line, and `2>/dev/null` / `2>&1` are allowed.
+  - *Allowed without asking:* reading and searching inside the worktree (and the repo's skills); loading a skill; read-only git and `gh` commands; read-only shell tools (`ls`, `cat`, `grep`, `rg`, `find` without `-exec`/`-delete`, ...). Chains and pipes are fine when every command in them is read-only. Commands are tokenized quote-aware and line by line, and `2>/dev/null` / `2>&1` are allowed.
   - *Always denied:* GitHub writes, `git push`, reading the GitHub token (`gh auth token`). Checked against the whole raw command, including quoted or nested shells.
   - *Asks:* everything else: running tests or scripts, editing files, fetching URLs, paths outside the worktree, redirections, subshells, command substitution. Until the PR session UI can show prompts, the answer is "no" and the agent carries on, noting in its findings what it couldn't check.
 - Only the user's own Claude Code settings are loaded (`setting_sources=["user"]`). A PR's `.claude/settings.json` could define hooks, and hooks run commands.
+- The repo's own skills, agents and commands (`.claude/skills`, `.claude/agents`, `.claude/commands`) are loaded from its default branch as a plugin named after the repo, so pipecat's show up as `pipecat:code-review`, `pipecat:docstring`, ... (`plugins=`). Purr builds it from its clone (`git archive` of those directories into `plugins/<owner>/<name>/<key>`, the key coming from their tree hashes), so it's rebuilt only when they change on the default branch. Frontmatter that could get around the review policy is dropped: `hooks`, `allowed-tools`, `permissionMode`, `mcpServers`. The repo's `settings.json` isn't used. A review goes ahead without them if they can't be loaded.
 - PRs assigned to you are reviewed automatically (`auto_review`, on by default): when the poller reports an assignment, and on startup for assigned PRs that were never reviewed. Reviews interrupted by quitting resume on the next start.
 - A failed review moves the PR to Needs you, with the error.
 - The agent reads linked issues (`gh issue view`) to know what the PR is meant to do, and the PR's existing review threads (a `get_review_threads` tool: ids, file and line, resolved or not, comments, with the user's own marked) so it doesn't repeat what's been said. A proposal can carry `replies` to existing threads next to its new inline comments; Purr posts the review, then the replies. A reply failing after the review went up is a warning, not a retry, so the review can't be posted twice.
@@ -149,13 +150,14 @@ Each PR's chat is Claude Code: the Agent SDK with Claude Code's own system promp
 
 1. **Purr's review instructions**: how to review, the `submit_review` / `propose_action` / `get_review_threads` tools, read linked issues, never touch GitHub.
 2. **The repo's own guidelines**: its `CLAUDE.md` and `AGENTS.md` (with `@file` imports resolved, as Claude Code does), read from the default branch rather than the PR, so a PR can't rewrite the rules it's reviewed against. For pipecat that's AGENTS.md: docstrings, deprecations, writing for future readers.
-3. **Your instructions**, which take precedence: plain Markdown files, like a CLAUDE.md, each for all repos and optionally per repo:
+3. **The repo's own skills and agents**, also from the default branch (see Reviews), e.g. pipecat's `docstring` and `changelog` skills and its `code-review` workflow. Skills that are only for people (`disable-model-invocation`, like `code-review`) aren't offered to the agent.
+4. **Your instructions**, which take precedence: plain Markdown files, like a CLAUDE.md, each for all repos and optionally per repo:
    - **Review style** (`review.md`): how reviews should go (tone, what to raise, what to skip).
    - **Code style** (`code.md`): what good code looks like to you, which reviews hold the PR to. Yours starts with: prefer a generic solution over special cases, avoid piling up flags to keep state, keep functions short.
 
    They live in `~/.config/purr/` (`review.md`, `code.md`) and `~/.config/purr/repos/<owner>/<name>/` for one repo. `i` asks which one to edit (`r` review style, `c` code style) and opens it in `$EDITOR`: the repo's inside a repo, the general one at home. New files start with a short how-to in an HTML comment that isn't sent to the agent. Everything here is sent with every turn, so edits apply to sessions already under way.
 
-Where it differs from Claude Code on purpose: project settings (`.claude/settings.json`, hooks, skills) from the PR's checkout aren't loaded, since the PR could tamper with them, and tool permissions follow Purr's review policy.
+Where it differs from Claude Code on purpose: nothing from the PR's own `.claude/` is loaded, since the PR could tamper with it. Skills and agents come from the default branch instead, and the repo's `settings.json` (hooks) isn't used at all. Tool permissions follow Purr's review policy.
 
 ## While you were away
 
@@ -362,5 +364,4 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 - STT/LLM/TTS choices for the voice agent.
 - How long without activity counts as "away" (default 15 minutes?).
 - Which slash commands the PR session supports at first (`/clear`, `/compact`, `/model`, ...).
-- Load the repo's own Claude Code skills (pipecat has a `code-review` skill) from the default branch too?
 - Should comments Purr posts carry a marker saying they were written with AI? Today they're posted as the user, with no marker.
