@@ -63,19 +63,19 @@ def _assignees(pr: PR) -> Text:
 
 
 def _row(*cells: Text | str) -> Table:
-    """A PR list row: mark, number, title, author, opened, assignees."""
+    """A PR list row: mark, number, title, assignees, then author and opened on the right edge."""
     grid = Table.grid(padding=(0, 1), expand=True)
     grid.add_column(width=1)
     grid.add_column(width=6)
     grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-    grid.add_column(width=14, no_wrap=True, overflow="ellipsis")
+    grid.add_column(width=10, no_wrap=True, overflow="ellipsis")
+    grid.add_column(width=14, justify="right", no_wrap=True, overflow="ellipsis")
     grid.add_column(width=6, justify="right")
-    grid.add_column(width=12, no_wrap=True, overflow="ellipsis")
     grid.add_row(*cells)
     return grid
 
 
-_COLUMNS = _row(*(Text(h, style="dim") for h in ("", "#", "TITLE", "AUTHOR", "OPENED", "ASSIGNED")))
+_COLUMNS = _row(*(Text(h, style="dim") for h in ("", "#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED")))
 
 
 def ago(timestamp: str | None) -> str:
@@ -310,9 +310,9 @@ class RepoView(PurrView):
             Text("▪", style="bold magenta") if marked else _ICONS[group(pr)],
             Text(f"#{pr.number}", style=NUMBER_STYLE),
             pr.title,
+            _assignees(pr),
             Text(pr.author, style="dim"),
             Text(short_age(pr.created_at), style="dim"),
-            _assignees(pr),
         )
 
     def selected_pr(self) -> PR | None:

@@ -302,7 +302,7 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         # Columns, and the PR someone else took goes last, in its own group.
         assert pr_ids(app)[-1] == "pipecat-ai/pipecat#2"
         lines = option_texts(app)
-        assert lines[0].split() == ["#", "TITLE", "AUTHOR", "OPENED", "ASSIGNED"]
+        assert lines[0].split() == ["#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED"]
         assert "OTHERS REVIEWING (1)" in "\n".join(lines)
         row = next(line for line in lines if "Message bus" in line)
         assert "#1" in row and "alice" in row
