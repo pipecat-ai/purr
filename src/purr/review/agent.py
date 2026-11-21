@@ -32,8 +32,10 @@ from claude_agent_sdk import (
 )
 
 from purr.models import PR, ActionKind, Finding, Severity
+from purr.review.instructions import ReviewInstructions
 from purr.review.policy import Policy
 from purr.review.tools import (
+    GET_REVIEW_THREADS,
     PROPOSE_ACTION,
     PROPOSE_ACTION_SCHEMA,
     PURR_SERVER,
@@ -48,7 +50,11 @@ The PR's head is checked out in the current directory (a detached git worktree).
 
 How to review:
 - Start with the PR's description and diff: `gh pr view {number} --repo {repo}` and
-  `gh pr diff {number} --repo {repo}`.
+  `gh pr diff {number} --repo {repo}`. If the PR links issues ("Fixes #123", or
+  linked issues in the description), read them with `gh issue view` to know what
+  the change is meant to do.
+- Call `get_review_threads` to see the review conversation so far, so you don't
+  repeat what's already been said.
 - Read the code around the change until you understand it. Look for bugs,
   regressions, missing or weak tests, security problems and confusing code. Be
   concrete: say what's wrong, where, and why it matters. Skip praise, and skip
@@ -61,18 +67,38 @@ How to review:
 You can't post to GitHub or merge, and must not try. When you're done:
 1. Call `submit_review` once, with a short summary and your findings.
 2. Call `propose_action` once with what you recommend: `request_changes` (with
-   the inline comments to post), `approve`, or `comment`. The user approves or
-   dismisses it, and Purr posts it for them.
+   the inline comments to post), `approve`, or `comment`. When a point belongs
+   in an existing thread, put it in `replies` (with the thread's id) instead of
+   a new comment. The user approves or dismisses it, and Purr posts it for them.
 Then stop.
 
-Later, the user may continue this conversation to ask questions or have you dig
-deeper. If your recommendation changes, call `propose_action` again.
+Afterwards the user keeps talking with you in this conversation: questions,
+digging deeper, and deciding what to post. When they ask to change what gets
+posted (drop a comment, reword one, change the verdict), call `propose_action`
+again with the whole updated proposal; it replaces the previous one. Same if
+your recommendation changes.
 """
+
 
 RESUME_PROMPT = (
     "Purr was restarted while you were reviewing. Continue where you left off, "
     "and finish by calling submit_review and propose_action."
 )
+
+
+def rereview_prompt(old_sha: str | None, new_sha: str) -> str:
+    """The follow-up that re-reviews a PR after new commits, in the same session."""
+    since = f"`git diff {old_sha} {new_sha}`" if old_sha else "the PR's latest commits"
+    return (
+        f"The author pushed new commits; the PR's head is now {new_sha}, checked out here. "
+        f"Review what changed since your last review ({since}; the earlier commits are "
+        "still available locally). Say which of your earlier findings are resolved and "
+        "which still stand, and look for new problems in what changed. Check the review "
+        "threads first (get_review_threads): reply in existing threads rather than "
+        "repeating yourself, and on threads about your earlier findings, say whether "
+        "they're resolved. Then call submit_review with the updated findings and "
+        "propose_action with what to post now."
+    )
 
 
 def review_prompt(pr: PR) -> str:
@@ -90,12 +116,14 @@ class ReviewCallbacks:
             returns the pending action's ID.
         on_ask: The agent wants a tool that isn't pre-approved ``(tool, input,
             reason)``; returns whether the user allows it.
+        on_threads: The PR's review threads, for ``get_review_threads``.
     """
 
     on_message: Callable[[dict], Awaitable[None]]
     on_submit: Callable[[str, list[Finding]], Awaitable[None]]
     on_propose: Callable[[ActionKind, str, dict], Awaitable[str]]
     on_ask: Callable[[str, dict, str], Awaitable[bool]]
+    on_threads: Callable[[], Awaitable[list[dict]]]
 
 
 @dataclass
@@ -257,9 +285,16 @@ class ClaudeReviewAgent:
         max_budget_usd: Optional spending cap per run.
     """
 
-    def __init__(self, *, model: str | None = None, max_budget_usd: float | None = None):
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        max_budget_usd: float | None = None,
+        instructions: ReviewInstructions | None = None,
+    ):
         self._model = model
         self._max_budget_usd = max_budget_usd
+        self._instructions = instructions
 
     def session_exists(self, session_id: str, worktree: Path) -> bool:
         return get_session_info(session_id, directory=str(worktree)) is not None
@@ -300,9 +335,22 @@ class ClaudeReviewAgent:
                 kind = ActionKind(args.get("kind"))
             except ValueError:
                 return {**_ok(f"Unknown kind {args.get('kind')!r}."), "is_error": True}
-            payload = {"body": args.get("body", ""), "comments": args.get("comments", [])}
+            payload = {
+                "body": args.get("body", ""),
+                "comments": args.get("comments", []),
+                "replies": args.get("replies", []),
+            }
             action_id = await callbacks.on_propose(kind, str(args.get("description", "")), payload)
             return _ok(f"Proposed (action {action_id}). The user will approve or dismiss it.")
+
+        @tool(
+            GET_REVIEW_THREADS,
+            "The PR's review threads: id, file and line, resolved or not, and the comments "
+            "(by_user marks the user's own).",
+            {"type": "object", "properties": {}},
+        )
+        async def get_review_threads(args: dict) -> dict:
+            return _ok(json.dumps(await callbacks.on_threads(), indent=1))
 
         async def pre_tool_use(hook_input: Any, tool_use_id: str | None, context: Any) -> dict:
             verdict = policy.check(hook_input["tool_name"], hook_input.get("tool_input") or {})
@@ -329,11 +377,12 @@ class ClaudeReviewAgent:
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": INSTRUCTIONS.format(repo=pr.repo, number=pr.number),
+                "append": INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
+                + (self._instructions.for_repo(pr.repo) if self._instructions else ""),
             },
             mcp_servers={
                 PURR_SERVER: create_sdk_mcp_server(
-                    PURR_SERVER, tools=[submit_review, propose_action]
+                    PURR_SERVER, tools=[submit_review, propose_action, get_review_threads]
                 )
             },
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]},

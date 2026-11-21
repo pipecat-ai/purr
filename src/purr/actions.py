@@ -7,6 +7,7 @@ through ``gh``, as the user.
 
 import asyncio
 import json
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from loguru import logger
@@ -31,6 +32,16 @@ class GitHubWriter(Protocol):
 
     async def assign_self(self, ref: PRRef) -> None: ...
 
+    async def reply_to_thread(self, thread_id: str, body: str) -> str: ...
+
+
+@dataclass
+class Posted:
+    """What posting an action did. ``warnings`` lists parts that didn't go through."""
+
+    url: str
+    warnings: list[str] = field(default_factory=list)
+
 
 def _folded(body: str, comments: list[dict]) -> str:
     """Inline comments written into the review body, for when GitHub won't place them."""
@@ -38,17 +49,41 @@ def _folded(body: str, comments: list[dict]) -> str:
     return f"{body.strip()}\n\n{notes}" if body.strip() else notes
 
 
-async def execute(writer: GitHubWriter, action: PendingAction, *, head_sha: str) -> str:
-    """Post an approved action. Returns the URL of what was posted."""
+async def execute(writer: GitHubWriter, action: PendingAction, *, head_sha: str) -> Posted:
+    """Post an approved action: the review, then any replies in existing threads.
+
+    Raises ActionError if the review itself can't be posted. A reply that fails
+    after the review went up is a warning instead, so retrying can't post the
+    review twice.
+    """
     event = _REVIEW_EVENTS.get(action.kind)
     if event is None:
         raise ActionError(f"Purr can't {action.kind.value.replace('_', ' ')} yet")
+    replies = [
+        r for r in action.payload.get("replies") or [] if r.get("thread_id") and r.get("body")
+    ]
+    url = await _review(writer, action, event, head_sha, only_replies=bool(replies))
+    warnings = []
+    for reply in replies:
+        try:
+            reply_url = await writer.reply_to_thread(reply["thread_id"], reply["body"])
+            url = url or reply_url
+        except ActionError as e:
+            warnings.append(f"A reply in a review thread didn't go through: {e}")
+    return Posted(url=url, warnings=warnings)
+
+
+async def _review(
+    writer: GitHubWriter, action: PendingAction, event: str, head_sha: str, *, only_replies: bool
+) -> str:
     body = str(action.payload.get("body") or "")
     comments = [
         {"path": c["path"], "line": int(c["line"]), "side": "RIGHT", "body": c["body"]}
         for c in action.payload.get("comments") or []
         if c.get("path") and c.get("line") and c.get("body")
     ]
+    if not body and not comments and event == "COMMENT" and only_replies:
+        return ""  # just replies, no review to submit
     if not body and not comments and event != "APPROVE":
         body = action.description  # GitHub wants some text for these
     try:
@@ -99,6 +134,28 @@ class GhWriter:
         _, stderr = await process.communicate()
         if process.returncode != 0:
             raise ActionError(stderr.decode().strip() or f"gh exited with {process.returncode}")
+
+    async def reply_to_thread(self, thread_id: str, body: str) -> str:
+        process = await asyncio.create_subprocess_exec(
+            self._gh,
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation($id: ID!, $body: String!) {"
+            " addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body})"
+            " { comment { url } } }",
+            "-f",
+            f"id={thread_id}",
+            "-f",
+            f"body={body}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise ActionError(stderr.decode().strip() or f"gh exited with {process.returncode}")
+        reply = json.loads(stdout or "{}").get("data", {}).get("addPullRequestReviewThreadReply")
+        return ((reply or {}).get("comment") or {}).get("url", "")
 
     async def _api(self, path: str, request: dict) -> dict:
         process = await asyncio.create_subprocess_exec(

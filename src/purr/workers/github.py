@@ -232,7 +232,7 @@ class GitHubWorker(BaseWorker):
             return
         pr = await self._store.get_pr(action.pr)
         try:
-            url = await execute(self._writer, action, head_sha=pr.head_sha if pr else "")
+            posted = await execute(self._writer, action, head_sha=pr.head_sha if pr else "")
         except ActionError as e:
             # Back to pending, so it can be retried.
             await self._store.transition_action(
@@ -244,7 +244,9 @@ class GitHubWorker(BaseWorker):
             action_id, expected=ActionStatus.APPROVED, new=ActionStatus.EXECUTED
         )
         await self._resolved(action.pr, action_id, approved=True)
-        await self.send_job_response(message.job_id, {"url": url})
+        await self.send_job_response(
+            message.job_id, {"url": posted.url, "warnings": posted.warnings}
+        )
 
     @job(name=ACTION_DISMISS)
     async def on_action_dismiss(self, message: BusJobRequestMessage) -> None:

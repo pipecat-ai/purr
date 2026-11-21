@@ -34,13 +34,13 @@ REF = PRRef("pipecat-ai/pipecat", 2841)
 
 
 def make_pr(**kwargs) -> PR:
+    kwargs.setdefault("head_sha", "abc123")
     return PR(
         repo=REF.repo,
         number=REF.number,
         title="Add message bus",
         author="someone",
         url="https://github.com/pipecat-ai/pipecat/pull/2841",
-        head_sha="abc123",
         updated_at="2026-11-20T10:00:00Z",
         **kwargs,
     )
@@ -260,3 +260,28 @@ async def test_the_agent_waits_for_permission(make):
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.answers == [True]
     assert "error" in await s.client.request(PERMISSION_ANSWER, answer)  # already answered
+
+
+async def test_new_commits_get_a_rereview_in_the_same_session(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr(assigned_to_me=True))
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    first = s.agent.runs[0]
+    assert (await s.store.latest_review(REF)).head_sha == "abc123"
+
+    # The author pushes; the poller notices.
+    await s.store.upsert_pr(make_pr(assigned_to_me=True, head_sha="def456"))
+    await s.client.send_bus_message(
+        PRChanged(source="github", pr=str(REF), change="new_commits", title="Add message bus")
+    )
+    await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
+    rereview = s.agent.runs[1]
+    assert rereview["resume"] is True and rereview["session_id"] == first["session_id"]
+    assert "git diff abc123 def456" in rereview["prompt"]
+    assert (await s.store.latest_review(REF)).head_sha == "def456"
+    assert s.repos.checkouts[-1] == (REF, "def456")
+
+    # Same head again: nothing to re-review.
+    worker = s.runner.get_worker(REVIEW_WORKER)
+    assert await worker.rereview(REF) is False

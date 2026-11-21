@@ -1,5 +1,8 @@
 """The Textual app: hosts the Purr process and handles navigation."""
 
+import asyncio
+import os
+import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -60,6 +63,7 @@ class PurrApp(App):
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
         Binding("ctrl+n", "next_alert", "Next alert", show=False, priority=True),
         Binding("w", "recap", "Recap", show=False),
+        Binding("i", "instructions", "Review style"),
         Binding("0", "home", "Repos", show=False),
         *[Binding(str(n), f"jump({n})", show=False) for n in range(1, 10)],
     ]
@@ -130,6 +134,21 @@ class PurrApp(App):
         if self._last_reported is None or (now - self._last_reported).total_seconds() > 60:
             self._last_reported = now
             self.run_worker(self.bus.active())
+
+    async def action_instructions(self) -> None:
+        """Edit how you like reviews: this repo's file inside a repo, the general one at home."""
+        if self._modal_open():
+            return
+        instructions = self.purr.instructions
+        if self.location:
+            path = instructions.ensure(instructions.repo_path(self.location), repo=self.location)
+        else:
+            path = instructions.ensure(instructions.global_path())
+        editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi")
+        with self.suspend():
+            process = await asyncio.create_subprocess_exec(*editor, str(path))
+            await process.wait()
+        self.notify(f"Saved {path}. It applies from the agents' next turn.")
 
     async def action_recap(self) -> None:
         if self._modal_open():

@@ -33,7 +33,8 @@ RECAP_CREATE = "recap.create"
 # unknown repo) still completes, with {"error": "..."} as the response.
 REPO_ADD = "repo.add"  # payload: {"repo": "owner/name" or a GitHub URL} -> {"repo": "owner/name"}
 REPO_REMOVE = "repo.remove"  # payload: {"repo": "owner/name"} -> {"repo": "owner/name"}
-ACTION_APPROVE = "action.approve"  # payload: {"action_id": "..."} -> {"url": "..."}
+# payload: {"action_id": "..."} -> {"url": "...", "warnings": [...]}
+ACTION_APPROVE = "action.approve"
 ACTION_DISMISS = "action.dismiss"  # payload: {"action_id": "..."} -> {"ok": true}
 PR_ASSIGN = "pr.assign"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: assigns you
 

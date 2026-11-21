@@ -71,8 +71,10 @@ class UIWorker(BaseWorker):
     async def send_message(self, pr: PRRef, text: str) -> None:
         await self._job(REVIEW_WORKER, REVIEW_MESSAGE, {"pr": str(pr), "text": text})
 
-    async def approve(self, action_id: str) -> str:
-        return (await self._job(GITHUB_WORKER, ACTION_APPROVE, {"action_id": action_id}))["url"]
+    async def approve(self, action_id: str) -> tuple[str, list[str]]:
+        """Post an approved action. Returns its URL and any warnings."""
+        response = await self._job(GITHUB_WORKER, ACTION_APPROVE, {"action_id": action_id})
+        return response.get("url", ""), list(response.get("warnings") or [])
 
     async def dismiss(self, action_id: str) -> None:
         await self._job(GITHUB_WORKER, ACTION_DISMISS, {"action_id": action_id})

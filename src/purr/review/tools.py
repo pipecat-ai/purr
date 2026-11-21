@@ -5,6 +5,7 @@ PURR_TOOL_PREFIX = f"mcp__{PURR_SERVER}__"
 
 SUBMIT_REVIEW = "submit_review"
 PROPOSE_ACTION = "propose_action"
+GET_REVIEW_THREADS = "get_review_threads"
 
 SUBMIT_REVIEW_SCHEMA = {
     "type": "object",
@@ -55,6 +56,18 @@ PROPOSE_ACTION_SCHEMA = {
                     "body": {"type": "string"},
                 },
                 "required": ["path", "line", "body"],
+            },
+        },
+        "replies": {
+            "type": "array",
+            "description": (
+                "Replies to existing review threads (ids from get_review_threads), "
+                "instead of new comments that would repeat them."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {"thread_id": {"type": "string"}, "body": {"type": "string"}},
+                "required": ["thread_id", "body"],
             },
         },
     },

@@ -160,3 +160,24 @@ async def test_snapshot_incremental_and_pages():
     assert list(snapshot.pool) == ["a/full"]
     updates = snapshot.updates["a/inc"]
     assert [pr.number for pr in updates if pr.in_pool(snapshot.viewer)] == [5]
+
+
+async def test_review_threads():
+    class Threads(GitHub):
+        async def graphql(self, query, variables):
+            if "viewer" in query:
+                return {"data": {"viewer": {"login": "Me"}}}
+            comment = {"author": {"login": "me"}, "body": "Race?", "createdAt": "t"}
+            thread = {
+                "id": "T1",
+                "isResolved": False,
+                "isOutdated": False,
+                "path": "bus.py",
+                "line": 42,
+                "comments": {"nodes": [comment]},
+            }
+            return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [thread]}}}}}
+
+    [thread] = await Threads().review_threads(PRRef("a/b", 1))
+    assert thread["id"] == "T1" and thread["path"] == "bus.py" and not thread["resolved"]
+    assert thread["comments"] == [{"author": "me", "by_user": True, "body": "Race?", "at": "t"}]

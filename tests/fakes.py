@@ -45,6 +45,9 @@ class FakeGitHub:
     async def pr_statuses(self, refs):
         return {}
 
+    async def review_threads(self, ref):
+        return list(getattr(self, "threads", []))
+
 
 class FakeRepos:
     """Stands in for purr.git.GitRepos: worktrees are empty directories."""
@@ -100,6 +103,7 @@ class FakeAgent:
             raise RuntimeError(self.fail_with)
         if self.ask:
             self.answers.append(await callbacks.on_ask(*self.ask))
+        self.threads = await callbacks.on_threads()
         entry = {"kind": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "gh pr diff"}}
         self.entries.setdefault(session_id, []).append(entry)
         await callbacks.on_message(entry)
@@ -121,7 +125,9 @@ class FakeWriter:
     def __init__(self):
         self.reviews: list[dict] = []
         self.assigned: list = []
+        self.replies: list[tuple[str, str]] = []
         self.fail_with: list[str] = []  # errors to raise, one per call, before succeeding
+        self.fail_replies = False
 
     async def submit_review(self, ref, *, event, body, comments, commit_id):
         from purr.actions import ActionError
@@ -135,6 +141,14 @@ class FakeWriter:
 
     async def assign_self(self, ref):
         self.assigned.append(ref)
+
+    async def reply_to_thread(self, thread_id, body):
+        from purr.actions import ActionError
+
+        if self.fail_replies:
+            raise ActionError("thread is locked")
+        self.replies.append((thread_id, body))
+        return f"https://github.com/reply/{len(self.replies)}"
 
 
 class FakeRecapAgent:

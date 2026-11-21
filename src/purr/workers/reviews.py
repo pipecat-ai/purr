@@ -10,6 +10,7 @@ from pipecat.pipeline.job_decorator import job
 from pipecat.workers.base_worker import BaseWorker
 
 from purr.git import GitRepos
+from purr.github import GitHub, GitHubError
 from purr.messages import (
     PERMISSION_ANSWER,
     REVIEW_MESSAGE,
@@ -37,12 +38,14 @@ from purr.models import (
     PRRef,
     PRState,
     Review,
+    ReviewStatus,
 )
 from purr.review.agent import (
     RESUME_PROMPT,
     ReviewAgent,
     ReviewCallbacks,
     describe_tool_use,
+    rereview_prompt,
     review_prompt,
 )
 from purr.store import Store
@@ -60,6 +63,8 @@ class ReviewWorker(BaseWorker):
     - ``review.message {pr, text}`` sends a follow-up into the PR's session.
     - PRs assigned to you are reviewed automatically (when ``auto_review``).
     - On startup, reviews interrupted by the last shutdown are resumed.
+    - When a reviewed PR assigned to you gets new commits, its session is asked
+      to re-review what changed (when ``auto_review``).
     - When an agent wants something that isn't pre-approved, a
       :class:`PermissionRequest` goes out, the PR needs you, and the agent waits
       for a ``session.answer {request_id, allow}`` job.
@@ -72,6 +77,7 @@ class ReviewWorker(BaseWorker):
         store: Where reviews, findings and actions are recorded.
         repos: Clones and worktrees.
         agent: Runs the agent sessions.
+        github: Reads a PR's review threads for the agent (none: no threads).
         auto_review: Review PRs assigned to you without being asked.
     """
 
@@ -82,12 +88,14 @@ class ReviewWorker(BaseWorker):
         store: Store,
         repos: GitRepos,
         agent: ReviewAgent,
+        github: GitHub | None = None,
         auto_review: bool = True,
     ):
         super().__init__(name)
         self._store = store
         self._repos = repos
         self._agent = agent
+        self._github = github
         self._auto_review = auto_review
         self._running: dict[PRRef, asyncio.Task] = {}
         self._start_lock = asyncio.Lock()
@@ -125,14 +133,37 @@ class ReviewWorker(BaseWorker):
 
     async def on_bus_message(self, message: BusMessage) -> None:
         await super().on_bus_message(message)
-        if (
-            self._auto_review
-            and isinstance(message, PRChanged)
-            and message.change == PRChange.ASSIGNED
-        ):
+        if not (self._auto_review and isinstance(message, PRChanged)):
+            return
+        if message.change == PRChange.ASSIGNED:
             pr = await self._store.get_pr(PRRef.parse(message.pr))
             if pr and pr.state == PRState.NOT_REVIEWED:
                 await self._try_start(pr.ref)
+        elif message.change == PRChange.NEW_COMMITS:
+            await self.rereview(PRRef.parse(message.pr))
+
+    async def rereview(self, ref: PRRef) -> bool:
+        """Have a finished review look at the PR's new commits, in the same session.
+
+        Returns whether a re-review started.
+        """
+        async with self._start_lock:
+            pr = await self._store.get_pr(ref)
+            review = await self._store.latest_review(ref)
+            if (
+                ref in self._running
+                or pr is None
+                or not pr.assigned_to_me
+                or review is None
+                or review.status != ReviewStatus.FINISHED
+                or not review.session_id
+                or review.head_sha == pr.head_sha
+            ):
+                return False
+            prompt = rereview_prompt(review.head_sha, pr.head_sha)
+            self._launch(pr, review, prompt=prompt, resume=True, followup=True)
+        await self._progress(ref, "Re-reviewing new commits")
+        return True
 
     async def _try_start(self, ref: PRRef) -> None:
         try:
@@ -186,7 +217,7 @@ class ReviewWorker(BaseWorker):
             # A new review supersedes whatever the last one proposed.
             await self._dismiss_pending(ref)
             review = await self._store.start_review(
-                ref, worktree_path=str(self._repos.worktree_path(ref))
+                ref, worktree_path=str(self._repos.worktree_path(ref)), head_sha=pr.head_sha
             )
             await self._store.set_review_session(review.id, str(uuid.uuid4()))
             review = await self._store.latest_review(ref)
@@ -246,7 +277,9 @@ class ReviewWorker(BaseWorker):
             if submitted or not followup:
                 summary = submitted.get("summary") or result.text or "No summary."
                 findings: list[Finding] = submitted.get("findings", [])
-                await self._store.finish_review(review.id, summary=summary, findings=findings)
+                await self._store.finish_review(
+                    review.id, summary=summary, findings=findings, head_sha=pr.head_sha
+                )
                 await self.send_bus_message(
                     ReviewFinished(
                         source=self.name,
@@ -352,6 +385,19 @@ class ReviewWorker(BaseWorker):
             await self.send_bus_message(PRListUpdated(source=self.name))
             return allowed
 
+        async def on_threads() -> list[dict]:
+            if not self._github:
+                return []
+            try:
+                return await self._github.review_threads(ref)
+            except GitHubError as e:
+                logger.warning(f"Couldn't read the review threads of {ref}: {e}")
+                return []
+
         return ReviewCallbacks(
-            on_message=on_message, on_submit=on_submit, on_propose=on_propose, on_ask=on_ask
+            on_message=on_message,
+            on_submit=on_submit,
+            on_propose=on_propose,
+            on_ask=on_ask,
+            on_threads=on_threads,
         )

@@ -282,6 +282,43 @@ class GitHub:
                 complete[alias] = list(prs.values())
         return complete
 
+    async def review_threads(self, ref: PRRef) -> list[dict]:
+        """A PR's inline review threads, with their comments; ``by_user`` marks yours."""
+        owner, _, name = ref.repo.partition("/")
+        body = await self.graphql(
+            "query($owner: String!, $name: String!, $number: Int!) {"
+            " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
+            " reviewThreads(first: 100) { nodes { id isResolved isOutdated path line"
+            " comments(first: 30) { nodes { author { login } body createdAt } } } } } } }",
+            {"owner": owner, "name": name, "number": ref.number},
+        )
+        viewer = (await self.viewer_login()).lower()
+        pr = (body["data"].get("repository") or {}).get("pullRequest") or {}
+        threads = []
+        for node in (pr.get("reviewThreads") or {}).get("nodes") or []:
+            comments = []
+            for comment in (node.get("comments") or {}).get("nodes") or []:
+                login = (comment.get("author") or {}).get("login", "ghost")
+                comments.append(
+                    {
+                        "author": login,
+                        "by_user": login.lower() == viewer,
+                        "body": _clip(comment.get("body", "")),
+                        "at": comment.get("createdAt"),
+                    }
+                )
+            threads.append(
+                {
+                    "id": node["id"],
+                    "path": node.get("path"),
+                    "line": node.get("line"),
+                    "resolved": node.get("isResolved", False),
+                    "outdated": node.get("isOutdated", False),
+                    "comments": comments,
+                }
+            )
+        return threads
+
     async def pr_statuses(self, refs: Iterable[PRRef]) -> dict[PRRef, PRStatus]:
         """Look up specific PRs (open, closed or merged). PRs that can't be read are left out."""
         refs = list(refs)
@@ -308,3 +345,7 @@ class GitHub:
                         state=GHState(pr["state"].lower()), head_sha=pr["headRefOid"]
                     )
         return statuses
+
+
+def _clip(text: str, limit: int = 1500) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"

@@ -119,6 +119,9 @@ MIGRATIONS: list[str] = [
         created_at TEXT NOT NULL
     );
     """,
+    """
+    ALTER TABLE reviews ADD COLUMN head_sha TEXT;
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -214,6 +217,7 @@ def _review(row: aiosqlite.Row) -> Review:
         error=row["error"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
+        head_sha=row["head_sha"],
     )
 
 
@@ -532,11 +536,14 @@ class Store:
         FROM reviews JOIN prs ON prs.id = reviews.pr_id
     """
 
-    async def start_review(self, ref: PRRef, *, worktree_path: str | None = None) -> Review:
+    async def start_review(
+        self, ref: PRRef, *, worktree_path: str | None = None, head_sha: str | None = None
+    ) -> Review:
         pr_id = await self._pr_id(ref)
         cursor = await self._db.execute(
-            "INSERT INTO reviews (pr_id, worktree_path, status, started_at) VALUES (?, ?, ?, ?)",
-            (pr_id, worktree_path, ReviewStatus.RUNNING, _now()),
+            "INSERT INTO reviews (pr_id, worktree_path, head_sha, status, started_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (pr_id, worktree_path, head_sha, ReviewStatus.RUNNING, _now()),
         )
         await self._db.commit()
         return await self._get_review(cursor.lastrowid)
@@ -555,11 +562,18 @@ class Store:
         await self._db.commit()
 
     async def finish_review(
-        self, review_id: int, *, summary: str, findings: Iterable[Finding]
+        self,
+        review_id: int,
+        *,
+        summary: str,
+        findings: Iterable[Finding],
+        head_sha: str | None = None,
     ) -> Review:
+        """Record a review's result; ``head_sha`` is the commit it looked at, if it moved."""
         await self._db.execute(
-            "UPDATE reviews SET status = ?, summary = ?, finished_at = ? WHERE id = ?",
-            (ReviewStatus.FINISHED, summary, _now(), review_id),
+            "UPDATE reviews SET status = ?, summary = ?, finished_at = ?,"
+            " head_sha = COALESCE(?, head_sha) WHERE id = ?",
+            (ReviewStatus.FINISHED, summary, _now(), head_sha, review_id),
         )
         # A follow-up turn can submit the review again; the latest one wins.
         await self._db.execute("DELETE FROM findings WHERE review_id = ?", (review_id,))

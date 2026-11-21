@@ -50,6 +50,30 @@ def _short(value: str, width: int = 100) -> str:
     return value if len(value) <= width else value[: width - 1] + "…"
 
 
+_VERDICT = {"request_changes": "Request changes", "approve": "Approve", "comment": "Comment"}
+
+
+def render_proposal(proposal: dict) -> RenderableType:
+    """A proposed review, in full: what would be posted if the user approves."""
+    parts: list[RenderableType] = [
+        Text(f"Proposed: {proposal.get('description', '')}", style="bold magenta")
+    ]
+    verdict = _VERDICT.get(str(proposal.get("kind")), str(proposal.get("kind", "")))
+    parts.append(Text(f"{verdict}", style="magenta"))
+    if body := str(proposal.get("body") or "").strip():
+        parts.append(Markdown(body))
+    for comment in proposal.get("comments") or []:
+        line = Text("• ")
+        line.append(f"{comment.get('path')}:{comment.get('line')}", style="cyan")
+        line.append(f"  {comment.get('body', '')}")
+        parts.append(line)
+    for reply in proposal.get("replies") or []:
+        line = Text("↳ reply in thread  ", style="dim")
+        line.append(str(reply.get("body", "")))
+        parts.append(line)
+    return Group(*parts)
+
+
 def render_entry(entry: dict) -> RenderableType | None:
     """A transcript entry as Claude Code would show it."""
     kind = entry.get("kind")
@@ -74,10 +98,7 @@ def render_entry(entry: dict) -> RenderableType | None:
                 lines.append(line)
             return _bullet(Group(*lines), style="bold green")
         if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
-            return _bullet(
-                Text(f"Proposed: {tool_input.get('description', '')}", style="bold magenta"),
-                style="magenta",
-            )
+            return _bullet(render_proposal(tool_input), style="magenta")
         target = (
             tool_input.get("command")
             or tool_input.get("file_path")

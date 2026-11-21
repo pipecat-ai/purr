@@ -125,6 +125,8 @@ How it's built (`src/purr/review/`, `src/purr/workers/reviews.py`):
 - Only the user's own Claude Code settings are loaded (`setting_sources=["user"]`). A PR's `.claude/settings.json` could define hooks, and hooks run commands.
 - PRs assigned to you are reviewed automatically (`auto_review`, on by default): when the poller reports an assignment, and on startup for assigned PRs that were never reviewed. Reviews interrupted by quitting resume on the next start.
 - A failed review moves the PR to Needs you, with the error.
+- The agent reads linked issues (`gh issue view`) to know what the PR is meant to do, and the PR's existing review threads (a `get_review_threads` tool: ids, file and line, resolved or not, comments, with the user's own marked) so it doesn't repeat what's been said. A proposal can carry `replies` to existing threads next to its new inline comments; Purr posts the review, then the replies. A reply failing after the review went up is a warning, not a retry, so the review can't be posted twice.
+- **New commits** on a reviewed PR assigned to you: the same session gets a follow-up asking it to look at `git diff <reviewed head> <new head>`, say which earlier findings are resolved or still stand, reply on the threads about them, and propose what to post now. Each review records the commit it last looked at (`reviews.head_sha`). The agent remembers its first review, so there's no interdiff machinery: the conversation is the memory.
 - Measured on a 44-line pipecat PR: about 75 s from start to proposed action, including the first blobless clone of pipecat (about 7 s).
 
 ## PR session (Claude Code inside a PR)
@@ -135,9 +137,14 @@ Opening a PR (`enter`) puts you in a Claude Code-style terminal for that PR. It'
 - History comes from the SDK's transcript of the session; new turns stream over the bus as `session.message` events, so the TUI and the voice agent see the same conversation.
 - One conversation per PR. Typed and spoken messages go into the same session (`review.message` job) and queue if a turn is in flight.
 - Same guardrails as the review: anything GitHub-visible becomes a pending action.
+- **Deciding happens in the conversation, not in per-finding cards.** You keep digging with the agent until you agree on what to post; "drop the nit", "reword the race comment", "make it a comment instead" make it propose again, and the new proposal replaces the old one. The transcript shows each proposal in full (verdict, overall comment, every inline comment and thread reply), so `a` posts exactly what you've read.
 - Permission prompts: if the agent wants a tool that isn't pre-approved, the prompt shows inline as in Claude Code (allow once / always for this PR / deny). If nobody answers, the PR moves to **Needs you** ("agent blocked"). Voice can answer too.
 - `z` zooms the session to full screen; `esc` goes back to the list.
 - **Open in Claude Code** (`o`): Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools`. When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
+
+## Your review style
+
+Instructions for how you like reviews, like a CLAUDE.md for reviews: plain Markdown, one file for all repos (`~/.config/purr/review.md`) and an optional one per repo (`~/.config/purr/repos/<owner>/<name>.md`). Both are added to the review agent's system prompt, after Purr's defaults, which they override. They're sent with every turn, so edits apply to sessions already under way. `i` opens the right one in `$EDITOR` (the repo's inside a repo, the general one at home), creating it with a short how-to in an HTML comment that isn't sent to the agent.
 
 ## While you were away
 
@@ -300,6 +307,7 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 - `a` approve pending action, `x` dismiss
 - `z` zoom the PR session to full screen
 - `o` open the PR's session in Claude Code
+- `i` edit your review instructions (this repo's inside a repo, the general ones at home)
 - `w` open the latest "while you were away" recap
 - `/` filter
 
@@ -343,3 +351,5 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 - STT/LLM/TTS choices for the voice agent.
 - How long without activity counts as "away" (default 15 minutes?).
 - Which slash commands the PR session supports at first (`/clear`, `/compact`, `/model`, ...).
+- The repo's own CLAUDE.md isn't loaded in reviews: it comes with project settings, which are off because a PR could tamper with them. Load CLAUDE.md from the base branch instead (the PR can't change that)?
+- Should comments Purr posts carry a marker saying they were written with AI? Today they're posted as the user, with no marker.

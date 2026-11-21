@@ -191,6 +191,7 @@ class Review:
     summary: str | None = None
     error: str | None = None
     finished_at: str | None = None
+    head_sha: str | None = None  # the commit this review last looked at
 
 
 @dataclass

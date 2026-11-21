@@ -338,11 +338,13 @@ class RepoView(PurrView):
         if not actions:
             return
         try:
-            url = await self.purr_app.bus.approve(actions[0].id)
+            url, warnings = await self.purr_app.bus.approve(actions[0].id)
         except RequestError as e:
             self.notify(str(e), severity="error")
             return
         self.notify(f"Posted: {url}" if url else "Posted")
+        for warning in warnings:
+            self.notify(warning, severity="warning")
 
     @work(group="keys")
     async def action_dismiss(self) -> None:

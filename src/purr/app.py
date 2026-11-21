@@ -12,6 +12,7 @@ from purr.git import GitRepos
 from purr.github import GitHub
 from purr.recap import ClaudeRecapAgent, RecapAgent
 from purr.review.agent import ClaudeReviewAgent, ReviewAgent
+from purr.review.instructions import ReviewInstructions
 from purr.store import Store
 from purr.workers import ActivityWorker, GitHubWorker, RecapWorker, ReviewWorker
 
@@ -48,8 +49,11 @@ class Purr:
     ):
         self._config = config
         self._github = github or GitHub()
+        self._instructions = ReviewInstructions(config.config_dir)
         self._agent = agent or ClaudeReviewAgent(
-            model=config.review_model, max_budget_usd=config.review_budget_usd
+            model=config.review_model,
+            max_budget_usd=config.review_budget_usd,
+            instructions=self._instructions,
         )
         self._repos = repos or GitRepos(config.data_dir)
         self._writer = writer
@@ -68,6 +72,10 @@ class Purr:
     @property
     def config(self) -> Config:
         return self._config
+
+    @property
+    def instructions(self) -> ReviewInstructions:
+        return self._instructions
 
     @property
     def agent(self) -> ReviewAgent:
@@ -123,6 +131,7 @@ class Purr:
                 store=store,
                 repos=self._repos,
                 agent=self._agent,
+                github=self._github,
                 auto_review=self._config.auto_review,
             ),
             RecapWorker(store=store, agent=self._recap_agent),
