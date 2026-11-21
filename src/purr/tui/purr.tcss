@@ -152,6 +152,17 @@ AddRepoScreen, ConfirmScreen, RecapScreen, InstructionsScreen, HistorySearchScre
     width: 90;
 }
 
+#review-skill {
+    width: 84;
+}
+
+#review-skill-items {
+    height: auto;
+    max-height: 20;
+    margin: 1 0;
+    border: none;
+}
+
 #history-items {
     height: auto;
     max-height: 16;

@@ -51,6 +51,13 @@ REVIEW_START = "review.start"  # payload: {"pr": "owner/repo#123"}
 REVIEW_MESSAGE = "review.message"  # payload: {"pr": "owner/repo#123", "text": "..."}
 # Answer an agent's permission request: {"request_id": "...", "allow": bool} -> {"ok": true}
 PERMISSION_ANSWER = "session.answer"
+# A repo's skills that look like they're for reviewing, and which one its reviews follow
+# (see purr.review.skills): {"repo": "owner/name"} ->
+# {"skills": [{"name", "description", "likely"}], "chosen": "skill" | "" (Purr's own) | None}
+REVIEW_SKILLS = "review.skills"
+# Choose it: {"repo": "owner/name", "skill": "skill" | "" (Purr's own) | None (ask again
+# next time)} -> {"ok": true}
+REVIEW_SKILL = "review.skill"
 
 
 @dataclass(kw_only=True)
@@ -141,6 +148,33 @@ class PermissionResolved(PurrEvent):
     allowed: bool
     answered: bool = True
     description: str = ""
+
+
+@dataclass(kw_only=True)
+class SkillQuestion(PurrEvent):
+    """A repo has skills that may be for reviewing; should its reviews follow one?
+
+    Its reviews wait a while for a ``review.skill`` answer, then go ahead without.
+    ``skills`` are ``{"name", "description", "likely"}``, likeliest first.
+    """
+
+    kind: ClassVar[str] = "review.skill_question"
+    recorded: ClassVar[bool] = False
+    repo: str
+    skills: list[dict] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class SkillChosen(PurrEvent):
+    """A repo's reviews follow ``skill`` from now on ('' for Purr's own review).
+
+    ``chosen_by`` is ``purr`` (it was clearly the repo's review skill) or ``you``.
+    """
+
+    kind: ClassVar[str] = "review.skill_chosen"
+    repo: str
+    skill: str
+    chosen_by: str
 
 
 @dataclass(kw_only=True)

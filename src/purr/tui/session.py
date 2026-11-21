@@ -80,7 +80,13 @@ def render_proposal(proposal: dict) -> RenderableType:
 
 
 def render_entry(entry: dict) -> RenderableType | None:
-    """A transcript entry as Claude Code would show it."""
+    """A transcript entry as Claude Code would show it.
+
+    Subagents' own steps aren't shown, only the call that started each one and
+    what it came back with (they're recorded all the same).
+    """
+    if entry.get("agent"):
+        return None
     kind = entry.get("kind")
     if kind == "text":
         return _bullet(Markdown(entry["text"]))
@@ -113,6 +119,7 @@ def render_entry(entry: dict) -> RenderableType | None:
             or tool_input.get("pattern")
             or tool_input.get("path")
             or tool_input.get("url")
+            or tool_input.get("description")  # a subagent's task
             or ""
         )
         line = Text(name.removeprefix(PURR_TOOL_PREFIX), style="bold")

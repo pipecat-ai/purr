@@ -121,7 +121,17 @@ class FakeAgent:
         return list(self.entries.get(session_id, []))
 
     async def run(
-        self, *, pr, worktree, session_id, resume, prompt, callbacks, guidelines="", plugin=None
+        self,
+        *,
+        pr,
+        worktree,
+        session_id,
+        resume,
+        prompt,
+        callbacks,
+        guidelines="",
+        plugin=None,
+        skill=None,
     ):
         from purr.models import ActionKind, Finding, Severity
         from purr.review.agent import AgentResult
@@ -134,6 +144,7 @@ class FakeAgent:
                 "prompt": prompt,
                 "guidelines": guidelines,
                 "plugin": plugin,
+                "skill": skill,
             }
         )
         self.sessions.add(session_id)
@@ -215,3 +226,24 @@ class FakeRecapAgent:
         prs = list(dict.fromkeys(re.findall(r"[\w.-]+/[\w.-]+#\d+", notes)))
         items = [{"pr": pr, "text": "Something happened", "needs_you": True} for pr in prs]
         return f"{len(prs)} PRs need you.", items
+
+
+def make_plugin(root, skills: dict[str, str], *, name: str = "pipecat", commands=None):
+    """A repo plugin as GitRepos.plugin builds it: ``skills`` and ``commands`` map
+    names to their descriptions (or to whole frontmatter dicts)."""
+    import json
+
+    import yaml
+
+    def write(path, meta):
+        meta = meta if isinstance(meta, dict) else {"description": meta}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\n{yaml.safe_dump(meta)}---\n\nDo the thing.\n")
+
+    (root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": name}))
+    for skill, meta in skills.items():
+        write(root / "skills" / skill / "SKILL.md", meta)
+    for command, meta in (commands or {}).items():
+        write(root / "commands" / f"{command}.md", meta)
+    return root

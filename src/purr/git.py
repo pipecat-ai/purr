@@ -137,6 +137,13 @@ class GitRepos:
             return False
         return (await self._pr_heads(clone)).get(ref.number) == head_sha
 
+    async def _has_ref(self, clone: Path, ref: str) -> bool:
+        try:
+            await self._git(clone, "rev-parse", "--verify", "--quiet", ref)
+        except GitError:
+            return False
+        return True
+
     async def _clone(self, repo: str) -> Path:
         """The repo's clone, made if needed. Call with the repo's lock held."""
         clone = self.clone_path(repo)
@@ -316,13 +323,13 @@ class GitRepos:
 
         Like the guidelines, they come from the default branch so a PR can't
         change them. Built once per version of them; None if the repo has none.
+        The repo is cloned first if it isn't yet.
         """
         async with self._locks.setdefault(repo, asyncio.Lock()):
-            clone = self.clone_path(repo)
-            try:
-                listing = await self._git(clone, "ls-tree", BASE_REF, ".claude/")
-            except GitError:
-                return None
+            clone = await self._clone(repo)
+            if not await self._has_ref(clone, BASE_REF):
+                await self._git(clone, "fetch", "--quiet", "origin", f"+HEAD:{BASE_REF}")
+            listing = await self._git(clone, "ls-tree", BASE_REF, ".claude/")
             trees = {}  # .claude/skills -> its tree's hash
             for line in listing.splitlines():
                 info, _, path = line.partition("\t")

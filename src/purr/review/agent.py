@@ -8,6 +8,7 @@ from the TUI, or in Claude Code itself (``claude --resume``).
 """
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,7 @@ from claude_agent_sdk import (
 from purr.models import PR, ActionKind, Finding, Severity
 from purr.review.instructions import ReviewInstructions
 from purr.review.policy import Policy
+from purr.review.skills import skill_prompt, skill_section
 from purr.review.tools import (
     GET_REVIEW_THREADS,
     PROPOSE_ACTION,
@@ -98,13 +100,14 @@ def guidelines_section(repo: str, guidelines: str) -> str:
     )
 
 
-def rereview_prompt(old_sha: str | None, new_sha: str) -> str:
+def rereview_prompt(old_sha: str | None, new_sha: str, skill: str | None = None) -> str:
     """The follow-up that re-reviews a PR after new commits, in the same session."""
     since = f"`git diff {old_sha} {new_sha}`" if old_sha else "the PR's latest commits"
+    process = f", following the {skill} skill's process again," if skill else ""
     return (
         f"The author pushed new commits; the PR's head is now {new_sha}, checked out here. "
-        f"Review what changed since your last review ({since}; the earlier commits are "
-        "still available locally). Say which of your earlier findings are resolved and "
+        f"Review what changed since your last review{process} ({since}; the earlier commits "
+        "are still available locally). Say which of your earlier findings are resolved and "
         "which still stand, and look for new problems in what changed. Check the review "
         "threads first (get_review_threads): reply in existing threads rather than "
         "repeating yourself, and on threads about your earlier findings, say whether "
@@ -113,7 +116,10 @@ def rereview_prompt(old_sha: str | None, new_sha: str) -> str:
     )
 
 
-def review_prompt(pr: PR) -> str:
+def review_prompt(pr: PR, skill: str | None = None) -> str:
+    """What starts a review: the repo's own review skill, if it has one Purr uses."""
+    if skill:
+        return skill_prompt(skill, pr.url)
     return f'Review {pr.repo}#{pr.number}: "{pr.title}" by {pr.author} ({pr.url}).'
 
 
@@ -171,6 +177,7 @@ class ReviewAgent(Protocol):
         callbacks: ReviewCallbacks,
         guidelines: str = "",
         plugin: Path | None = None,
+        skill: str | None = None,
     ) -> AgentResult: ...
 
 
@@ -187,7 +194,19 @@ def _text(content: Any, limit: int = 2000) -> str:
 
 
 def transcript_entries(message: Any) -> list[dict]:
-    """An SDK message as plain, JSON-friendly transcript entries for the bus and UI."""
+    """An SDK message as plain, JSON-friendly transcript entries for the bus and UI.
+
+    Entries from a subagent (the Agent tool) carry ``agent``: the ID of the tool
+    call that started it.
+    """
+    entries = _entries(message)
+    if agent := getattr(message, "parent_tool_use_id", None):
+        for entry in entries:
+            entry["agent"] = agent
+    return entries
+
+
+def _entries(message: Any) -> list[dict]:
     if isinstance(message, AssistantMessage):
         entries = []
         for block in message.content:
@@ -257,7 +276,7 @@ def history_entries(session_messages: list[Any]) -> list[dict]:
                     )
         elif item.type == "user":
             if isinstance(content, str):
-                entries.append({"kind": "user", "text": content})
+                entries.append({"kind": "user", "text": _as_typed(content)})
             elif isinstance(content, list):
                 for block in content:
                     if block.get("type") == "tool_result":
@@ -274,6 +293,20 @@ def history_entries(session_messages: list[Any]) -> list[dict]:
     return entries
 
 
+_COMMAND = re.compile(
+    r"\A\s*<command-message>.*?</command-message>\s*<command-name>(.*?)</command-name>"
+    r"\s*(?:<command-args>(.*?)</command-args>)?\s*\Z",
+    re.DOTALL,
+)
+
+
+def _as_typed(text: str) -> str:
+    """A slash command as it was typed, rather than as the session stores it."""
+    if match := _COMMAND.match(text):
+        return " ".join(part.strip() for part in match.groups() if part and part.strip())
+    return text
+
+
 def describe_tool_use(name: str, tool_input: dict) -> str:
     """A one-line description of a tool call, for progress lines."""
     if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
@@ -282,7 +315,12 @@ def describe_tool_use(name: str, tool_input: dict) -> str:
         return f"Proposing: {tool_input.get('description', '')}"
     if name == "Bash":
         return f"$ {tool_input.get('command', '')}"
-    target = tool_input.get("file_path") or tool_input.get("pattern") or tool_input.get("path")
+    target = (
+        tool_input.get("file_path")
+        or tool_input.get("pattern")
+        or tool_input.get("path")
+        or tool_input.get("description")  # a subagent's task
+    )
     return f"{name} {target}" if target else name
 
 
@@ -344,6 +382,7 @@ class ClaudeReviewAgent:
         callbacks: ReviewCallbacks,
         guidelines: str = "",
         plugin: Path | None = None,
+        skill: str | None = None,
     ) -> AgentResult:
         policy = Policy(worktree, readable=[plugin] if plugin else [])
 
@@ -419,6 +458,7 @@ class ClaudeReviewAgent:
                 "preset": "claude_code",
                 "append": INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
                 + guidelines_section(pr.repo, guidelines)
+                + (skill_section(pr.repo, skill) if skill else "")
                 + (self._instructions.for_repo(pr.repo) if self._instructions else ""),
             },
             mcp_servers={

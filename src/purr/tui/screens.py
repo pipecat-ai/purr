@@ -744,11 +744,15 @@ class ConfirmScreen(ModalScreen[bool]):
 
 
 class InstructionsScreen(ModalScreen):
-    """Which instructions to edit: how you like reviews, or how you like code."""
+    """Which instructions to edit: how you like reviews, or how you like code.
+
+    Inside a repo, also which of its skills its reviews follow (``skill``).
+    """
 
     BINDINGS = [
         Binding("r", "pick('review')", "Review style"),
         Binding("c", "pick('code')", "Code style"),
+        Binding("s", "pick('skill')", "Review skill"),
         Binding("escape", "pick('')", "Cancel", show=False),
     ]
 
@@ -762,9 +766,84 @@ class InstructionsScreen(ModalScreen):
             yield Label(f"Your instructions {scope}")
             yield Label("[b]r[/b]  review style: how reviews should go")
             yield Label("[b]c[/b]  code style: what good code looks like to you")
+            if self._repo:
+                yield Label("[b]s[/b]  review skill: which of the repo's skills reviews follow")
             yield Label("Opens in $EDITOR. Repo files add to the general ones.", classes="hint")
+
+    def check_action(self, action: str, parameters: tuple) -> bool:
+        return self._repo is not None or parameters != ("skill",)
 
     def action_pick(self, kind: str) -> None:
         from purr.review.instructions import Kind
 
-        self.dismiss(Kind(kind) if kind else None)
+        self.dismiss(kind if kind == "skill" else Kind(kind) if kind else None)
+
+
+class ReviewSkillScreen(ModalScreen[str | None]):
+    """Which of a repo's skills its reviews follow, if any.
+
+    Dismisses with the skill, ``""`` for Purr's own review, or None (escape):
+    leave it as it is, and when asking, ask again next time.
+
+    Args:
+        repo: The repo.
+        skills: Its skills that may be for reviewing (``{"name", "description"}``).
+        chosen: What its reviews follow now ('' for Purr's own, None: not decided).
+        asking: Purr is asking (reviews are waiting), rather than you changing it.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Not now")]
+
+    def __init__(
+        self, repo: str, skills: list[dict], chosen: str | None = None, *, asking: bool = False
+    ):
+        super().__init__()
+        self._repo = repo
+        self._choices = [str(skill.get("name", "")) for skill in skills] + [""]
+        self._skills = skills
+        self._chosen = chosen
+        self._asking = asking
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="review-skill"):
+            if self._asking:
+                yield Label(
+                    f"[b]{self._repo}[/b] has skills that may be how it reviews PRs. "
+                    "Should Purr's reviews there follow one?"
+                )
+            else:
+                yield Label(f"What Purr's reviews in [b]{self._repo}[/b] follow")
+            yield OptionList(id="review-skill-items")
+            later = "ask me next time" if self._asking else "cancel"
+            yield Label(f"enter chooses · esc {later} · you can change it with i", classes="hint")
+
+    def on_mount(self) -> None:
+        options = []
+        for skill in [*self._skills, {"name": "", "description": ""}]:
+            name = str(skill.get("name", ""))
+            title = f"/{name}" if name else "Purr's own review"
+            description = (
+                str(skill.get("description", ""))
+                if name
+                else "Its general review, holding the PR to the repo's CLAUDE.md / AGENTS.md"
+            )
+            # Descriptions wrap in their own column, under the name.
+            row = Table.grid(padding=(0, 1))
+            row.add_column(width=1)
+            row.add_column(ratio=1)
+            row.add_row("✓" if name == self._chosen else "", Text(title, style="bold"))
+            row.add_row("", Text(description, style="dim"))
+            options.append(Option(row))
+        items = self.query_one(OptionList)
+        items.set_options(options)
+        items.highlighted = (
+            self._choices.index(self._chosen) if self._chosen in self._choices else 0
+        )
+        items.focus()
+
+    @on(OptionList.OptionSelected, "#review-skill-items")
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self._choices[event.option_index])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

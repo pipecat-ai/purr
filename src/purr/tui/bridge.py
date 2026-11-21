@@ -21,6 +21,8 @@ from purr.messages import (
     REPO_ADD,
     REPO_REMOVE,
     REVIEW_MESSAGE,
+    REVIEW_SKILL,
+    REVIEW_SKILLS,
     REVIEW_START,
     REVIEW_WORKER,
     PurrEvent,
@@ -108,6 +110,16 @@ class UIWorker(BaseWorker):
     async def answer(self, request_id: str, allow: bool) -> None:
         payload = {"request_id": request_id, "allow": allow}
         await self._job(REVIEW_WORKER, PERMISSION_ANSWER, payload)
+
+    async def review_skills(self, repo: str) -> tuple[list[dict], str | None]:
+        """The repo's skills that may be for reviewing, and which one its reviews follow
+        ('' for Purr's own review, None if not decided yet)."""
+        response = await self._job(REVIEW_WORKER, REVIEW_SKILLS, {"repo": repo})
+        return list(response.get("skills") or []), response.get("chosen")
+
+    async def set_review_skill(self, repo: str, skill: str | None) -> None:
+        """Have the repo's reviews follow ``skill`` ('' for Purr's own; None: ask again)."""
+        await self._job(REVIEW_WORKER, REVIEW_SKILL, {"repo": repo, "skill": skill})
 
     async def _job(self, worker: str, name: str, payload: dict, timeout: float = 60) -> dict:
         params = JobParams(name=name, payload=payload, timeout=timeout)

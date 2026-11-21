@@ -188,6 +188,17 @@ MIGRATIONS: list[str] = [
     ALTER TABLE prs ADD COLUMN seen_at TEXT;
     UPDATE prs SET seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
     """,
+    # Which of a repo's own skills its reviews follow (see purr.review.skills),
+    # and which one each review followed.
+    """
+    CREATE TABLE review_skills (
+        repo      TEXT PRIMARY KEY COLLATE NOCASE,
+        skill     TEXT NOT NULL,  -- '' for Purr's own review
+        chosen_by TEXT NOT NULL,  -- 'purr' (clearly the one) or 'you'
+        chosen_at TEXT NOT NULL
+    );
+    ALTER TABLE reviews ADD COLUMN skill TEXT;
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -312,6 +323,7 @@ def _review(row: aiosqlite.Row) -> Review:
         started_at=row["started_at"],
         finished_at=row["finished_at"],
         head_sha=row["head_sha"],
+        skill=row["skill"],
     )
 
 
@@ -800,6 +812,31 @@ class Store:
         """Remember the Agent SDK session so the review can be resumed later."""
         await self._db.execute(
             "UPDATE reviews SET session_id = ? WHERE id = ?", (session_id, review_id)
+        )
+        await self._db.commit()
+
+    async def set_review_followed(self, review_id: int, skill: str | None) -> None:
+        """Which of the repo's own skills the review follows (None: Purr's own review)."""
+        await self._db.execute("UPDATE reviews SET skill = ? WHERE id = ?", (skill, review_id))
+        await self._db.commit()
+
+    # -- Review skills ----------------------------------------------------------------
+
+    async def review_skill(self, repo: str) -> str | None:
+        """The repo skill its reviews follow: '' for Purr's own, None if not decided yet."""
+        row = await self._fetchone("SELECT skill FROM review_skills WHERE repo = ?", (repo,))
+        return row["skill"] if row else None
+
+    async def set_review_skill(self, repo: str, skill: str, *, chosen_by: str) -> None:
+        """Have the repo's reviews follow ``skill`` ('' for Purr's own review).
+
+        ``chosen_by`` is ``purr`` (it was clearly the repo's review skill) or ``you``.
+        """
+        await self._db.execute(
+            "INSERT INTO review_skills (repo, skill, chosen_by, chosen_at) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (repo) DO UPDATE SET skill = excluded.skill,"
+            " chosen_by = excluded.chosen_by, chosen_at = excluded.chosen_at",
+            (repo, skill, chosen_by, _now()),
         )
         await self._db.commit()
 

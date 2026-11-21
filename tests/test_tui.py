@@ -505,3 +505,48 @@ async def test_moving_around_and_searching(tmp_path):
         await until(pilot, lambda: len(pr_ids(app)) == 3)
         await pilot.press("escape")
         await until(pilot, lambda: home(app))
+
+
+async def test_choosing_the_review_skill(tmp_path):
+    from purr.tui.screens import InstructionsScreen, ReviewSkillScreen
+    from tests.fakes import make_plugin
+
+    app, github = make_app(tmp_path)
+    agent = app.purr.agent
+    app.purr._repos.repo_plugin = make_plugin(
+        tmp_path / "plugin",
+        {"prose-review": "Check the prose", "security-review": "Look for security problems"},
+    )
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await until(pilot, lambda: home(app))
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+
+        # Neither skill is clearly for reviewing PRs: the review asks, and waits.
+        await pilot.press("r")
+        await until(pilot, lambda: isinstance(app.screen, ReviewSkillScreen))
+        assert not agent.runs
+        await pilot.press("down", "enter")
+        await until(pilot, lambda: agent.runs)
+        assert agent.runs[0]["skill"] == "pipecat:security-review"
+        assert await app.purr.store.review_skill("pipecat-ai/pipecat") == "pipecat:security-review"
+
+        # i, then s, changes it: back to Purr's own review.
+        await until(pilot, lambda: isinstance(app.screen, MainScreen))
+        await pilot.press("i")
+        assert isinstance(app.screen, InstructionsScreen)
+        await pilot.press("s")
+        await until(pilot, lambda: isinstance(app.screen, ReviewSkillScreen))
+        items = app.screen.query_one(OptionList)
+        assert items.highlighted == 1  # what reviews follow now
+        await pilot.press("down", "enter")
+        await until(pilot, lambda: isinstance(app.screen, MainScreen))
+        for _ in range(100):
+            if await app.purr.store.review_skill("pipecat-ai/pipecat") == "":
+                break
+            await pilot.pause(0.02)
+        assert await app.purr.store.review_skill("pipecat-ai/pipecat") == ""

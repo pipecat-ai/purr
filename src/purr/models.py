@@ -238,6 +238,7 @@ class Review:
     error: str | None = None
     finished_at: str | None = None
     head_sha: str | None = None  # the commit this review last looked at
+    skill: str | None = None  # the repo's own skill it followed, if any
 
 
 @dataclass

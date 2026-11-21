@@ -1,6 +1,9 @@
 """Turning SDK messages and stored transcripts into transcript entries."""
 
+import io
 from types import SimpleNamespace
+
+from rich.console import Console
 
 from purr.review.agent import describe_tool_use, history_entries
 
@@ -74,3 +77,39 @@ def test_guidelines_section():
     assert guidelines_section("a/b", "") == ""
     section = guidelines_section("a/b", "### AGENTS.md\n\nShort functions.")
     assert "a/b's own guidelines" in section and "Short functions." in section
+
+
+def test_a_skill_started_as_a_slash_command_shows_as_typed():
+    command = (
+        "<command-message>pipecat:code-review</command-message>\n"
+        "<command-name>/pipecat:code-review</command-name>\n"
+        "<command-args>https://github.com/pipecat-ai/pipecat/pull/2841</command-args>"
+    )
+    assert history_entries([stored("user", command)]) == [
+        {
+            "kind": "user",
+            "text": "/pipecat:code-review https://github.com/pipecat-ai/pipecat/pull/2841",
+        }
+    ]
+
+
+def test_subagent_entries_say_which_agent():
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock, UserMessage
+
+    from purr.review.agent import transcript_entries
+    from purr.tui.session import render_entry
+
+    call = ToolUseBlock(id="t2", name="Read", input={"file_path": "bus.py"})
+    inside = AssistantMessage(content=[call], model="m", parent_tool_use_id="t1")
+    prompt = UserMessage(content="Scan for obvious bugs.", parent_tool_use_id="t1")
+    entries = transcript_entries(inside) + transcript_entries(prompt)
+    assert [(e["kind"], e["agent"]) for e in entries] == [("tool_use", "t1"), ("user", "t1")]
+    # Recorded, but the PR's conversation only shows the call that started the subagent.
+    assert all(render_entry(e) is None for e in entries)
+    started = {"kind": "tool_use", "name": "Agent", "input": {"description": "Bug scan"}}
+    console = Console(width=80, record=True, file=io.StringIO())
+    console.print(render_entry(started))
+    assert "Agent(Bug scan)" in console.export_text()
+    assert describe_tool_use("Agent", {"description": "Bug scan", "prompt": "…"}) == (
+        "Agent Bug scan"
+    )

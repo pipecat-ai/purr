@@ -8,6 +8,7 @@ dependencies = [
     "claude-agent-sdk>=0.2.187",
     "loguru>=0.7.3",
     "pipecat-ai>=1.16.0",
+    "pyyaml>=6.0.4",
     "textual>=8.2.8",
 ]
 

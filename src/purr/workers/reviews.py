@@ -1,6 +1,7 @@
 """The review worker: one Claude review session per PR, in its own worktree."""
 
 import asyncio
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -15,6 +16,8 @@ from purr.github import GitHub, GitHubError
 from purr.messages import (
     PERMISSION_ANSWER,
     REVIEW_MESSAGE,
+    REVIEW_SKILL,
+    REVIEW_SKILLS,
     REVIEW_START,
     REVIEW_WORKER,
     ActionPending,
@@ -28,6 +31,8 @@ from purr.messages import (
     ReviewProgress,
     ReviewStarted,
     SessionMessage,
+    SkillChosen,
+    SkillQuestion,
     Synced,
 )
 from purr.models import (
@@ -51,6 +56,7 @@ from purr.review.agent import (
     rereview_prompt,
     review_prompt,
 )
+from purr.review.skills import review_skills
 from purr.store import Store
 
 
@@ -88,6 +94,12 @@ class ReviewWorker(BaseWorker):
     - When an agent wants something that isn't pre-approved, a
       :class:`PermissionRequest` goes out, the PR needs you, and the agent waits
       for a ``session.answer {request_id, allow}`` job.
+    - A review follows the repo's own review skill when it has one (see
+      :mod:`purr.review.skills`): one clearly for reviewing PRs is chosen
+      without asking (:class:`SkillChosen`); otherwise, if some skills may be,
+      a :class:`SkillQuestion` asks you once and the review waits a while for
+      a ``review.skill {repo, skill}`` answer. ``review.skills {repo}`` lists
+      them, for changing your mind.
 
     Stopping cancels running sessions; their reviews stay "running" in the
     store, which is how they get resumed next time.
@@ -99,8 +111,9 @@ class ReviewWorker(BaseWorker):
         agent: Runs the agent sessions.
         github: Reads a PR's review threads for the agent (none: no threads).
         auto_review: Review PRs assigned to you without being asked.
-        permission_wait: Seconds an agent waits for a permission answer before
-            carrying on without it.
+        permission_wait: Seconds an agent waits for a permission answer (and a
+            review for an answer about the repo's review skill) before carrying
+            on without it.
     """
 
     def __init__(
@@ -128,6 +141,9 @@ class ReviewWorker(BaseWorker):
         self._asks: dict[str, asyncio.Future[bool]] = {}
         self._slots = asyncio.Semaphore(max_reviews)
         self._queue: list[PRRef] = []  # waiting for a slot, in order
+        # Per repo (lowercase): its review skill question, and until when reviews wait for it.
+        self._skill_asks: dict[str, tuple[asyncio.Future[str | None], float]] = {}
+        self._skill_locks: dict[str, asyncio.Lock] = {}
 
     async def on_activated(self, args: dict | None) -> None:
         await super().on_activated(args)
@@ -211,7 +227,7 @@ class ReviewWorker(BaseWorker):
                 or review.head_sha == pr.head_sha
             ):
                 return False
-            prompt = rereview_prompt(review.head_sha, pr.head_sha)
+            prompt = rereview_prompt(review.head_sha, pr.head_sha, review.skill)
             self._launch(pr, review, prompt=prompt, resume=True, followup=True, kind="rereview")
         await self._progress(ref, "Re-reviewing new commits")
         return True
@@ -255,6 +271,37 @@ class ReviewWorker(BaseWorker):
         future.set_result(bool(payload.get("allow")))
         await self.send_job_response(message.job_id, {"ok": True})
 
+    @job(name=REVIEW_SKILLS)
+    async def on_review_skills(self, message: BusJobRequestMessage) -> None:
+        repo = str((message.payload or {}).get("repo") or "")
+        if not repo:
+            await self.send_job_response(message.job_id, {"error": "Which repo?"})
+            return
+        skills = review_skills(await self._repo_plugin(repo))
+        chosen = await self._store.review_skill(repo)
+        await self.send_job_response(
+            message.job_id, {"skills": [asdict(s) for s in skills], "chosen": chosen}
+        )
+
+    @job(name=REVIEW_SKILL)
+    async def on_review_skill(self, message: BusJobRequestMessage) -> None:
+        payload = message.payload or {}
+        repo, skill = str(payload.get("repo") or ""), payload.get("skill")
+        if not repo:
+            await self.send_job_response(message.job_id, {"error": "Which repo?"})
+            return
+        if skill is not None:
+            skill = str(skill)
+            await self._store.set_review_skill(repo, skill, chosen_by="you")
+            await self.send_bus_message(
+                SkillChosen(source=self.name, repo=repo, skill=skill, chosen_by="you")
+            )
+        # Reviews waiting on the question go ahead (None: without a skill, for now).
+        asked = self._skill_asks.get(repo.lower())
+        if asked and not asked[0].done():
+            asked[0].set_result(skill)
+        await self.send_job_response(message.job_id, {"ok": True})
+
     # -- Starting -------------------------------------------------------------------
 
     async def start_review(self, ref: PRRef) -> Review:
@@ -274,7 +321,8 @@ class ReviewWorker(BaseWorker):
             review = await self._store.latest_review(ref)
             assert review is not None
             await self._store.set_pr_state(ref, PRState.REVIEWING)
-            self._launch(pr, review, prompt=review_prompt(pr), resume=False, kind="review")
+            # The prompt depends on the repo's review skill, which may need asking.
+            self._launch(pr, review, prompt="", resume=False, kind="review")
         await self.send_bus_message(ReviewStarted(source=self.name, pr=str(ref)))
         await self.send_bus_message(PRListUpdated(source=self.name))
         return review
@@ -309,7 +357,8 @@ class ReviewWorker(BaseWorker):
         """Run the agent on ``pr`` in the background.
 
         ``kind`` (review, resume, rereview, message) is what the run is
-        recorded as, with every message in it (see Store.start_run).
+        recorded as, with every message in it (see Store.start_run). A new
+        review (``review``) makes its own prompt.
         """
         run = self._run(
             pr, review, prompt=prompt, resume=resume, followup=followup, queued=queued, kind=kind
@@ -343,6 +392,49 @@ class ReviewWorker(BaseWorker):
             logger.warning(f"Couldn't load {repo}'s skills and agents: {e}")
             return None
 
+    async def _choose_skill(self, ref: PRRef, plugin: Path | None) -> str | None:
+        """The repo skill a new review follows; None for Purr's own review.
+
+        The repo's choice is kept. Until there is one: a skill clearly for
+        reviewing PRs is chosen (and announced); otherwise, when some skills
+        may be, you're asked, and the review waits a while for your answer.
+        """
+        skills = review_skills(plugin)
+        names = {skill.name for skill in skills}
+        async with self._skill_locks.setdefault(ref.repo.lower(), asyncio.Lock()):
+            chosen = await self._store.review_skill(ref.repo)
+            if chosen is not None:
+                return chosen if chosen in names else None  # gone from the repo: Purr's own
+            likely = [skill.name for skill in skills if skill.likely]
+            if len(likely) == 1:
+                await self._store.set_review_skill(ref.repo, likely[0], chosen_by="purr")
+                await self.send_bus_message(
+                    SkillChosen(source=self.name, repo=ref.repo, skill=likely[0], chosen_by="purr")
+                )
+                return likely[0]
+            if not skills:
+                return None
+            answer = await self._ask_skill(ref, [asdict(skill) for skill in skills])
+            return answer if answer in names else None
+
+    async def _ask_skill(self, ref: PRRef, skills: list[dict]) -> str | None:
+        """Ask which skill the repo's reviews follow (once per run), and wait a while."""
+        key = ref.repo.lower()
+        if key not in self._skill_asks:
+            future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+            self._skill_asks[key] = (future, time.monotonic() + self._permission_wait)
+            await self.send_bus_message(
+                SkillQuestion(source=self.name, repo=ref.repo, skills=skills)
+            )
+        future, until = self._skill_asks[key]
+        if future.done():
+            return future.result()
+        await self._progress(ref, "Waiting for you: should reviews here follow a repo skill?")
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), until - time.monotonic())
+        except TimeoutError:
+            return None
+
     async def _run(
         self,
         pr: PR,
@@ -355,6 +447,7 @@ class ReviewWorker(BaseWorker):
         kind: str,
     ):
         ref = pr.ref
+        skill = review.skill
         submitted: dict = {}
         state_before = pr.state
         slot = False
@@ -366,6 +459,11 @@ class ReviewWorker(BaseWorker):
             if followup:
                 await self._store.set_pr_state(ref, PRState.REVIEWING)
                 await self.send_bus_message(PRListUpdated(source=self.name))
+            plugin = await self._repo_plugin(ref.repo)
+            if kind == "review":
+                skill = await self._choose_skill(ref, plugin)
+                await self._store.set_review_followed(review.id, skill)
+                prompt = review_prompt(pr, skill)
             if queued:
                 await self._take_slot(ref)
                 slot = True
@@ -375,7 +473,7 @@ class ReviewWorker(BaseWorker):
             assert review.session_id
             if resume and not self._agent.session_exists(review.session_id, worktree):
                 # It never really started: begin again, under the same session ID.
-                resume, prompt = False, review_prompt(pr)
+                resume, prompt = False, review_prompt(pr, skill)
             await self._progress(ref, "Reviewing" if not followup else "Thinking")
             author = "you" if kind == "message" else "purr"
             await self._store.add_message(
@@ -389,7 +487,8 @@ class ReviewWorker(BaseWorker):
                 prompt=prompt,
                 callbacks=self._callbacks(ref, submitted, run_id),
                 guidelines=await self._repos.guidelines(ref.repo),
-                plugin=await self._repo_plugin(ref.repo),
+                plugin=plugin,
+                skill=skill,
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")

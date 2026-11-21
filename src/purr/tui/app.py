@@ -25,13 +25,15 @@ from purr.messages import (
     ReviewProgress,
     ReviewStarted,
     SessionMessage,
+    SkillChosen,
+    SkillQuestion,
 )
 from purr.models import PRChange, PRRef
 from purr.review.instructions import Kind
 from purr.tui.bridge import BusEvent, RequestError, UIWorker
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
-from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen
+from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen, ReviewSkillScreen
 from purr.tui.session import SessionState
 from purr.tui.switcher import PurrSwitcher, short_name
 from purr.workers.recap import LAST_ACTIVE
@@ -144,15 +146,44 @@ class PurrApp(App):
             self.run_worker(self.bus.active())
 
     async def action_instructions(self) -> None:
-        """Edit your review or code style: this repo's inside a repo, the general ones at home."""
+        """Edit your review or code style: this repo's inside a repo, the general ones at home.
+
+        Inside a repo, also which of its skills its reviews follow.
+        """
         if self._modal_open():
             return
+        repo = self.location
 
-        async def chosen(kind: Kind | None) -> None:
-            if kind:
-                await self._edit(self.purr.instructions.ensure(kind, self.location))
+        async def chosen(kind: Kind | str | None) -> None:
+            if kind == "skill" and repo:
+                await self._choose_review_skill(repo)
+            elif isinstance(kind, Kind):
+                await self._edit(self.purr.instructions.ensure(kind, repo))
 
-        await self.push_screen(InstructionsScreen(self.location), chosen)
+        await self.push_screen(InstructionsScreen(repo), chosen)
+
+    async def _choose_review_skill(self, repo: str) -> None:
+        try:
+            skills, current = await self.bus.review_skills(repo)
+        except RequestError as e:
+            self.notify(str(e), severity="warning")
+            return
+        if not skills:
+            self.notify(
+                f"None of {repo}'s skills look like they're for reviewing. You can still "
+                "run any of them in a PR's session, as /<plugin>:<skill>."
+            )
+            return
+        self.push_screen(ReviewSkillScreen(repo, skills, current), self._set_review_skill(repo))
+
+    def _set_review_skill(self, repo: str):
+        async def answer(skill: str | None) -> None:
+            try:
+                await self.bus.set_review_skill(repo, skill)
+            except RequestError as e:
+                self.notify(str(e), severity="warning")
+
+        return answer
 
     async def _edit(self, path: Path) -> None:
         editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi")
@@ -266,6 +297,18 @@ class PurrApp(App):
 
     def on_bus_event(self, message: BusEvent) -> None:
         event = message.event
+        if isinstance(event, SkillQuestion):
+            screen = ReviewSkillScreen(event.repo, event.skills, asking=True)
+            self.push_screen(screen, self._set_review_skill(event.repo))
+            return
+        if isinstance(event, SkillChosen):
+            if event.chosen_by == "purr":
+                self.notify(
+                    f"Reviews in {event.repo} follow its /{event.skill} skill. "
+                    "To change that, press i in the repo.",
+                    timeout=12,
+                )
+            return
         if isinstance(event, PRChanged) and event.change == PRChange.ASSIGNED:
             self._alert(event.pr, "assigned to you")
         elif isinstance(event, ReviewFinished):

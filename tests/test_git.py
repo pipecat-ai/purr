@@ -163,9 +163,20 @@ async def test_repo_plugin_comes_from_the_default_branch(tmp_path, upstream):
 
 async def test_no_repo_plugin(tmp_path, upstream):
     repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
-    assert await repos.plugin("a/b") is None  # not cloned yet
     await repos.checkout(PRRef("a/b", 7), git(upstream, "rev-parse", "refs/pull/7/head"))
     assert await repos.plugin("a/b") is None
+
+
+async def test_repo_plugin_before_any_checkout(tmp_path, upstream):
+    """A repo's first review decides on its review skill before checking the PR out."""
+    (upstream / ".claude/skills/code-review").mkdir(parents=True)
+    (upstream / ".claude/skills/code-review/SKILL.md").write_text(SKILL)
+    git(upstream, "add", ".")
+    git(upstream, "commit", "-qm", "skills")
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+
+    plugin = await repos.plugin("a/b")  # clones it, and fetches the default branch
+    assert plugin is not None and (plugin / "skills/code-review/SKILL.md").exists()
 
 
 def open_pr(number: int, head: str, base: str = "main") -> PR:

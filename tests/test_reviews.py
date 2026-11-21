@@ -12,6 +12,8 @@ from pipecat.workers.runner import WorkerRunner
 from purr.messages import (
     PERMISSION_ANSWER,
     REVIEW_MESSAGE,
+    REVIEW_SKILL,
+    REVIEW_SKILLS,
     REVIEW_START,
     REVIEW_WORKER,
     ActionPending,
@@ -25,13 +27,15 @@ from purr.messages import (
     ReviewProgress,
     ReviewStarted,
     SessionMessage,
+    SkillChosen,
+    SkillQuestion,
     Synced,
 )
 from purr.models import PR, ActionStatus, PRRef, PRState, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
 from purr.workers import ActivityWorker, ReviewWorker
-from tests.fakes import FakeAgent, FakeRepos
+from tests.fakes import FakeAgent, FakeRepos, make_plugin
 
 REF = PRRef("pipecat-ai/pipecat", 2841)
 
@@ -459,3 +463,119 @@ async def test_failed_and_interrupted_runs_are_recorded(make):
 
 async def _statuses(s, expected: list[str]) -> bool:
     return [r["status"] for r in await s.store.runs(REF)] == expected
+
+
+# -- The repo's own review skill ------------------------------------------------------
+
+CODE_REVIEW = {"code-review": "Automated code review for pull requests"}
+UNCLEAR = {"prose-review": "Check the prose", "security-review": "Look for security problems"}
+
+
+async def test_a_clear_review_skill_is_followed_without_asking(make, tmp_path):
+    s = await make()
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
+    await s.store.upsert_pr(make_pr())
+
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    [run] = s.agent.runs
+    assert run["prompt"] == "/pipecat:code-review https://github.com/pipecat-ai/pipecat/pull/2841"
+    assert run["skill"] == "pipecat:code-review"
+    assert not s.client.of(SkillQuestion)
+    [chosen] = s.client.of(SkillChosen)
+    assert (chosen.skill, chosen.chosen_by) == ("pipecat:code-review", "purr")
+    assert await s.store.review_skill(REF.repo) == "pipecat:code-review"
+    assert (await s.store.latest_review(REF)).skill == "pipecat:code-review"
+
+    # Re-reviews follow it again; it's chosen once.
+    await s.store.upsert_pr(make_pr(assigned_to_me=True, head_sha="def456"))
+    await s.runner.get_worker(REVIEW_WORKER).rereview(REF)
+    await eventually(lambda: len(s.agent.runs) == 2)
+    assert s.agent.runs[1]["skill"] == "pipecat:code-review"
+    assert "pipecat:code-review" in s.agent.runs[1]["prompt"]
+    assert len(s.client.of(SkillChosen)) == 1
+
+
+async def test_you_are_asked_when_its_not_clear_and_the_review_waits(make, tmp_path):
+    s = await make()
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", UNCLEAR)
+    await s.store.upsert_pr(make_pr())
+
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(SkillQuestion))
+    [question] = s.client.of(SkillQuestion)
+    assert question.repo == REF.repo
+    assert [skill["name"] for skill in question.skills] == [
+        "pipecat:prose-review",
+        "pipecat:security-review",
+    ]
+    await asyncio.sleep(0.05)
+    assert not s.agent.runs  # waiting for you
+
+    await s.client.request(REVIEW_SKILL, {"repo": REF.repo, "skill": "pipecat:security-review"})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["skill"] == "pipecat:security-review"
+    assert await s.store.review_skill(REF.repo) == "pipecat:security-review"
+    assert s.client.of(SkillChosen)[0].chosen_by == "you"
+
+
+async def test_reviews_go_ahead_if_nobody_answers_about_the_skill(make, tmp_path):
+    s = await make(permission_wait=0.1)
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", UNCLEAR)
+    other = PRRef(REF.repo, 7)
+    await s.store.upsert_pr(make_pr())
+    await s.store.upsert_pr(make_pr(number=7))
+
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["skill"] is None
+    assert s.agent.runs[0]["prompt"].startswith("Review pipecat-ai/pipecat#2841")
+    assert await s.store.review_skill(REF.repo) is None  # still to decide, next time
+
+    # Asked once per run: the next review doesn't wait again.
+    await s.client.request(REVIEW_START, {"pr": str(other)})
+    await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
+    assert len(s.client.of(SkillQuestion)) == 1
+
+
+async def test_not_now_lets_waiting_reviews_go_ahead(make, tmp_path):
+    s = await make()
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", UNCLEAR)
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(SkillQuestion))
+
+    await s.client.request(REVIEW_SKILL, {"repo": REF.repo, "skill": None})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["skill"] is None
+    assert await s.store.review_skill(REF.repo) is None
+    assert not s.client.of(SkillChosen)
+
+
+async def test_your_choice_sticks(make, tmp_path):
+    async def seed(store, agent):
+        await store.set_review_skill(REF.repo, "", chosen_by="you")  # Purr's own review
+
+    s = await make(before_start=seed)
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["skill"] is None
+    assert not s.client.of(SkillQuestion) and not s.client.of(SkillChosen)
+
+    response = await s.client.request(REVIEW_SKILLS, {"repo": REF.repo})
+    assert response["chosen"] == ""
+    assert [skill["name"] for skill in response["skills"]] == ["pipecat:code-review"]
+
+
+async def test_a_chosen_skill_the_repo_dropped_means_purrs_own_review(make, tmp_path):
+    async def seed(store, agent):
+        await store.set_review_skill(REF.repo, "pipecat:old-review", chosen_by="you")
+
+    s = await make(before_start=seed)
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["skill"] is None
