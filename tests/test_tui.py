@@ -426,6 +426,18 @@ async def test_moving_around_and_searching(tmp_path):
         await until(pilot, lambda: shown() == 3)
         assert focused(app) == "transcript"
 
+        # tab switches panes, from the prompt too; shift+tab the same.
+        await pilot.press("tab")
+        assert focused(app) == "prs"
+        await pilot.press("tab")
+        assert focused(app) == "transcript"
+        await pilot.press("enter")
+        assert focused(app) == "prompt"
+        await pilot.press("shift+tab")
+        assert focused(app) == "prs"
+        await pilot.press("o")
+        assert focused(app) == "transcript" and shown() == 3
+
         # / searches the list (title, author, number), and esc clears it.
         await pilot.press("slash")
         assert focused(app) == "search"

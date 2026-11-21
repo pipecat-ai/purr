@@ -275,6 +275,9 @@ class RepoView(PurrView):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("o", "open", "Open"),
+        # Two panes, so either way it's the other one (typing included: tab
+        # never indents the prompt).
+        Binding("tab,shift+tab", "switch_pane", "Switch pane", key_display="tab"),
         Binding("n", "move(1)", "Next"),
         Binding("p", "move(-1)", "Previous"),
         Binding("slash", "search", "Search", key_display="/"),
@@ -455,6 +458,17 @@ class RepoView(PurrView):
         """Into the selected PR's pane."""
         if self.selected_pr():
             self.session.focus_transcript()
+
+    def action_switch_pane(self) -> None:
+        """From the list (or its search) to the PR's pane, and back."""
+        option_list = self.query_one(OptionList)
+        if self.session.has_focus_within:
+            if self.query_one("#prs-pane").display:  # not while zoomed
+                option_list.focus()
+        elif self.query_one("#search").has_focus:
+            option_list.focus()
+        else:
+            self.action_open()
 
     # -- Search ---------------------------------------------------------------------
 
