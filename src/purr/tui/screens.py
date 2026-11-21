@@ -63,13 +63,13 @@ def _assignees(pr: PR) -> Text:
 
 
 def _row(*cells: Text | str) -> Table:
-    """A PR list row: mark, number, title, assignees, then author and opened on the right edge."""
+    """A PR list row: mark, number, title, assignees, author, opened (on the right edge)."""
     grid = Table.grid(padding=(0, 1), expand=True)
     grid.add_column(width=1)
     grid.add_column(width=6)
     grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
     grid.add_column(width=10, no_wrap=True, overflow="ellipsis")
-    grid.add_column(width=14, justify="right", no_wrap=True, overflow="ellipsis")
+    grid.add_column(width=14, no_wrap=True, overflow="ellipsis")
     grid.add_column(width=6, justify="right")
     grid.add_row(*cells)
     return grid

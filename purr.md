@@ -264,20 +264,20 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 ┌─ Purr › 2 pipecat-ai/pipecat ───────────────────────────────────────────── 🔔 1 · whisker#112 needs you ─┐
 │   #      TITLE                  ASSIGNED AUTHOR OPENED │ #2841  Add message bus                          │
 │ ⚠ NEEDS YOU (1)                                        │ by alice · opened 3d ago · main ← bus · +412 −30 │
-│ ⚠ #2841  Add message bus        you       alice     3d │ ✓ Review done · 3 findings · 1 pending action    │
+│ ⚠ #2841  Add message bus        you      alice      3d │ ✓ Review done · 3 findings · 1 pending action    │
 │                                                        │                                                  │
 │ ● REVIEWING (1)                                        │ Adds a message bus so workers can talk without   │
-│ ● #2850  TTS context            you         bob     1d │ knowing about each other. …                      │
+│ ● #2850  TTS context            you      bob        1d │ knowing about each other. …                      │
 │                                                        │                                                  │
 │ ○ NOT REVIEWED (2)                                     │ 3 files changed  d full diff                     │
-│ ○ #2861  Docs typo                        carol     2h │ src/pipecat/bus/bus.py                +380 −12   │
-│ ○ #2855  Evals report                      dave     5h │ …                                                │
+│ ○ #2861  Docs typo                       carol      2h │ src/pipecat/bus/bus.py                +380 −12   │
+│ ○ #2855  Evals report                    dave       5h │ …                                                │
 │                                                        │                                                  │
 │ ✓ DONE (1)                                             │ ⏺ Clean refactor, tests pass. Concerns:          │
-│ ✓ #2833  Frame cleanup          you        erin     6d │   1. Race in bus.subscribe() on shutdown         │
+│ ✓ #2833  Frame cleanup          you      erin       6d │   1. Race in bus.subscribe() on shutdown         │
 │                                                        │ ┌──────────────────────────────────────────────┐ │
 │ ◌ OTHERS REVIEWING (1)                                 │ │ Post 3 comments and request changes?          │ │
-│ ◌ #2790  Krisp filter           grace     frank     2w │ │ [a] approve   [x] dismiss                     │ │
+│ ◌ #2790  Krisp filter           grace    frank      2w │ │ [a] approve   [x] dismiss                     │ │
 │                                                        │ └──────────────────────────────────────────────┘ │
 │                                                        │ > is the race reachable from user code?          │
 ├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤
@@ -286,7 +286,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 ```
 
 - **Header**: where you are (`Purr › 2 pipecat-ai/pipecat`) and the latest alert from other repos.
-- **Left pane**: the repo's PRs grouped by state, "Needs you" first and "Others reviewing" last, newest first within each group. Columns: number (in its own color), title, who's assigned (`you`, a login, `+1` for more), then author and how long ago it was opened (`2h`, `3d`, `5mo`) against the right edge.
+- **Left pane**: the repo's PRs grouped by state, "Needs you" first and "Others reviewing" last, newest first within each group. Columns: number (in its own color), title, who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`) against the right edge.
 - **Right pane**: the selected PR. The header has its title, then `by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · labels`, then where its review stands. The transcript starts with the PR's description and the files it changes, so a PR nobody has reviewed yet shows what it's about and you can decide whether to take it; on a reviewed PR it sits above the session (Claude Code style, see PR session), with the pending action box and the prompt below. `d` opens the full diff in your pager (`gh pr diff`).
 - **Details are fetched ahead.** Selecting a PR fetches its details (about 0.5 s) and, in parallel, those of the 10 PRs below it in one request, so moving down the list doesn't wait. They're cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing.
 - **Status bar**: key hints and mic state.
