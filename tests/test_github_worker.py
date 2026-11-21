@@ -5,30 +5,15 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from pipecat.bus import BusMessage
-from pipecat.pipeline.job_context import JobError, JobParams
+from pipecat.pipeline.job_context import JobParams
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
-from purr.github import RemotePR, Snapshot
 from purr.messages import GITHUB_WORKER, REPO_ADD, REPO_REMOVE, PRChanged, PRListUpdated, PurrEvent
 from purr.models import PRChange, PRRef
 from purr.store import Store
 from purr.workers import ActivityWorker, GitHubWorker
-
-
-class FakeGitHub:
-    def __init__(self):
-        self.repos = {"pipecat-ai/pipecat"}
-        self.pool: dict[str, list[RemotePR]] = {}
-
-    async def repo_name(self, name: str) -> str | None:
-        return {repo.lower(): repo for repo in self.repos}.get(name.lower())
-
-    async def snapshot(self, repos):
-        return Snapshot(pool={r: list(self.pool.get(r, [])) for r in repos}, assigned=[])
-
-    async def pr_statuses(self, refs):
-        return {}
+from tests.fakes import FakeGitHub, remote
 
 
 class Client(BaseWorker):
@@ -46,18 +31,6 @@ class Client(BaseWorker):
             event = await asyncio.wait_for(self.events.get(), 5)
             if isinstance(event, kind):
                 return event
-
-
-def remote(number: int) -> RemotePR:
-    return RemotePR(
-        repo="pipecat-ai/pipecat",
-        number=number,
-        title=f"PR {number}",
-        author="someone",
-        url=f"https://github.com/pipecat-ai/pipecat/pull/{number}",
-        head_sha="abc",
-        updated_at="2026-11-20T10:00:00Z",
-    )
 
 
 async def eventually(check: Callable[[], Awaitable[bool]], timeout: float = 5) -> None:
@@ -109,9 +82,11 @@ async def test_add_poll_and_remove_a_repo(setup):
     await eventually(synced)
     assert [pr.number for pr in await store.list_prs()] == [1]
 
-    # Later polls report what's new, and it lands in the activity log.
-    github.pool["pipecat-ai/pipecat"].append(remote(2))
+    # Later polls are incremental, report what's new, and it lands in the activity log.
+    github.updates["pipecat-ai/pipecat"] = [remote(2)]
     await worker.poll()
+    full, incremental = github.calls[-1]
+    assert full == [] and list(incremental) == ["pipecat-ai/pipecat"]
     event = await client.next_event(PRChanged)
     assert (event.pr, event.change) == ("pipecat-ai/pipecat#2", PRChange.POOLED)
     await client.next_event(PRListUpdated)
@@ -126,10 +101,12 @@ async def test_add_poll_and_remove_a_repo(setup):
     assert await store.list_prs() == []
 
 
-async def test_adding_an_unknown_repo_fails(setup):
+async def test_adding_an_unknown_repo_is_rejected(setup):
     store, _, _, client = setup
-    with pytest.raises(JobError):
-        await repo_job(client, REPO_ADD, "nobody/nothing")
-    with pytest.raises(JobError):
-        await repo_job(client, REPO_ADD, "not a repo")
+    response = await repo_job(client, REPO_ADD, "nobody/nothing")
+    assert "Can't find nobody/nothing" in response["error"]
+    response = await repo_job(client, REPO_ADD, "not a repo")
+    assert "not a GitHub repo" in response["error"]
+    response = await repo_job(client, REPO_REMOVE, "nobody/nothing")
+    assert "isn't being watched" in response["error"]
     assert await store.list_repos() == []

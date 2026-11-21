@@ -19,7 +19,9 @@ from purr.models import (
     PendingAction,
     PRRef,
     PRState,
+    Recap,
     Repo,
+    RepoSummary,
     Review,
     ReviewStatus,
     Severity,
@@ -102,6 +104,21 @@ MIGRATIONS: list[str] = [
     CREATE INDEX activity_at ON activity (at);
     CREATE INDEX activity_pr ON activity (repo, number);
     """,
+    """
+    CREATE TABLE meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+
+    CREATE TABLE recaps (
+        id         INTEGER PRIMARY KEY,
+        since      TEXT NOT NULL,
+        until      TEXT NOT NULL,
+        headline   TEXT NOT NULL,
+        items      TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -137,6 +154,17 @@ def _pr(row: aiosqlite.Row) -> PR:
 
 def _repo(row: aiosqlite.Row) -> Repo:
     return Repo(name=row["name"], added_at=row["added_at"], synced_at=row["synced_at"])
+
+
+def _recap(row: aiosqlite.Row) -> Recap:
+    return Recap(
+        id=row["id"],
+        since=row["since"],
+        until=row["until"],
+        headline=row["headline"],
+        items=json.loads(row["items"]),
+        created_at=row["created_at"],
+    )
 
 
 def _activity(row: aiosqlite.Row) -> Activity:
@@ -290,9 +318,21 @@ class Store:
         )
         return _pr(row) if row else None
 
-    async def list_prs(self, state: PRState | None = None) -> list[PR]:
+    async def list_prs(
+        self, state: PRState | None = None, *, repo: str | None = None, open_only: bool = False
+    ) -> list[PR]:
         """PRs in display order: needs you, reviewing, not reviewed, done; newest first."""
-        where, params = ("WHERE state = ?", (state,)) if state else ("", ())
+        clauses, params = [], []
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        if repo:
+            clauses.append("repo = ?")
+            params.append(repo)
+        if open_only:
+            clauses.append("gh_state = ?")
+            params.append(GHState.OPEN)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self._fetchall(
             f"SELECT * FROM prs {where} ORDER BY {_STATE_ORDER}, updated_at DESC", params
         )
@@ -357,6 +397,42 @@ class Store:
         rows = await self._fetchall("SELECT * FROM repos ORDER BY name COLLATE NOCASE")
         return [_repo(row) for row in rows]
 
+    async def repo_summaries(self) -> list[RepoSummary]:
+        """The repo list: watched repos plus any other repo with an open PR Purr tracks
+        (assigned to you, or reviewed), alphabetically, with per-state counts."""
+        rows = await self._fetchall(
+            """
+            WITH names (name, watched) AS (
+                SELECT name, 1 FROM repos
+                UNION
+                SELECT DISTINCT repo, 0 FROM prs
+                WHERE gh_state = 'open' AND repo NOT IN (SELECT name FROM repos)
+            )
+            SELECT
+                names.name,
+                names.watched,
+                COALESCE(SUM(prs.state = 'needs_you'), 0) AS needs_you,
+                COALESCE(SUM(prs.state = 'reviewing'), 0) AS reviewing,
+                COALESCE(SUM(prs.state = 'not_reviewed'), 0) AS not_reviewed,
+                (SELECT MAX(at) FROM activity WHERE activity.repo = names.name) AS last_activity
+            FROM names
+            LEFT JOIN prs ON prs.repo = names.name AND prs.gh_state = 'open'
+            GROUP BY names.name, names.watched
+            ORDER BY names.name COLLATE NOCASE
+            """
+        )
+        return [
+            RepoSummary(
+                name=row["name"],
+                watched=bool(row["watched"]),
+                needs_you=row["needs_you"],
+                reviewing=row["reviewing"],
+                not_reviewed=row["not_reviewed"],
+                last_activity=row["last_activity"],
+            )
+            for row in rows
+        ]
+
     async def remove_repo(self, name: str) -> bool:
         """Stop watching a repo and drop its pool.
 
@@ -375,10 +451,11 @@ class Store:
         await self._db.commit()
         return removed
 
-    async def mark_synced(self, names: Iterable[str]) -> None:
-        now = _now()
+    async def mark_synced(self, names: Iterable[str], *, at: str | None = None) -> None:
+        """Record a successful sync of these repos, as of ``at`` (default: now)."""
+        at = at or _now()
         await self._db.executemany(
-            "UPDATE repos SET synced_at = ? WHERE name = ?", [(now, name) for name in names]
+            "UPDATE repos SET synced_at = ? WHERE name = ?", [(at, name) for name in names]
         )
         await self._db.commit()
 
@@ -416,6 +493,38 @@ class Store:
         rows = await self._fetchall(f"SELECT * FROM activity {where} ORDER BY id", params)
         return [_activity(row) for row in rows]
 
+    # -- Meta and recaps --------------------------------------------------------
+
+    async def get_meta(self, key: str) -> str | None:
+        row = await self._fetchone("SELECT value FROM meta WHERE key = ?", (key,))
+        return row["value"] if row else None
+
+    async def set_meta(self, key: str, value: str) -> None:
+        await self._db.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?)"
+            " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await self._db.commit()
+
+    async def add_recap(self, *, since: str, until: str, headline: str, items: list[dict]) -> Recap:
+        cursor = await self._db.execute(
+            "INSERT INTO recaps (since, until, headline, items, created_at) VALUES (?, ?, ?, ?, ?)",
+            (since, until, headline, json.dumps(items), _now()),
+        )
+        await self._db.commit()
+        recap = await self.get_recap(cursor.lastrowid)
+        assert recap is not None
+        return recap
+
+    async def get_recap(self, recap_id: int) -> Recap | None:
+        row = await self._fetchone("SELECT * FROM recaps WHERE id = ?", (recap_id,))
+        return _recap(row) if row else None
+
+    async def latest_recap(self) -> Recap | None:
+        row = await self._fetchone("SELECT * FROM recaps ORDER BY id DESC LIMIT 1")
+        return _recap(row) if row else None
+
     # -- Reviews ---------------------------------------------------------------
 
     _REVIEW_SELECT = """
@@ -452,6 +561,8 @@ class Store:
             "UPDATE reviews SET status = ?, summary = ?, finished_at = ? WHERE id = ?",
             (ReviewStatus.FINISHED, summary, _now(), review_id),
         )
+        # A follow-up turn can submit the review again; the latest one wins.
+        await self._db.execute("DELETE FROM findings WHERE review_id = ?", (review_id,))
         await self._db.executemany(
             "INSERT INTO findings (review_id, file, line, severity, text) VALUES (?, ?, ?, ?, ?)",
             [(review_id, f.file, f.line, f.severity, f.text) for f in findings],

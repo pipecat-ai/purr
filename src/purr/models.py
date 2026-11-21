@@ -133,6 +133,34 @@ class Repo:
 
 
 @dataclass
+class RepoSummary:
+    """A row of the repo list: a watched repo, or one where a PR concerns you."""
+
+    name: str
+    watched: bool
+    needs_you: int = 0
+    reviewing: int = 0
+    not_reviewed: int = 0
+    last_activity: str | None = None
+
+
+@dataclass
+class Recap:
+    """A "while you were away" summary.
+
+    ``items`` are ``{"pr": "owner/repo#123", "text": "...", "needs_you": bool}``,
+    most urgent first.
+    """
+
+    id: int
+    since: str
+    until: str
+    headline: str
+    created_at: str
+    items: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class Activity:
     """One entry in the activity log: a Purr event, as recorded."""
 

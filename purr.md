@@ -99,6 +99,8 @@ Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs expli
 
 **The pool** ("Not reviewed") is the open PRs in the watched repos that nobody is reviewing. Starting a review assigns you, and teammates assign themselves when they review, so "nobody is reviewing it" simply means "no assignee". A PR leaves the pool as soon as someone is assigned or it's closed. Drafts and your own PRs stay out of the pool.
 
+**Polling** uses GitHub's GraphQL search through `gh`, batching every search into one request per page. A search takes 1-2 s regardless of size, and a big repo's pool is several pages (pipecat: 4), so a repo is fully synced only on startup, when added, and every 15 minutes. Polls in between fetch just the PRs updated since the last sync (5 minutes of overlap for search-index lag), which is usually one request of about a second. A newly added repo's pool is shown page by page as it arrives. A search that fails or comes back incomplete never removes anything.
+
 ## Review workers
 
 - One worker task per PR, wrapping a Claude Agent SDK session.
@@ -111,6 +113,19 @@ Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs expli
   - One or more **pending actions** proposed by the agent (e.g. "post 3 comments + request changes", "approve", "merge").
 - The agent must **never** post to GitHub or merge directly. All GitHub-visible actions are proposed as pending actions and executed by the app only after user approval. Enforced, not just prompted: a `can_use_tool` / PreToolUse check denies GitHub writes (`gh pr review|comment|merge`, `gh api` with a write method, `git push`), and the agent gets a `propose_action` tool to use instead.
 - The user can keep working in a PR's session after the review; see PR session.
+
+How it's built (`src/purr/review/`, `src/purr/workers/reviews.py`):
+
+- The agent reports through two in-process tools: `submit_review {summary, findings}` and `propose_action {kind: request_changes|approve|comment, description, body, comments}`. A new proposal (or a new review) dismisses the previous pending one.
+- The session ID is a UUID Purr picks before starting, stored right away, so even a review that dies early can be resumed (`resume=`), or restarted under the same ID if no transcript was written yet.
+- **Permission policy** (`review/policy.py`), applied in a PreToolUse hook to every tool call. PRs in the pool can come from anyone, so a background review doesn't run their code:
+  - *Allowed without asking:* reading and searching inside the worktree; read-only git and `gh` commands; read-only shell tools (`ls`, `cat`, `grep`, `rg`, `find` without `-exec`/`-delete`, ...). Chains and pipes are fine when every command in them is read-only. Commands are tokenized quote-aware and line by line, and `2>/dev/null` / `2>&1` are allowed.
+  - *Always denied:* GitHub writes, `git push`, reading the GitHub token (`gh auth token`). Checked against the whole raw command, including quoted or nested shells.
+  - *Asks:* everything else: running tests or scripts, editing files, fetching URLs, paths outside the worktree, redirections, subshells, command substitution. Until the PR session UI can show prompts, the answer is "no" and the agent carries on, noting in its findings what it couldn't check.
+- Only the user's own Claude Code settings are loaded (`setting_sources=["user"]`). A PR's `.claude/settings.json` could define hooks, and hooks run commands.
+- PRs assigned to you are reviewed automatically (`auto_review`, on by default): when the poller reports an assignment, and on startup for assigned PRs that were never reviewed. Reviews interrupted by quitting resume on the next start.
+- A failed review moves the PR to Needs you, with the error.
+- Measured on a 44-line pipecat PR: about 75 s from start to proposed action, including the first blobless clone of pipecat (about 7 s).
 
 ## PR session (Claude Code inside a PR)
 
@@ -157,6 +172,7 @@ Jobs:
 - `review.message {pr, text}` (send a follow-up into a PR's session)
 - `recap.create {since}` (when you come back, or on demand)
 - `repo.add {repo}` / `repo.remove {repo}` (handled by the GitHub worker; `repo` can be `owner/name` or a GitHub URL)
+- `action.approve {action_id}` / `action.dismiss {action_id}` (GitHub worker). Approving claims the action atomically (so keys and voice can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry.
 
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)
@@ -168,13 +184,14 @@ Events (broadcast, everyone listens):
 - `action.resolved {pr, action_id, approved}`
 - `review.failed {pr, error}`
 - `session.message {pr, message}` (one streamed SDK message: text, tool call or tool result)
-- `session.permission_request {pr, request_id, tool, input}`
+- `session.permission_request {pr, request_id, tool, description, reason}` / `session.permission_resolved {pr, request_id, allowed}`
 - `user.active` (from the TUI and the voice agent, throttled)
 - `recap.ready {recap_id, headline}`
 
-Commands:
-- `action.approve {action_id}` / `action.dismiss {action_id}`
-- `session.permission_response {request_id, decision}` (allow once / always for this PR / deny)
+- `session.answer {request_id, allow}` (reviews worker): answers an agent's permission request. ("Always for this PR" isn't there yet; it's allow once or deny.)
+- `pr.assign {pr}` (GitHub worker): assigns you, when you start a review on a pool PR with `r`.
+
+Commands: none yet. Everything that needs a reply is a job.
 
 Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the `reviews` worker; events (`PurrEvent`) and commands (`PurrCommand`) are `BusDataMessage` subclasses. Events are broadcast (no target); commands target the worker that executes them. PRs travel as `owner/repo#123` strings.
 
@@ -186,6 +203,7 @@ Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the
 - `findings`: review, file, line, severity, text
 - `pending_actions`: pr, action_id, kind (comment/request_changes/approve/merge), payload, status
 - `activity`: at, pr (optional), kind, data. Every recorded Purr event; feeds the recaps and each PR's timeline.
+- (`recaps` and `meta` exist as described; `prs.last_seen_at` doesn't yet, so alerts are in memory.)
 - `recaps`: since, until, headline, items, created_at
 - `meta`: key/value, e.g. `last_active_at`
 
@@ -308,13 +326,13 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 
 1. Project skeleton: single asyncio process, Pipecat `WorkerRunner` with local bus, SQLite. (Done.)
 2. GitHub poller: watched repos table, the pool (unassigned open PRs) plus PRs assigned to you in any repo, PR list in SQLite, activity log. (Done.)
-3. TUI shell: repo list (add/remove repos), repo screen with the PR list, navigation keys, live updates from bus events. Comes early because repos are only added from the UI, and it makes the poller visible.
-4. Review worker: Purr-managed clone and worktree, Agent SDK session with the GitHub guardrails, store session ID, summary, findings, pending actions, stream `session.message` events.
-5. Pending action execution (post comments / review verdict / merge) gated on approval.
-6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher.
-7. "Start from app" also assigns you on GitHub.
-8. While you were away: activity tracking, recap agent, recap panel.
-9. Open a PR's session in Claude Code (`o`).
+3. TUI shell: repo list (add/remove repos), repo screen with the PR list, navigation keys, live updates from bus events. Comes early because repos are only added from the UI, and it makes the poller visible. (Done. Measured with pipecat's 331 PRs: UI up with data in 0.5 s, opening the repo 35 ms, back home 16 ms, reopening 7 ms.)
+4. Review worker: Purr-managed clone and worktree, Agent SDK session with the GitHub guardrails, store session ID, summary, findings, pending actions, stream `session.message` events. (Done, except interactive permission prompts, which come with the PR session UI.)
+5. Pending action execution (post comments / review verdict / merge) gated on approval. (Done for reviews: approve / request changes / comment. Merging isn't proposed yet. Tested against a fake GitHub; not yet run against a real PR.)
+6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher. (Done. Transcripts come from the SDK's session file plus live `session.message` events. Alerts live in memory for now: `prs.last_seen_at` isn't stored yet, so they don't survive a restart.)
+7. "Start from app" also assigns you on GitHub. (Done: `r` on a pool PR starts the review and assigns you.)
+8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`recap.create {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
+9. Open a PR's session in Claude Code (`o`). (Done. `claude --resume` keeps the session ID; `--fork-session` is what would make a new one. It runs with `--setting-sources user`, GitHub writes disallowed, and a note that Purr's own tools aren't available there. Purr keeps running underneath, and reloads the transcript afterwards.)
 10. Voice agent with push-to-talk.
 
 ## Open questions
@@ -323,6 +341,5 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 - How to map findings to GitHub review comments (inline vs. general).
 - Worktree cleanup policy (on Done? after N days?).
 - STT/LLM/TTS choices for the voice agent.
-- Does `claude --resume <id>` continue the same session ID or write a new one? That decides how Purr picks the session back up after `o`.
 - How long without activity counts as "away" (default 15 minutes?).
 - Which slash commands the PR session supports at first (`/clear`, `/compact`, `/model`, ...).

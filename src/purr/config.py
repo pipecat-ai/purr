@@ -22,10 +22,18 @@ class Config:
             Defaults to ``$PURR_DATA_DIR``, else ``$XDG_DATA_HOME/purr``, else
             ``~/.local/share/purr``.
         poll_interval: Seconds between GitHub polls.
+        auto_review: Review PRs assigned to you without being asked.
+        review_model: Model for reviews; None uses Claude Code's default.
+        review_budget_usd: Optional spending cap per review run.
+        away_after: Seconds without activity after which you count as away.
     """
 
     data_dir: Path
     poll_interval: float = 60.0
+    auto_review: bool = True
+    review_model: str | None = None
+    review_budget_usd: float | None = None
+    away_after: float = 15 * 60
 
     @classmethod
     def load(cls, *, data_dir: Path | None = None) -> "Config":

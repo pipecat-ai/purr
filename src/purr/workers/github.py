@@ -2,18 +2,43 @@
 
 import asyncio
 import contextlib
+import dataclasses
+import time
+from datetime import UTC, datetime, timedelta
 
 from loguru import logger
 from pipecat.bus import BusJobRequestMessage
-from pipecat.pipeline.job_context import JobStatus
 from pipecat.pipeline.job_decorator import job
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.github import GitHub, GitHubError
-from purr.messages import GITHUB_WORKER, REPO_ADD, REPO_REMOVE, PRChanged, PRListUpdated
-from purr.models import parse_repo_name
+from purr.actions import ActionError, GhWriter, GitHubWriter, execute
+from purr.github import GitHub, GitHubError, RemotePR
+from purr.messages import (
+    ACTION_APPROVE,
+    ACTION_DISMISS,
+    GITHUB_WORKER,
+    PR_ASSIGN,
+    REPO_ADD,
+    REPO_REMOVE,
+    ActionResolved,
+    PRChanged,
+    PRListUpdated,
+)
+from purr.models import ActionStatus, PRRef, PRState, Repo, parse_repo_name
 from purr.store import Store
 from purr.sync import SyncPlan, missing_reviewed, plan_sync
+
+# Between full syncs, polls only fetch PRs updated since the last sync. A full
+# sync still runs on startup and this often, to catch anything search missed.
+FULL_SYNC_EVERY = 15 * 60
+# Search indexing lags a little behind GitHub, so incremental windows overlap.
+INCREMENTAL_OVERLAP = timedelta(minutes=5)
+
+
+def _since(synced_at: str) -> str:
+    """The ``updated:>=`` bound for an incremental search, in GitHub's format."""
+    start = datetime.fromisoformat(synced_at) - INCREMENTAL_OVERLAP
+    return start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class GitHubWorker(BaseWorker):
@@ -24,10 +49,16 @@ class GitHubWorker(BaseWorker):
     :class:`PRListUpdated` when anything changed. Handles the ``repo.add`` and
     ``repo.remove`` jobs.
 
+    Each repo gets a full sync on its first poll after startup and every
+    ``FULL_SYNC_EVERY`` seconds; polls in between only fetch PRs updated since
+    the last sync, which is usually a single cheap request. A newly added repo's
+    pool is stored page by page as it arrives, so it shows up quickly.
+
     Args:
         name: Bus name.
         store: Where PRs and repos live.
         github: GitHub client.
+        writer: Posts approved actions to GitHub.
         interval: Seconds between polls.
     """
 
@@ -37,17 +68,20 @@ class GitHubWorker(BaseWorker):
         *,
         store: Store,
         github: GitHub,
+        writer: GitHubWriter | None = None,
         interval: float = 60.0,
     ):
         super().__init__(name)
         self._store = store
         self._github = github
+        self._writer = writer or GhWriter()
         self._interval = interval
         self._poll_now = asyncio.Event()
         # Serializes polls with repo changes, so a poll never re-adds PRs from a
         # repo that was just removed.
         self._lock = asyncio.Lock()
         self._poll_task: asyncio.Task | None = None
+        self._last_full_sync: dict[str, float] = {}  # repo -> time.monotonic()
 
     async def on_activated(self, args: dict | None) -> None:
         await super().on_activated(args)
@@ -67,9 +101,27 @@ class GitHubWorker(BaseWorker):
     async def poll(self) -> SyncPlan:
         """Fetch from GitHub, update the store and broadcast what changed."""
         async with self._lock:
+            started = datetime.now(UTC).isoformat(timespec="seconds")
             repos = await self._store.list_repos()
             watched = [repo.name for repo in repos]
-            snapshot = await self._github.snapshot(watched)
+            full = [repo.name for repo in repos if self._needs_full_sync(repo)]
+            incremental = {
+                repo.name: _since(repo.synced_at)
+                for repo in repos
+                if repo.name not in full and repo.synced_at
+            }
+            first_sync = {repo.name for repo in repos if repo.synced_at is None}
+
+            async def on_page(repo: str, prs: list[RemotePR]) -> None:
+                # Show a brand new repo's pool as it arrives. Upserting pool PRs
+                # is safe before the poll completes; removals wait for the end.
+                if repo in first_sync:
+                    await self._store.apply_sync(
+                        upserts=[pr.to_pr(assigned_to_me=False) for pr in prs]
+                    )
+                    await self.send_bus_message(PRListUpdated(source=self.name))
+
+            snapshot = await self._github.snapshot(full, incremental, on_page=on_page)
             current = await self._store.open_prs()
             missing = missing_reviewed(current, snapshot, watched)
             statuses = await self._github.pr_statuses(missing) if missing else {}
@@ -77,13 +129,16 @@ class GitHubWorker(BaseWorker):
                 current,
                 snapshot,
                 watched=watched,
-                first_sync=[repo.name for repo in repos if repo.synced_at is None],
+                first_sync=first_sync,
                 statuses=statuses,
             )
             await self._store.apply_sync(
                 upserts=plan.upserts, deletes=plan.deletes, gh_states=plan.gh_states
             )
-            await self._store.mark_synced(name for name in watched if name in snapshot.pool)
+            now = time.monotonic()
+            for name in snapshot.pool:
+                self._last_full_sync[name] = now
+            await self._store.mark_synced([*snapshot.pool, *snapshot.updates], at=started)
 
         for change in plan.changes:
             await self.send_bus_message(
@@ -98,6 +153,10 @@ class GitHubWorker(BaseWorker):
             await self.send_bus_message(PRListUpdated(source=self.name))
         return plan
 
+    def _needs_full_sync(self, repo: Repo) -> bool:
+        last = self._last_full_sync.get(repo.name)
+        return repo.synced_at is None or last is None or time.monotonic() - last > FULL_SYNC_EVERY
+
     async def _poll_loop(self) -> None:
         while True:
             self._poll_now.clear()
@@ -110,8 +169,8 @@ class GitHubWorker(BaseWorker):
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._poll_now.wait(), self._interval)
 
-    async def _fail(self, message: BusJobRequestMessage, error: str) -> None:
-        await self.send_job_response(message.job_id, {"error": error}, status=JobStatus.FAILED)
+    async def _reject(self, message: BusJobRequestMessage, error: str) -> None:
+        await self.send_job_response(message.job_id, {"error": error})
 
     @job(name=REPO_ADD)
     async def on_repo_add(self, message: BusJobRequestMessage) -> None:
@@ -119,10 +178,10 @@ class GitHubWorker(BaseWorker):
             name = parse_repo_name(str((message.payload or {}).get("repo", "")))
             canonical = await self._github.repo_name(name)
         except (ValueError, GitHubError) as e:
-            await self._fail(message, str(e))
+            await self._reject(message, str(e))
             return
         if canonical is None:
-            await self._fail(message, f"Can't find {name} on GitHub (or you don't have access)")
+            await self._reject(message, f"Can't find {name} on GitHub (or you don't have access)")
             return
         async with self._lock:
             await self._store.add_repo(canonical)
@@ -136,7 +195,75 @@ class GitHubWorker(BaseWorker):
         async with self._lock:
             removed = await self._store.remove_repo(name)
         if not removed:
-            await self._fail(message, f"{name} isn't being watched")
+            await self._reject(message, f"{name} isn't being watched")
             return
         await self.send_job_response(message.job_id, {"repo": name})
+        await self.send_bus_message(PRListUpdated(source=self.name))
+
+    # -- Writes the user asked for -------------------------------------------------
+
+    @job(name=PR_ASSIGN)
+    async def on_pr_assign(self, message: BusJobRequestMessage) -> None:
+        try:
+            ref = PRRef.parse(str((message.payload or {}).get("pr")))
+            await self._writer.assign_self(ref)
+        except (ValueError, ActionError) as e:
+            await self._reject(message, f"Couldn't assign you: {e}")
+            return
+        # Show it right away; the next poll confirms it.
+        pr = await self._store.get_pr(ref)
+        if pr and not pr.assigned_to_me:
+            await self._store.apply_sync(upserts=[dataclasses.replace(pr, assigned_to_me=True)])
+            await self.send_bus_message(PRListUpdated(source=self.name))
+        await self.send_job_response(message.job_id, {"ok": True})
+        self.request_poll()
+
+    # -- Approved actions --------------------------------------------------------
+
+    @job(name=ACTION_APPROVE)
+    async def on_action_approve(self, message: BusJobRequestMessage) -> None:
+        action_id = str((message.payload or {}).get("action_id", ""))
+        # Claiming it first means approving twice (keys and voice at once) posts once.
+        action = await self._store.transition_action(
+            action_id, expected=ActionStatus.PENDING, new=ActionStatus.APPROVED
+        )
+        if action is None:
+            await self._reject(message, "That action was already decided, or doesn't exist")
+            return
+        pr = await self._store.get_pr(action.pr)
+        try:
+            url = await execute(self._writer, action, head_sha=pr.head_sha if pr else "")
+        except ActionError as e:
+            # Back to pending, so it can be retried.
+            await self._store.transition_action(
+                action_id, expected=ActionStatus.APPROVED, new=ActionStatus.PENDING
+            )
+            await self._reject(message, f"GitHub didn't take it: {e}")
+            return
+        await self._store.transition_action(
+            action_id, expected=ActionStatus.APPROVED, new=ActionStatus.EXECUTED
+        )
+        await self._resolved(action.pr, action_id, approved=True)
+        await self.send_job_response(message.job_id, {"url": url})
+
+    @job(name=ACTION_DISMISS)
+    async def on_action_dismiss(self, message: BusJobRequestMessage) -> None:
+        action_id = str((message.payload or {}).get("action_id", ""))
+        action = await self._store.transition_action(
+            action_id, expected=ActionStatus.PENDING, new=ActionStatus.DISMISSED
+        )
+        if action is None:
+            await self._reject(message, "That action was already decided, or doesn't exist")
+            return
+        await self._resolved(action.pr, action_id, approved=False)
+        await self.send_job_response(message.job_id, {"ok": True})
+
+    async def _resolved(self, ref: PRRef, action_id: str, *, approved: bool) -> None:
+        pr = await self._store.get_pr(ref)
+        # Nothing left to decide: the PR is done (unless a review is still running).
+        if pr and pr.state == PRState.NEEDS_YOU and not await self._store.pending_actions(ref):
+            await self._store.set_pr_state(ref, PRState.DONE)
+        await self.send_bus_message(
+            ActionResolved(source=self.name, pr=str(ref), action_id=action_id, approved=approved)
+        )
         await self.send_bus_message(PRListUpdated(source=self.name))

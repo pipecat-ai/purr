@@ -2,21 +2,23 @@
 
 import pytest
 
-from purr.github import ASSIGNED_QUERY, GitHub, GitHubError, PRStatus
+from purr.github import ASSIGNED_QUERY, UPDATED_QUERY, GitHub, GitHubError, PRStatus
 from purr.models import GHState, PRRef
 
 
-def node(number: int, repo: str = "pipecat-ai/pipecat") -> dict:
+def node(number: int, repo: str = "pipecat-ai/pipecat", **overrides) -> dict:
     return {
         "number": number,
         "title": f"PR {number}",
         "url": f"https://github.com/{repo}/pull/{number}",
+        "state": "OPEN",
         "isDraft": False,
         "updatedAt": "2026-11-20T10:00:00Z",
         "headRefOid": "abc",
         "author": {"login": "someone"},
+        "assignees": {"nodes": []},
         "repository": {"nameWithOwner": repo},
-    }
+    } | overrides
 
 
 def page(nodes: list[dict], total: int, cursor: str | None = None) -> dict:
@@ -36,6 +38,8 @@ class FakeGitHub(GitHub):
         self.calls: list[dict] = []
 
     async def graphql(self, query, variables):
+        if "viewer" in query:
+            return {"data": {"viewer": {"login": "me"}}}
         self.calls.append(variables)
         data, errors = {}, []
         for key, value in variables.items():
@@ -119,3 +123,40 @@ async def test_pr_statuses_and_repo_name():
 async def test_missing_gh_is_a_github_error():
     with pytest.raises(GitHubError, match="GitHub CLI not found"):
         await GitHub(gh="definitely-not-gh-purr").graphql("query { viewer { login } }", {})
+
+
+async def test_snapshot_incremental_and_pages():
+    since = "2026-11-20T10:00:00Z"
+    github = FakeGitHub(
+        {
+            ASSIGNED_QUERY: [page([], total=0)],
+            pool_query("a/full"): [
+                page([node(1, "a/full")], total=2, cursor="1"),
+                page([node(2, "a/full")], total=2),
+            ],
+            UPDATED_QUERY.format(repo="a/inc", since=since): [
+                page(
+                    [
+                        node(5, "a/inc"),
+                        node(6, "a/inc", state="MERGED"),
+                        node(7, "a/inc", assignees={"nodes": [{"login": "teammate"}]}),
+                        node(8, "a/inc", isDraft=True),
+                        node(9, "a/inc", author={"login": "ME"}),
+                    ],
+                    total=5,
+                )
+            ],
+        }
+    )
+    pages = []
+
+    async def on_page(repo, prs):
+        pages.append((repo, [pr.number for pr in prs]))
+
+    snapshot = await github.snapshot(["a/full"], {"a/inc": since}, on_page=on_page)
+
+    assert pages == [("a/full", [1]), ("a/full", [2])]
+    assert snapshot.viewer == "me"
+    assert list(snapshot.pool) == ["a/full"]
+    updates = snapshot.updates["a/inc"]
+    assert [pr.number for pr in updates if pr.in_pool(snapshot.viewer)] == [5]

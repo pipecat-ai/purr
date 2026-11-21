@@ -115,3 +115,33 @@ def test_nothing_is_concluded_from_failed_searches():
     snapshot = Snapshot(pool={"pipecat-ai/pipecat": []}, assigned=None)
     assert plan_sync(current, snapshot, watched=WATCHED).deletes == []
     assert missing_reviewed(current, snapshot, WATCHED) == []
+
+
+def test_incremental_updates():
+    snapshot = Snapshot(
+        pool={},
+        assigned=[],
+        updates={
+            "pipecat-ai/pipecat": [
+                remote(1, title="Renamed"),  # still in the pool
+                replace(remote(2), assignees=("teammate",)),  # taken by someone
+                remote(3),  # new
+                replace(remote(4), state=GHState.CLOSED),  # reviewed, closed
+            ]
+        },
+        viewer="me",
+    )
+    current = [stored(1), stored(2), stored(4, state=PRState.DONE), stored(5)]
+
+    assert missing_reviewed(current, snapshot, WATCHED) == [PRRef("pipecat-ai/pipecat", 4)]
+    statuses = {PRRef("pipecat-ai/pipecat", 4): PRStatus(GHState.CLOSED, "aaa")}
+    plan = plan_sync(current, snapshot, watched=WATCHED, statuses=statuses)
+
+    # 5 wasn't updated, so it's left alone.
+    assert sorted(pr.number for pr in plan.upserts) == [1, 3]
+    assert [ref.number for ref in plan.deletes] == [2]
+    assert sorted(changes(plan)) == [
+        (2, PRChange.UNPOOLED),
+        (3, PRChange.POOLED),
+        (4, PRChange.CLOSED),
+    ]

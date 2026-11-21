@@ -1,0 +1,123 @@
+#topbar {
+    height: 1;
+    background: $panel;
+    padding: 0 1;
+}
+
+#crumb {
+    width: 1fr;
+    text-style: bold;
+}
+
+#alert {
+    width: auto;
+    color: $warning;
+}
+
+#views, #repos, #repo, #repo-table {
+    height: 1fr;
+}
+
+#empty {
+    padding: 1 2;
+    color: $text-muted;
+}
+
+#legend {
+    padding: 0 2;
+    height: auto;
+    color: $text-muted;
+}
+
+#main {
+    height: 1fr;
+}
+
+#prs {
+    width: 45%;
+    min-width: 36;
+    border: none;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+
+    /* Group headings are disabled options; keep them readable. */
+    & > .option-list--option-disabled {
+        color: $foreground;
+    }
+}
+
+#session {
+    width: 1fr;
+    border-left: solid $panel;
+}
+
+#pr-header {
+    height: auto;
+    padding: 0 1 1 1;
+}
+
+#transcript {
+    height: 1fr;
+    margin: 0 0 0 1;
+    overflow-x: hidden;
+    scrollbar-size-vertical: 1;
+}
+
+#pr-decision {
+    height: auto;
+    margin: 0 1;
+    padding: 0 1;
+    border: round $warning;
+}
+
+#prompt {
+    margin: 0 1;
+}
+
+AddRepoScreen, ConfirmScreen, RecapScreen {
+    align: center middle;
+}
+
+#recap {
+    width: 90;
+    max-height: 90%;
+}
+
+#recap-headline {
+    margin: 1 0;
+}
+
+#recap-items {
+    height: auto;
+    max-height: 12;
+    border: none;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#recap-raw {
+    height: auto;
+    max-height: 10;
+    margin: 1 0;
+}
+
+.dialog {
+    width: 64;
+    height: auto;
+    padding: 1 2;
+    border: round $accent;
+    background: $surface;
+}
+
+.dialog Input {
+    margin: 1 0 0 0;
+}
+
+.dialog #error {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.hint {
+    color: $text-muted;
+}

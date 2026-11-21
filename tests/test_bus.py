@@ -1,6 +1,7 @@
 """Purr's messages flow over a real Pipecat worker bus the way the app relies on."""
 
 import asyncio
+from dataclasses import dataclass
 
 from pipecat.bus import BusJobRequestMessage, BusMessage
 from pipecat.pipeline.job_context import JobParams
@@ -11,12 +12,16 @@ from pipecat.workers.runner import WorkerRunner
 from purr.messages import (
     REVIEW_START,
     REVIEW_WORKER,
-    ApproveAction,
     PurrCommand,
     PurrEvent,
     ReviewStarted,
     describe,
 )
+
+
+@dataclass(kw_only=True)
+class ApproveAction(PurrCommand):
+    action_id: str
 
 
 class FakeReviews(BaseWorker):

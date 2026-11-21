@@ -5,8 +5,10 @@ description = "Review GitHub pull requests with Claude from a keyboard TUI or by
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
+    "claude-agent-sdk>=0.2.187",
     "loguru>=0.7.3",
     "pipecat-ai>=1.16.0",
+    "textual>=8.2.8",
 ]
 
 [project.scripts]

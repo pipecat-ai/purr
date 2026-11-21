@@ -1,0 +1,411 @@
+"""Review sessions on the Claude Agent SDK (Claude Code as a library).
+
+A review is one Agent SDK session per PR, working in the PR's worktree. The
+agent reports through two in-process tools, ``submit_review`` and
+``propose_action``; it can't touch GitHub (see :mod:`purr.review.policy`). The
+session ID is chosen up front, so a review can be resumed after a restart,
+from the TUI, or in Claude Code itself (``claude --resume``).
+"""
+
+import json
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    HookMatcher,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+    create_sdk_mcp_server,
+    get_session_info,
+    get_session_messages,
+    tool,
+)
+
+from purr.models import PR, ActionKind, Finding, Severity
+from purr.review.policy import Policy
+from purr.review.tools import (
+    PROPOSE_ACTION,
+    PROPOSE_ACTION_SCHEMA,
+    PURR_SERVER,
+    PURR_TOOL_PREFIX,
+    SUBMIT_REVIEW,
+    SUBMIT_REVIEW_SCHEMA,
+)
+
+INSTRUCTIONS = """\
+You are reviewing a GitHub pull request for the user, inside Purr, a PR review app.
+The PR's head is checked out in the current directory (a detached git worktree).
+
+How to review:
+- Start with the PR's description and diff: `gh pr view {number} --repo {repo}` and
+  `gh pr diff {number} --repo {repo}`.
+- Read the code around the change until you understand it. Look for bugs,
+  regressions, missing or weak tests, security problems and confusing code. Be
+  concrete: say what's wrong, where, and why it matters. Skip praise, and skip
+  style nits a linter would catch unless they really matter.
+- Read-only commands run without asking. Anything else (running the PR's code,
+  editing files, fetching URLs) waits for the user to allow it, which may take
+  a while, so only ask when it really helps. Don't modify files. If something
+  you needed was refused, say what you couldn't verify in your findings.
+
+You can't post to GitHub or merge, and must not try. When you're done:
+1. Call `submit_review` once, with a short summary and your findings.
+2. Call `propose_action` once with what you recommend: `request_changes` (with
+   the inline comments to post), `approve`, or `comment`. The user approves or
+   dismisses it, and Purr posts it for them.
+Then stop.
+
+Later, the user may continue this conversation to ask questions or have you dig
+deeper. If your recommendation changes, call `propose_action` again.
+"""
+
+RESUME_PROMPT = (
+    "Purr was restarted while you were reviewing. Continue where you left off, "
+    "and finish by calling submit_review and propose_action."
+)
+
+
+def review_prompt(pr: PR) -> str:
+    return f'Review {pr.repo}#{pr.number}: "{pr.title}" by {pr.author} ({pr.url}).'
+
+
+@dataclass
+class ReviewCallbacks:
+    """How a running review reports back to the review worker.
+
+    Parameters:
+        on_message: Each transcript entry, as a plain dict (see :func:`transcript_entries`).
+        on_submit: The agent's summary and findings.
+        on_propose: A proposed GitHub action ``(kind, description, payload)``;
+            returns the pending action's ID.
+        on_ask: The agent wants a tool that isn't pre-approved ``(tool, input,
+            reason)``; returns whether the user allows it.
+    """
+
+    on_message: Callable[[dict], Awaitable[None]]
+    on_submit: Callable[[str, list[Finding]], Awaitable[None]]
+    on_propose: Callable[[ActionKind, str, dict], Awaitable[str]]
+    on_ask: Callable[[str, dict, str], Awaitable[bool]]
+
+
+@dataclass
+class AgentResult:
+    text: str | None = None
+    is_error: bool = False
+    error: str | None = None
+    cost_usd: float | None = None
+    turns: int = 0
+    denials: list[str] = field(default_factory=list)
+
+
+class ReviewAgent(Protocol):
+    def session_exists(self, session_id: str, worktree: Path) -> bool: ...
+
+    def history(self, session_id: str, worktree: Path) -> list[dict]:
+        """The session's transcript so far, as entries (blocking: reads a file)."""
+        ...
+
+    async def run(
+        self,
+        *,
+        pr: PR,
+        worktree: Path,
+        session_id: str,
+        resume: bool,
+        prompt: str,
+        callbacks: ReviewCallbacks,
+    ) -> AgentResult: ...
+
+
+def _text(content: Any, limit: int = 2000) -> str:
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            item.get("text", "") if isinstance(item, dict) else str(item) for item in content
+        )
+    else:
+        text = "" if content is None else str(content)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def transcript_entries(message: Any) -> list[dict]:
+    """An SDK message as plain, JSON-friendly transcript entries for the bus and UI."""
+    if isinstance(message, AssistantMessage):
+        entries = []
+        for block in message.content:
+            if isinstance(block, TextBlock) and block.text.strip():
+                entries.append({"kind": "text", "text": block.text})
+            elif isinstance(block, ToolUseBlock):
+                entries.append(
+                    {"kind": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+                )
+        return entries
+    if isinstance(message, UserMessage):
+        if isinstance(message.content, str):
+            return [{"kind": "user", "text": message.content}]
+        return [
+            {
+                "kind": "tool_result",
+                "tool_use_id": block.tool_use_id,
+                "is_error": bool(block.is_error),
+                "text": _text(block.content),
+            }
+            for block in message.content
+            if isinstance(block, ToolResultBlock)
+        ]
+    if isinstance(message, ResultMessage):
+        return [
+            {
+                "kind": "result",
+                "is_error": message.is_error,
+                "text": message.result,
+                "turns": message.num_turns,
+                "cost_usd": message.total_cost_usd,
+            }
+        ]
+    return []
+
+
+def history_entries(session_messages: list[Any]) -> list[dict]:
+    """The SDK's stored transcript (raw API messages) as transcript entries."""
+    entries: list[dict] = []
+    for item in session_messages:
+        body = item.message if isinstance(item.message, dict) else {}
+        content = body.get("content")
+        if item.type == "assistant" and isinstance(content, list):
+            for block in content:
+                if block.get("type") == "text" and str(block.get("text", "")).strip():
+                    entries.append({"kind": "text", "text": block["text"]})
+                elif block.get("type") == "tool_use":
+                    entries.append(
+                        {
+                            "kind": "tool_use",
+                            "id": block.get("id"),
+                            "name": block.get("name"),
+                            "input": block.get("input") or {},
+                        }
+                    )
+        elif item.type == "user":
+            if isinstance(content, str):
+                entries.append({"kind": "user", "text": content})
+            elif isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "tool_result":
+                        entries.append(
+                            {
+                                "kind": "tool_result",
+                                "tool_use_id": block.get("tool_use_id"),
+                                "is_error": bool(block.get("is_error")),
+                                "text": _text(block.get("content")),
+                            }
+                        )
+                    elif block.get("type") == "text":
+                        entries.append({"kind": "user", "text": block.get("text", "")})
+    return entries
+
+
+def describe_tool_use(name: str, tool_input: dict) -> str:
+    """A one-line description of a tool call, for progress lines."""
+    if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
+        return "Writing up the review"
+    if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
+        return f"Proposing: {tool_input.get('description', '')}"
+    if name == "Bash":
+        return f"$ {tool_input.get('command', '')}"
+    target = tool_input.get("file_path") or tool_input.get("pattern") or tool_input.get("path")
+    return f"{name} {target}" if target else name
+
+
+def _findings(raw: list[dict]) -> list[Finding]:
+    findings = []
+    for item in raw:
+        try:
+            severity = Severity(item.get("severity", "suggestion"))
+        except ValueError:
+            severity = Severity.SUGGESTION
+        findings.append(
+            Finding(
+                severity=severity,
+                text=str(item.get("text", "")),
+                file=item.get("file"),
+                line=item.get("line") if isinstance(item.get("line"), int) else None,
+            )
+        )
+    return findings
+
+
+def _ok(text: str) -> dict:
+    return {"content": [{"type": "text", "text": text}]}
+
+
+class ClaudeReviewAgent:
+    """Runs reviews as Claude Agent SDK sessions.
+
+    Args:
+        model: Model to use; None uses Claude Code's configured default.
+        max_budget_usd: Optional spending cap per run.
+    """
+
+    def __init__(self, *, model: str | None = None, max_budget_usd: float | None = None):
+        self._model = model
+        self._max_budget_usd = max_budget_usd
+
+    def session_exists(self, session_id: str, worktree: Path) -> bool:
+        return get_session_info(session_id, directory=str(worktree)) is not None
+
+    def history(self, session_id: str, worktree: Path) -> list[dict]:
+        return history_entries(get_session_messages(session_id, directory=str(worktree)))
+
+    async def run(
+        self,
+        *,
+        pr: PR,
+        worktree: Path,
+        session_id: str,
+        resume: bool,
+        prompt: str,
+        callbacks: ReviewCallbacks,
+    ) -> AgentResult:
+        policy = Policy(worktree)
+
+        @tool(
+            SUBMIT_REVIEW,
+            "Submit your review: a short summary and your findings.",
+            SUBMIT_REVIEW_SCHEMA,
+        )
+        async def submit_review(args: dict) -> dict:
+            await callbacks.on_submit(
+                str(args.get("summary", "")), _findings(args.get("findings", []))
+            )
+            return _ok("Review recorded. Now call propose_action.")
+
+        @tool(
+            PROPOSE_ACTION,
+            "Propose a GitHub review for the user to approve; Purr posts it if they do.",
+            PROPOSE_ACTION_SCHEMA,
+        )
+        async def propose_action(args: dict) -> dict:
+            try:
+                kind = ActionKind(args.get("kind"))
+            except ValueError:
+                return {**_ok(f"Unknown kind {args.get('kind')!r}."), "is_error": True}
+            payload = {"body": args.get("body", ""), "comments": args.get("comments", [])}
+            action_id = await callbacks.on_propose(kind, str(args.get("description", "")), payload)
+            return _ok(f"Proposed (action {action_id}). The user will approve or dismiss it.")
+
+        async def pre_tool_use(hook_input: Any, tool_use_id: str | None, context: Any) -> dict:
+            verdict = policy.check(hook_input["tool_name"], hook_input.get("tool_input") or {})
+            output: dict[str, Any] = {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": verdict.decision.value,
+            }
+            if verdict.reason:
+                output["permissionDecisionReason"] = verdict.reason
+            return {"hookSpecificOutput": output}
+
+        async def can_use_tool(name: str, tool_input: dict, context: Any) -> Any:
+            # Reached for calls the policy says need the user ("ask").
+            reason = policy.check(name, tool_input).reason
+            if await callbacks.on_ask(name, tool_input, reason):
+                return PermissionResultAllow()
+            return PermissionResultDeny(
+                message="Not allowed in this review. Carry on without it, and say in your "
+                "findings what you couldn't check."
+            )
+
+        options = ClaudeAgentOptions(
+            cwd=str(worktree),
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "append": INSTRUCTIONS.format(repo=pr.repo, number=pr.number),
+            },
+            mcp_servers={
+                PURR_SERVER: create_sdk_mcp_server(
+                    PURR_SERVER, tools=[submit_review, propose_action]
+                )
+            },
+            hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]},
+            can_use_tool=can_use_tool,
+            permission_mode="default",
+            # Only the user's own settings: a PR's .claude/settings.json could define
+            # hooks, and those run commands.
+            setting_sources=["user"],
+            model=self._model,
+            max_budget_usd=self._max_budget_usd,
+            resume=session_id if resume else None,
+            session_id=None if resume else session_id,
+        )
+
+        result = AgentResult()
+        async with ClaudeSDKClient(options) as client:
+            await client.query(prompt)
+            async for message in client.receive_response():
+                for entry in transcript_entries(message):
+                    await callbacks.on_message(entry)
+                if isinstance(message, ResultMessage):
+                    result = AgentResult(
+                        text=message.result,
+                        is_error=message.is_error,
+                        error=message.result if message.is_error else None,
+                        cost_usd=message.total_cost_usd,
+                        turns=message.num_turns,
+                        denials=[
+                            json.dumps(d, default=str) for d in (message.permission_denials or [])
+                        ],
+                    )
+        return result
+
+
+# Opening a session in Claude Code itself (the `o` key). Same protections as in
+# Purr: only the user's settings load (a PR's could define hooks), and GitHub
+# writes are disallowed. Everything else gets Claude Code's usual prompts.
+CLAUDE_CODE_NOTE = (
+    "You're in Purr's worktree for {pr}, continuing a review session. Don't post to "
+    "GitHub or push; Purr's submit_review and propose_action tools aren't available "
+    "here, so describe any recommendation and the user will act on it in Purr."
+)
+CLAUDE_CODE_DISALLOWED = [
+    "Bash(git push:*)",
+    "Bash(gh pr review:*)",
+    "Bash(gh pr comment:*)",
+    "Bash(gh pr merge:*)",
+    "Bash(gh pr close:*)",
+    "Bash(gh pr edit:*)",
+    "Bash(gh pr ready:*)",
+    "Bash(gh issue comment:*)",
+    "Bash(gh issue close:*)",
+    "Bash(gh issue edit:*)",
+    "Bash(gh api:*)",
+    "Bash(gh auth token:*)",
+]
+
+
+def claude_code_command(session_id: str, pr: str, claude: str = "claude") -> list[str]:
+    """The command that resumes a review session in Claude Code.
+
+    ``--resume`` keeps the session ID (``--fork-session`` would make a new one),
+    so Purr picks the same session up again afterwards.
+    """
+    return [
+        claude,
+        "--resume",
+        session_id,
+        "--setting-sources",
+        "user",
+        "--append-system-prompt",
+        CLAUDE_CODE_NOTE.format(pr=pr),
+        "--disallowedTools",
+        *CLAUDE_CODE_DISALLOWED,
+    ]

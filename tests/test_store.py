@@ -222,3 +222,32 @@ async def test_activity_log(store):
     assert entries[0].data == {"change": "pooled"}
     assert [a.id for a in await store.activity(pr=ref)] == [first.id]
     assert await store.activity(since="2999-01-01") == []
+
+
+async def test_repo_summaries(store):
+    await store.add_repo("pipecat-ai/pipecat")
+    await store.add_repo("pipecat-ai/whisker")
+    await store.upsert_pr(make_pr(1))
+    needs = await store.upsert_pr(make_pr(2))
+    await store.set_pr_state(needs.ref, PRState.NEEDS_YOU)
+    closed = await store.upsert_pr(make_pr(3))
+    await store.apply_sync(gh_states={closed.ref: GHState.CLOSED})
+    elsewhere = make_pr(9, assigned_to_me=True)
+    elsewhere.repo = "daily-co/daily-x"
+    await store.upsert_pr(elsewhere)
+    await store.record_activity("pr.changed", pr=needs.ref)
+
+    summaries = await store.repo_summaries()
+    assert [(s.name, s.watched, s.needs_you, s.not_reviewed) for s in summaries] == [
+        ("daily-co/daily-x", False, 0, 1),
+        ("pipecat-ai/pipecat", True, 1, 1),
+        ("pipecat-ai/whisker", True, 0, 0),
+    ]
+    assert summaries[1].last_activity is not None
+    assert summaries[2].last_activity is None
+    assert [
+        pr.number for pr in await store.list_prs(repo="pipecat-ai/pipecat", open_only=True)
+    ] == [
+        2,
+        1,
+    ]

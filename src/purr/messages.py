@@ -23,15 +23,25 @@ from pipecat.bus import BusDataMessage, BusMessage
 # Worker names (bus addresses).
 GITHUB_WORKER = "github"
 REVIEW_WORKER = "reviews"
+RECAP_WORKER = "recap"
 
-# Job names handled by GITHUB_WORKER. Failures respond with status FAILED and
-# {"error": "..."}.
+# Job names handled by RECAP_WORKER.
+# payload: {"since": ISO time} -> {"recap_id": int | None} (None: nothing notable happened)
+RECAP_CREATE = "recap.create"
+
+# Job names handled by GITHUB_WORKER. A request that can't be done (bad name,
+# unknown repo) still completes, with {"error": "..."} as the response.
 REPO_ADD = "repo.add"  # payload: {"repo": "owner/name" or a GitHub URL} -> {"repo": "owner/name"}
 REPO_REMOVE = "repo.remove"  # payload: {"repo": "owner/name"} -> {"repo": "owner/name"}
+ACTION_APPROVE = "action.approve"  # payload: {"action_id": "..."} -> {"url": "..."}
+ACTION_DISMISS = "action.dismiss"  # payload: {"action_id": "..."} -> {"ok": true}
+PR_ASSIGN = "pr.assign"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: assigns you
 
 # Job names handled by REVIEW_WORKER.
 REVIEW_START = "review.start"  # payload: {"pr": "owner/repo#123"}
 REVIEW_MESSAGE = "review.message"  # payload: {"pr": "owner/repo#123", "text": "..."}
+# Answer an agent's permission request: {"request_id": "...", "allow": bool} -> {"ok": true}
+PERMISSION_ANSWER = "session.answer"
 
 
 @dataclass(kw_only=True)
@@ -80,6 +90,40 @@ class ReviewProgress(PurrEvent):
 
 
 @dataclass(kw_only=True)
+class SessionMessage(PurrEvent):
+    """One transcript entry from a PR's agent session (text, tool call, tool result...).
+
+    ``message`` is a plain dict with a ``kind`` (see ``purr.review.agent.transcript_entries``).
+    """
+
+    kind: ClassVar[str] = "session.message"
+    recorded: ClassVar[bool] = False
+    pr: str
+    message: dict
+
+
+@dataclass(kw_only=True)
+class PermissionRequest(PurrEvent):
+    """A PR's agent wants to do something that isn't pre-approved, and waits for you."""
+
+    kind: ClassVar[str] = "session.permission_request"
+    pr: str
+    request_id: str
+    tool: str
+    description: str
+    reason: str = ""
+
+
+@dataclass(kw_only=True)
+class PermissionResolved(PurrEvent):
+    kind: ClassVar[str] = "session.permission_resolved"
+    recorded: ClassVar[bool] = False
+    pr: str
+    request_id: str
+    allowed: bool
+
+
+@dataclass(kw_only=True)
 class ReviewFinished(PurrEvent):
     kind: ClassVar[str] = "review.finished"
     pr: str
@@ -111,18 +155,24 @@ class ActionResolved(PurrEvent):
 
 
 @dataclass(kw_only=True)
+class UserActive(PurrEvent):
+    """The user did something (a key, a voice turn). Sent at most about once a minute."""
+
+    kind: ClassVar[str] = "user.active"
+    recorded: ClassVar[bool] = False
+
+
+@dataclass(kw_only=True)
+class RecapReady(PurrEvent):
+    kind: ClassVar[str] = "recap.ready"
+    recorded: ClassVar[bool] = False
+    recap_id: int
+    headline: str
+
+
+@dataclass(kw_only=True)
 class PurrCommand(BusDataMessage):
     """Base for Purr's targeted commands."""
-
-
-@dataclass(kw_only=True)
-class ApproveAction(PurrCommand):
-    action_id: str
-
-
-@dataclass(kw_only=True)
-class DismissAction(PurrCommand):
-    action_id: str
 
 
 _BASE_FIELDS = {f.name for f in fields(BusMessage)}

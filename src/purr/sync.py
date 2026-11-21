@@ -7,6 +7,9 @@ Pure functions, so the rules are easy to test without GitHub or a database:
 - A PR that drops out of both is removed if Purr never reviewed it. If Purr did,
   it stays, and its GitHub state is looked up to tell closed/merged from
   "assigned to someone else".
+- Between full syncs, a repo is synced incrementally: only PRs updated since
+  the last sync are fetched, and each is classified as in or out of the pool.
+  PRs that weren't updated are left as they are.
 - Nothing is concluded from a search that failed or came back incomplete.
 - A repo's first sync doesn't report every PR in its pool as new.
 """
@@ -37,15 +40,34 @@ class SyncPlan:
         return not (self.upserts or self.deletes or self.gh_states)
 
 
+def _updated(snapshot: Snapshot) -> tuple[list, set[PRRef]]:
+    """Split incremental updates into PRs now in the pool and refs known to be out of it."""
+    if not snapshot.updates:
+        return [], set()
+    assert snapshot.viewer, "incremental updates need the viewer's login"
+    pooled, out = [], set()
+    for prs in snapshot.updates.values():
+        for pr in prs:
+            if pr.in_pool(snapshot.viewer):
+                pooled.append(pr)
+            else:
+                out.add(pr.ref)
+    return pooled, out
+
+
 def _covered(ref: PRRef, snapshot: Snapshot, watched: set[str]) -> bool:
-    """Whether every search that could have returned this PR completed."""
+    """Whether the snapshot says for sure that this PR is in none of the searches."""
     if snapshot.assigned is None:
         return False
-    return ref.repo not in watched or ref.repo in snapshot.pool
+    if ref.repo not in watched or ref.repo in snapshot.pool:
+        return True
+    return ref.repo in snapshot.updates and ref in _updated(snapshot)[1]
 
 
 def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
+    pooled, _ = _updated(snapshot)
     seen = {pr.ref: pr.to_pr(assigned_to_me=False) for prs in snapshot.pool.values() for pr in prs}
+    seen.update((pr.ref, pr.to_pr(assigned_to_me=False)) for pr in pooled)
     for pr in snapshot.assigned or []:
         seen[pr.ref] = pr.to_pr(assigned_to_me=True)
     return seen
