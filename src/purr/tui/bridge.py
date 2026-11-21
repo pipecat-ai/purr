@@ -12,6 +12,7 @@ from purr.messages import (
     GITHUB_WORKER,
     PERMISSION_ANSWER,
     PR_ASSIGN,
+    PR_DETAILS,
     RECAP_CREATE,
     RECAP_WORKER,
     REPO_ADD,
@@ -22,7 +23,7 @@ from purr.messages import (
     PurrEvent,
     UserActive,
 )
-from purr.models import PRRef
+from purr.models import PRDetails, PRRef
 
 
 class BusEvent(Message):
@@ -67,6 +68,11 @@ class UIWorker(BaseWorker):
 
     async def assign(self, pr: PRRef) -> None:
         await self._job(GITHUB_WORKER, PR_ASSIGN, {"pr": str(pr)})
+
+    async def details(self, prs: list[PRRef]) -> dict[str, PRDetails]:
+        """Description, files and CI of these PRs, keyed by ``owner/repo#123``."""
+        response = await self._job(GITHUB_WORKER, PR_DETAILS, {"prs": [str(pr) for pr in prs]})
+        return {ref: PRDetails.from_dict(d) for ref, d in response["details"].items()}
 
     async def send_message(self, pr: PRRef, text: str) -> None:
         await self._job(REVIEW_WORKER, REVIEW_MESSAGE, {"pr": str(pr), "text": text})

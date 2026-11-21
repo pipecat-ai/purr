@@ -2,8 +2,8 @@
 
 import pytest
 
-from purr.github import ASSIGNED_QUERY, UPDATED_QUERY, GitHub, GitHubError, PRStatus
-from purr.models import GHState, PRRef
+from purr.github import ASSIGNED_QUERY, OPEN_QUERY, UPDATED_QUERY, GitHub, GitHubError, PRStatus
+from purr.models import FileChange, GHState, PRDetails, PRRef
 
 
 def node(number: int, repo: str = "pipecat-ai/pipecat", **overrides) -> dict:
@@ -56,28 +56,25 @@ class FakeGitHub(GitHub):
         return {"data": data, "errors": errors} if errors else {"data": data}
 
 
-def pool_query(repo: str) -> str:
-    return (
-        "is:pr is:open archived:false draft:false no:assignee -author:@me sort:created-desc "
-        f"repo:{repo}"
-    )
+def open_query(repo: str) -> str:
+    return OPEN_QUERY.format(repo=repo)
 
 
 async def test_snapshot_follows_pages():
     github = FakeGitHub(
         {
             ASSIGNED_QUERY: [page([node(9, "other/repo")], total=1)],
-            pool_query("pipecat-ai/pipecat"): [
+            open_query("pipecat-ai/pipecat"): [
                 page([node(1), node(2)], total=3, cursor="1"),
                 page([node(3)], total=3),
             ],
-            pool_query("pipecat-ai/whisker"): [page([], total=0)],
+            open_query("pipecat-ai/whisker"): [page([], total=0)],
         }
     )
     snapshot = await github.snapshot(["pipecat-ai/pipecat", "pipecat-ai/whisker"])
 
-    assert [pr.number for pr in snapshot.pool["pipecat-ai/pipecat"]] == [1, 2, 3]
-    assert snapshot.pool["pipecat-ai/whisker"] == []
+    assert [pr.number for pr in snapshot.open["pipecat-ai/pipecat"]] == [1, 2, 3]
+    assert snapshot.open["pipecat-ai/whisker"] == []
     assert [pr.ref for pr in snapshot.assigned] == [PRRef("other/repo", 9)]
     # One request for the first pages, a second only for the repo with more.
     assert len(github.calls) == 2
@@ -88,12 +85,12 @@ async def test_snapshot_drops_failed_and_incomplete_searches():
     github = FakeGitHub(
         {
             ASSIGNED_QUERY: "rate limited",
-            pool_query("pipecat-ai/pipecat"): [page([node(1)], total=2)],  # one missing
+            open_query("pipecat-ai/pipecat"): [page([node(1)], total=2)],  # one missing
         }
     )
     snapshot = await github.snapshot(["pipecat-ai/pipecat"])
     assert snapshot.assigned is None
-    assert snapshot.pool == {}
+    assert snapshot.open == {}
 
 
 async def test_pr_statuses_and_repo_name():
@@ -130,7 +127,7 @@ async def test_snapshot_incremental_and_pages():
     github = FakeGitHub(
         {
             ASSIGNED_QUERY: [page([], total=0)],
-            pool_query("a/full"): [
+            open_query("a/full"): [
                 page([node(1, "a/full")], total=2, cursor="1"),
                 page([node(2, "a/full")], total=2),
             ],
@@ -157,8 +154,9 @@ async def test_snapshot_incremental_and_pages():
 
     assert pages == [("a/full", [1]), ("a/full", [2])]
     assert snapshot.viewer == "me"
-    assert list(snapshot.pool) == ["a/full"]
+    assert list(snapshot.open) == ["a/full"]
     updates = snapshot.updates["a/inc"]
+    assert [pr.number for pr in updates if pr.listed(snapshot.viewer)] == [5, 7]
     assert [pr.number for pr in updates if pr.in_pool(snapshot.viewer)] == [5]
 
 
@@ -181,3 +179,37 @@ async def test_review_threads():
     [thread] = await Threads().review_threads(PRRef("a/b", 1))
     assert thread["id"] == "T1" and thread["path"] == "bus.py" and not thread["resolved"]
     assert thread["comments"] == [{"author": "me", "by_user": True, "body": "Race?", "at": "t"}]
+
+
+async def test_pr_details():
+    class Details(GitHub):
+        async def graphql(self, query, variables):
+            assert variables == {"o0": "a", "n0": "b", "k0": 1, "o1": "a", "n1": "b", "k1": 2}
+            pr = {
+                "body": "Fixes the bus.",
+                "baseRefName": "main",
+                "headRefName": "fix-bus",
+                "additions": 22,
+                "deletions": 4,
+                "changedFiles": 1,
+                "reviewDecision": None,
+                "labels": {"nodes": [{"name": "bug"}]},
+                "files": {"nodes": [{"path": "bus.py", "additions": 22, "deletions": 4}]},
+                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]},
+            }
+            return {"data": {"t0": {"pullRequest": pr}, "t1": {"pullRequest": None}}}
+
+    details = await Details().pr_details([PRRef("a/b", 1), PRRef("a/b", 2)])
+    assert details == {
+        PRRef("a/b", 1): PRDetails(
+            body="Fixes the bus.",
+            base="main",
+            head="fix-bus",
+            additions=22,
+            deletions=4,
+            changed_files=1,
+            files=(FileChange("bus.py", 22, 4),),
+            labels=("bug",),
+            checks="FAILURE",
+        )
+    }

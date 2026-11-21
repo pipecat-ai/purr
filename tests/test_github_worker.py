@@ -67,7 +67,7 @@ async def repo_job(client: Client, name: str, repo: str) -> dict:
 
 async def test_add_poll_and_remove_a_repo(setup):
     store, github, worker, client = setup
-    github.pool["pipecat-ai/pipecat"] = [remote(1)]
+    github.open["pipecat-ai/pipecat"] = [remote(1)]
 
     # Added by URL, stored under GitHub's spelling.
     response = await repo_job(client, REPO_ADD, "https://github.com/Pipecat-AI/pipecat")

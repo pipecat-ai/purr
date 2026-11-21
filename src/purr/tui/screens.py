@@ -7,9 +7,11 @@ Dialogs are modal screens on top.
 """
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
@@ -24,17 +26,56 @@ from purr.messages import REVIEW_WORKER
 from purr.models import PR, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.tui.bridge import RequestError
-from purr.tui.session import PRSession
+from purr.tui.overview import short_age
+from purr.tui.session import NUMBER_STYLE, PRSession, SessionState
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
+OTHERS = "others"
 _GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
     (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
     (PRState.DONE, "✓", "DONE", "bold green"),
+    (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
 ]
+_ICONS = {key: icon for key, icon, *_ in _GROUPS}
+NEARBY = 10  # PRs below the cursor whose details are fetched ahead
+
+
+def group(pr: PR) -> str:
+    """Where a PR goes in the list: its review state, or "others" if someone else took it."""
+    if pr.state == PRState.NOT_REVIEWED and pr.others_on_it:
+        return OTHERS
+    return pr.state
+
+
+def _assignees(pr: PR) -> Text:
+    """'you', 'alice', 'you +1' (your login is among ``assignees`` when it's yours)."""
+    if pr.assigned_to_me:
+        first, rest = Text("you", style="magenta"), max(len(pr.assignees) - 1, 0)
+    elif pr.assignees:
+        first, rest = Text(pr.assignees[0], style="cyan"), len(pr.assignees) - 1
+    else:
+        return Text("")
+    return first.append(f" +{rest}", style="dim") if rest else first
+
+
+def _row(*cells: Text | str) -> Table:
+    """A PR list row: mark, number, title, author, opened, assignees."""
+    grid = Table.grid(padding=(0, 1), expand=True)
+    grid.add_column(width=1)
+    grid.add_column(width=6)
+    grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+    grid.add_column(width=14, no_wrap=True, overflow="ellipsis")
+    grid.add_column(width=6, justify="right")
+    grid.add_column(width=12, no_wrap=True, overflow="ellipsis")
+    grid.add_row(*cells)
+    return grid
+
+
+_COLUMNS = _row(*(Text(h, style="dim") for h in ("", "#", "TITLE", "AUTHOR", "OPENED", "ASSIGNED")))
 
 
 def ago(timestamp: str | None) -> str:
@@ -207,6 +248,7 @@ class RepoView(PurrView):
         Binding("x", "dismiss", "Dismiss"),
         Binding("y", "answer(True)", "Allow", show=False),
         Binding("n", "answer(False)", "Deny", show=False),
+        Binding("d", "diff", "Diff"),
         Binding("z", "zoom", "Zoom"),
         Binding("o", "open_claude", "Claude Code"),
     ]
@@ -214,7 +256,7 @@ class RepoView(PurrView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.repo: str | None = None
-        self._prs: dict[str, PR] = {}
+        self._prs: dict[str, PR] = {}  # in list order
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
 
@@ -238,18 +280,19 @@ class RepoView(PurrView):
             return
         await super().reload()
         prs = await self.purr_app.purr.store.list_prs(repo=self.repo, open_only=True)
-        self._prs = {str(pr.ref): pr for pr in prs}
-        self._marked &= set(self._prs)
-        options: list[Option] = []
-        for state, icon, label, style in _GROUPS:
-            group = [pr for pr in prs if pr.state == state]
-            if not group:
+        self._prs = {}
+        options: list[Option] = [Option(_COLUMNS, disabled=True)] if prs else []
+        for key, icon, label, style in _GROUPS:
+            members = [pr for pr in prs if group(pr) == key]
+            if not members:
                 continue
-            if options:
+            if len(options) > 1:
                 options.append(Option(" ", disabled=True))
-            heading = Text(f"{icon} {label} ({len(group)})", style=style)
+            heading = Text(f"{icon} {label} ({len(members)})", style=style)
             options.append(Option(heading, disabled=True))
-            options += [Option(self._prompt(pr, icon), id=str(pr.ref)) for pr in group]
+            options += [Option(self._prompt(pr), id=str(pr.ref)) for pr in members]
+            self._prs.update((str(pr.ref), pr) for pr in members)
+        self._marked &= set(self._prs)
 
         option_list = self.query_one(OptionList)
         option_list.set_options(options)
@@ -261,14 +304,16 @@ class RepoView(PurrView):
             option_list.highlighted = first
         self._show_highlighted()
 
-    def _prompt(self, pr: PR, icon: str) -> Text:
+    def _prompt(self, pr: PR) -> Table:
         marked = str(pr.ref) in self._marked
-        text = Text("▪ " if marked else f"{icon} ", style="bold magenta" if marked else "")
-        text.append(f"#{pr.number:<6}", style="bold")
-        if pr.assigned_to_me:
-            text.append("you ", style="bold magenta")
-        text.append(pr.title)
-        return text
+        return _row(
+            Text("▪", style="bold magenta") if marked else _ICONS[group(pr)],
+            Text(f"#{pr.number}", style=NUMBER_STYLE),
+            pr.title,
+            Text(pr.author, style="dim"),
+            Text(short_age(pr.created_at), style="dim"),
+            _assignees(pr),
+        )
 
     def selected_pr(self) -> PR | None:
         option = self.query_one(OptionList).highlighted_option
@@ -288,6 +333,36 @@ class RepoView(PurrView):
             self._selected[self.repo] = str(pr.ref)
             self.purr_app.seen(str(pr.ref))
             self.run_worker(self.session.show(pr), exclusive=True, group="session")
+            self._load_details(pr)
+
+    @work(exclusive=True, group="details")
+    async def _load_details(self, pr: PR) -> None:
+        """Fetch the PR's details if needed, then those of the PRs below it."""
+        await asyncio.sleep(0.15)  # let the cursor settle when moving fast
+        order = list(self._prs)
+        index = order.index(str(pr.ref)) if str(pr.ref) in order else 0
+        nearby = [self._prs[ref] for ref in order[index + 1 : index + 1 + NEARBY]]
+        # The PR on its own (it's the one being waited for) and the rest at once.
+        batches = [self.purr_app.details.claim(batch) for batch in ([pr], nearby)]
+        fetches = [self._fetch_details(batch) for batch in batches if batch]
+        if fetches:
+            # Shielded: once asked, the answers are worth keeping even if the
+            # cursor has moved on.
+            await asyncio.shield(asyncio.gather(*fetches))
+
+    async def _fetch_details(self, prs: list[PR]) -> None:
+        try:
+            fetched, error = await self.purr_app.bus.details([pr.ref for pr in prs]), None
+        except Exception as e:  # never let a background fetch take the UI down
+            fetched, error = {}, str(e) or type(e).__name__
+        for pr in prs:
+            state = self.purr_app.sessions.setdefault(str(pr.ref), SessionState())
+            changed = self.purr_app.details.put(pr, fetched.get(str(pr.ref)))
+            changed = changed or state.details_error != error
+            state.details_error = error
+            shown = self.session.pr
+            if changed and shown and shown.ref == pr.ref:
+                await self.session.details_changed()
 
     @property
     def session(self) -> PRSession:
@@ -307,7 +382,7 @@ class RepoView(PurrView):
         self._marked ^= {str(pr.ref)}
         option_list = self.query_one(OptionList)
         index = option_list.highlighted
-        option_list.replace_option_prompt(str(pr.ref), self._prompt(pr, "○"))
+        option_list.replace_option_prompt(str(pr.ref), self._prompt(pr))
         if index is not None and index + 1 < option_list.option_count:
             option_list.action_cursor_down()
 
@@ -316,6 +391,16 @@ class RepoView(PurrView):
         targets = [self._prs[ref] for ref in self._marked if ref in self._prs]
         if not targets and (pr := self.selected_pr()):
             targets = [pr]
+        taken = [pr for pr in targets if pr.others_on_it]
+        if taken and not await self.app.push_screen_wait(
+            ConfirmScreen(
+                "Someone's already on "
+                + ", ".join(f"#{pr.number} ({', '.join(pr.assignees)})" for pr in taken)
+                + ". Review anyway?",
+                "You'd be added as an assignee too.",
+            )
+        ):
+            return
         self._marked.clear()
         for pr in targets:
             try:
@@ -389,6 +474,21 @@ class RepoView(PurrView):
         self.purr_app.sessions.pop(str(pr.ref), None)
         self.session.pr = None
         await self.session.show(pr)
+
+    async def action_diff(self) -> None:
+        """The PR's full diff in your pager (gh's pager settings, or less)."""
+        pr = self.selected_pr()
+        if not pr:
+            return
+        env = dict(os.environ)
+        env.setdefault("PAGER", "less")
+        # gh's default LESS=FRX quits at once on a diff that fits the screen,
+        # which would hand the terminal straight back to Purr.
+        env.setdefault("LESS", "R")
+        command = ["gh", "pr", "diff", str(pr.number), "--repo", pr.repo]
+        with self.app.suspend():
+            process = await asyncio.create_subprocess_exec(*command, env=env)
+            await process.wait()
 
     def action_zoom(self) -> None:
         option_list = self.query_one(OptionList)

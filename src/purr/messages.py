@@ -37,6 +37,9 @@ REPO_REMOVE = "repo.remove"  # payload: {"repo": "owner/name"} -> {"repo": "owne
 ACTION_APPROVE = "action.approve"
 ACTION_DISMISS = "action.dismiss"  # payload: {"action_id": "..."} -> {"ok": true}
 PR_ASSIGN = "pr.assign"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: assigns you
+# Description, files and CI of some PRs, read from GitHub (see purr.models.PRDetails):
+# payload: {"prs": ["owner/repo#123", ...]} -> {"details": {"owner/repo#123": {...}}}
+PR_DETAILS = "pr.details"
 
 # Job names handled by REVIEW_WORKER.
 REVIEW_START = "review.start"  # payload: {"pr": "owner/repo#123"}

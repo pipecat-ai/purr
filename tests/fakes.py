@@ -17,11 +17,14 @@ def remote(number: int, repo: str = "pipecat-ai/pipecat", **kwargs) -> RemotePR:
 
 
 class FakeGitHub:
-    """Stands in for purr.github.GitHub: repos that exist, pools, updates, assignments."""
+    """Stands in for purr.github.GitHub: repos that exist, their open PRs, updates,
+    assignments, and PR details."""
 
     def __init__(self):
         self.repos = {"pipecat-ai/pipecat", "pipecat-ai/whisker"}
-        self.pool: dict[str, list[RemotePR]] = {}
+        self.open: dict[str, list[RemotePR]] = {}
+        self.details: dict = {}  # PRRef -> PRDetails
+        self.details_calls: list[list] = []
         self.updates: dict[str, list[RemotePR]] = {}
         self.assigned: list[RemotePR] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
@@ -33,17 +36,25 @@ class FakeGitHub:
         full, incremental = list(full), dict(incremental or {})
         self.calls.append((full, incremental))
         for repo in full:
-            if on_page and self.pool.get(repo):
-                await on_page(repo, list(self.pool[repo]))
+            if on_page and self.open.get(repo):
+                await on_page(repo, list(self.open[repo]))
         return Snapshot(
-            pool={r: list(self.pool.get(r, [])) for r in full},
+            open={r: list(self.open.get(r, [])) for r in full},
             assigned=list(self.assigned),
             updates={r: list(self.updates.get(r, [])) for r in incremental},
             viewer="me",
         )
 
+    async def viewer_login(self):
+        return "me"
+
     async def pr_statuses(self, refs):
         return {}
+
+    async def pr_details(self, refs):
+        refs = list(refs)
+        self.details_calls.append(refs)
+        return {ref: self.details[ref] for ref in refs if ref in self.details}
 
     async def review_threads(self, ref):
         return list(getattr(self, "threads", []))

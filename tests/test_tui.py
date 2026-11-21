@@ -56,7 +56,7 @@ def pr_ids(app: PurrApp) -> list[str]:
 
 async def test_repos_navigation_and_live_updates(tmp_path):
     app, github = make_app(tmp_path)
-    github.pool["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2)]
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2)]
     github.assigned = [remote(7, repo="daily-co/daily-x", title="Win CI fix")]
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -123,7 +123,7 @@ async def test_launching_in_a_checkout_offers_to_watch_it(tmp_path):
         check=True,
     )
     app, github = make_app(tmp_path, cwd=checkout)
-    github.pool["pipecat-ai/pipecat"] = [remote(1)]
+    github.open["pipecat-ai/pipecat"] = [remote(1)]
 
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
@@ -163,7 +163,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         handle_sigint=False,
     )
     app = PurrApp(purr)
-    github.pool["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2)]
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2)]
 
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
@@ -205,7 +205,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
 
 async def test_alerts_and_the_switcher(tmp_path):
     app, github = make_app(tmp_path)
-    github.pool["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     github.assigned = [remote(7, repo="daily-co/daily-x", title="Win CI fix")]
 
     async with app.run_test(size=(140, 45)) as pilot:
@@ -265,3 +265,65 @@ async def test_coming_back_shows_a_recap(tmp_path):
         # w shows the latest recap again.
         await pilot.press("escape", "w")
         await until(pilot, lambda: isinstance(app.screen, RecapScreen))
+
+
+def option_texts(app: PurrApp) -> list[str]:
+    """The PR list as drawn, one line per option."""
+    options = app.main.repo.query_one(OptionList)
+    return [strip.text for strip in options.render_lines(options.region.reset_offset)]
+
+
+async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
+    from purr.models import FileChange, PRDetails, PRRef
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [
+        remote(1, title="Message bus", author="alice", created_at="2026-11-18T10:00:00Z"),
+        remote(2, title="Taken", assignees=("bob",)),
+        *[remote(n) for n in range(3, 20)],
+    ]
+    github.details[PRRef("pipecat-ai/pipecat", 1)] = PRDetails(
+        body="Fixes a race in the bus.<!-- template stuff -->",
+        base="main",
+        head="fix-bus",
+        additions=22,
+        deletions=4,
+        changed_files=1,
+        files=(FileChange("src/bus.py", 22, 4),),
+        checks="SUCCESS",
+    )
+
+    async with app.run_test(size=(180, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 19)
+
+        # Columns, and the PR someone else took goes last, in its own group.
+        assert pr_ids(app)[-1] == "pipecat-ai/pipecat#2"
+        lines = option_texts(app)
+        assert lines[0].split() == ["#", "TITLE", "AUTHOR", "OPENED", "ASSIGNED"]
+        assert "OTHERS REVIEWING (1)" in "\n".join(lines)
+        row = next(line for line in lines if "Message bus" in line)
+        assert "#1" in row and "alice" in row
+
+        # The first PR (newest) is selected; go to #1 and its description shows.
+        app.main.repo.select("pipecat-ai/pipecat#1", repo="pipecat-ai/pipecat")
+        await until(pilot, lambda: "Fixes a race in the bus." in transcript(app))
+        assert "template stuff" not in transcript(app)
+        assert "src/bus.py" in transcript(app)
+        header = str(app.main.repo.session.query_one("#pr-header").render())
+        assert "main ← fix-bus" in header and "✓ checks pass" in header
+        assert "by alice" in header and "r to review it and take it" in header
+        # PRs below the cursor were fetched ahead, in one batch.
+        await until(pilot, lambda: len(github.details_calls) >= 2)
+        assert len(github.details_calls[-1]) > 1
+
+        # r on someone else's PR asks first.
+        app.main.repo.select("pipecat-ai/pipecat#2", repo="pipecat-ai/pipecat")
+        await pilot.pause(0.05)
+        await pilot.press("r")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("n")
+        await until(pilot, lambda: isinstance(app.screen, MainScreen))
+        assert app.purr.agent.runs == []

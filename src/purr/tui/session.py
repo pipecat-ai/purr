@@ -16,14 +16,16 @@ from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
 
 from purr.messages import PermissionRequest
-from purr.models import PR, PendingAction, PRState, Review, ReviewStatus
+from purr.models import PR, PendingAction, PRDetails, PRState, Review, ReviewStatus
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.bridge import RequestError
+from purr.tui.overview import details_line, render_overview
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
 _SEVERITY_STYLE = {"issue": "bold red", "suggestion": "yellow", "nit": "dim"}
+NUMBER_STYLE = "bold #79b8ff"  # PR numbers, wherever they show
 # Absolute paths into a PR's worktree read better relative to it.
 _WORKTREE_PREFIX = re.compile(r"\S*/worktrees/[^/\s]+/[^/\s]+/\d+/")
 
@@ -35,6 +37,7 @@ class SessionState:
     entries: list[dict] | None = None  # None until the transcript is loaded
     progress: str | None = None
     ask: PermissionRequest | None = None
+    details_error: str | None = None  # why the description couldn't be loaded
 
 
 def _bullet(body: RenderableType, style: str = "") -> Table:
@@ -132,7 +135,12 @@ def render_entry(entry: dict) -> RenderableType | None:
 
 
 class PRSession(Vertical):
-    """Header, transcript, the decision box, and the prompt for one PR."""
+    """Header, transcript, the decision box, and the prompt for one PR.
+
+    The transcript opens with the PR's overview (description and files), so a
+    PR nobody has reviewed yet shows what it's about, and a reviewed one keeps
+    it above the session.
+    """
 
     BINDINGS = [Binding("escape", "leave_prompt", "Back to the list", show=False)]
 
@@ -168,10 +176,25 @@ class PRSession(Vertical):
             state.entries = await self._load_history(pr)
             switching = True
         if switching:
-            log = self.query_one(RichLog)
-            log.clear()
-            for entry in state.entries:
-                self._write(entry)
+            self.redraw()
+
+    def redraw(self) -> None:
+        """Rewrite the transcript: the overview, then the session."""
+        assert self.pr is not None
+        state = self.state()
+        log = self.query_one(RichLog)
+        log.clear()
+        details = self.purr_app.details.get(self.pr)
+        log.write(render_overview(details, state.details_error), scroll_end=False)
+        for entry in state.entries or []:
+            self._write(entry)
+        if not state.entries:
+            log.scroll_home(animate=False)
+
+    async def details_changed(self) -> None:
+        """The shown PR's details arrived (or failed to)."""
+        await self.refresh_status()
+        self.redraw()
 
     async def _load_history(self, pr: PR) -> list[dict]:
         review = await self.purr_app.purr.store.latest_review(pr.ref)
@@ -210,8 +233,9 @@ class PRSession(Vertical):
         findings = len(await store.findings(review.id)) if review else 0
         actions = await store.pending_actions(pr.ref)
         state = self.state()
+        details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
-            self._header(pr, review, findings, actions, state)
+            self._header(pr, review, findings, actions, state, details)
         )
         decision = self.query_one("#pr-decision", Static)
         if state.ask:
@@ -248,11 +272,12 @@ class PRSession(Vertical):
         findings: int,
         actions: list[PendingAction],
         state: SessionState,
+        details: PRDetails | None,
     ) -> Text:
         text = Text()
-        text.append(f"#{pr.number}  {pr.title}\n", style="bold")
-        text.append(f"by {pr.author}", style="dim")
-        text.append(" · assigned to you" if pr.assigned_to_me else "", style="magenta")
+        text.append(f"#{pr.number}", style=NUMBER_STYLE)
+        text.append(f"  {pr.title}\n", style="bold")
+        text.append(details_line(pr, details))
         text.append("\n")
         if state.ask:
             text.append("⚠ Waiting for you to allow something", style="bold yellow")
@@ -268,9 +293,13 @@ class PRSession(Vertical):
             text.append(f" · {findings} finding{'s' if findings != 1 else ''}")
             if actions:
                 text.append(f" · {len(actions)} pending action", style="yellow")
+        elif review is None and pr.others_on_it:
+            text.append("◌ Not reviewed by you", style="bold")
+            text.append(" · r to review it too · d diff", style="dim")
         elif review is None:
             text.append("○ Not reviewed", style="bold")
-            text.append(" · press r to review", style="dim")
+            hint = " · r to review it" + ("" if pr.assigned_to_me else " and take it")
+            text.append(f"{hint} · d diff", style="dim")
         return text
 
     def focus_prompt(self) -> None:

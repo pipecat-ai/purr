@@ -29,6 +29,7 @@ from purr.messages import (
 from purr.models import PRChange, PRRef
 from purr.review.instructions import Kind
 from purr.tui.bridge import BusEvent, RequestError, UIWorker
+from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
 from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen
 from purr.tui.session import SessionState
@@ -79,6 +80,7 @@ class PurrApp(App):
         self._cwd = cwd
         self.data_version = 0  # bumped whenever the store's data changes
         self.sessions: dict[str, SessionState] = {}  # per PR, see SessionState
+        self.details = DetailsCache()  # PR descriptions, files and CI
         self.alerts: dict[str, str] = {}  # PR -> what happened, newest last
         self._reload_scheduled = False
         self._stopping = False

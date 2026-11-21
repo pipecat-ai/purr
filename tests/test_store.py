@@ -251,3 +251,19 @@ async def test_repo_summaries(store):
         2,
         1,
     ]
+
+
+async def test_assignees_and_the_list_order(store):
+    await store.upsert_pr(make_pr(1, created_at="2026-11-01T00:00:00Z"))
+    await store.upsert_pr(make_pr(2, created_at="2026-11-10T00:00:00Z", assignees=("alice",)))
+    await store.upsert_pr(make_pr(3, created_at="2026-11-05T00:00:00Z", assigned_to_me=True))
+
+    # Newest first; who's assigned comes back as it went in.
+    prs = await store.list_prs()
+    assert [pr.number for pr in prs] == [2, 3, 1]
+    assert prs[0].assignees == ("alice",) and prs[0].others_on_it
+
+    # The repo list counts what's yours to review, not what others took.
+    await store.add_repo("pipecat-ai/pipecat")
+    [summary] = await store.repo_summaries()
+    assert summary.not_reviewed == 2

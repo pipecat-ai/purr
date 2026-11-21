@@ -81,25 +81,25 @@ Two things keep this cheap:
 
 | State | Meaning |
 |---|---|
-| **Not reviewed** | The pool: open PRs in watched repos that nobody is reviewing (no assignee). |
+| **Not reviewed** | The pool: open PRs in watched repos that nobody is reviewing (no assignee). Also PRs assigned to you that haven't been reviewed yet (with auto-review off). |
 | **Reviewing** | A review session is running. |
 | **Needs you** | Review finished (or agent is blocked) and a decision is pending: post comments, request changes, approve, merge, or answer a question. |
 | **Done** | Decision made, nothing pending. |
 
-"Needs you" is pinned to the top of the list.
+"Needs you" is pinned to the top of the list. PRs someone else is assigned to aren't a state of their own: they sit at the end of the list as **Others reviewing**, with who has them, so you can see what's taken.
 
 ## Triggers
 
 Two ways in, same result:
 
 1. **From GitHub**: assign yourself to a PR on the web, in any repo (watched or not). The poller (every ~60s, via the GitHub API or `gh`) detects open PRs assigned to you that have no review yet and dispatches a review job automatically. Polling, not webhooks, because the app runs locally.
-2. **From the app**: mark PRs in the "Not reviewed" list and press `r`. The app dispatches review jobs **and assigns you on GitHub**, so teammates see you've taken it.
+2. **From the app**: select a PR to read its description, files and CI first, then press `r` (or mark several and press `r`). The app dispatches review jobs **and assigns you on GitHub**, so teammates see you've taken it. On a PR someone else has, `r` asks first and adds you next to them.
 
 Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs explicitly assigned to you (avoids burning tokens on PRs others handle).
 
-**The pool** ("Not reviewed") is the open PRs in the watched repos that nobody is reviewing. Starting a review assigns you, and teammates assign themselves when they review, so "nobody is reviewing it" simply means "no assignee". A PR leaves the pool as soon as someone is assigned or it's closed. Drafts and your own PRs stay out of the pool.
+**The pool** ("Not reviewed") is the open PRs in the watched repos that nobody is reviewing. Starting a review assigns you, and teammates assign themselves when they review, so "nobody is reviewing it" simply means "no assignee". A PR leaves the pool as soon as someone is assigned (it moves to "Others reviewing") or it's closed. Drafts and your own PRs aren't listed.
 
-**Polling** uses GitHub's GraphQL search through `gh`, batching every search into one request per page. A search takes 1-2 s regardless of size, and a big repo's pool is several pages (pipecat: 4), so a repo is fully synced only on startup, when added, and every 15 minutes. Polls in between fetch just the PRs updated since the last sync (5 minutes of overlap for search-index lag), which is usually one request of about a second. A newly added repo's pool is shown page by page as it arrives. A search that fails or comes back incomplete never removes anything.
+**Polling** uses GitHub's GraphQL search through `gh`, batching every search into one request per page. Each watched repo has one search: its open, non-draft PRs by other people, with author, opened date and assignees, which splits into the pool and "Others reviewing". It stays lean on purpose (pipecat: 337 PRs in 4 pages). Adding descriptions and file lists made a 100-PR page take 5.8 s instead of about 2 s, so those are fetched when you look at a PR (see Repo screen). A search takes 1-2 s regardless of size, and a big repo's pool is several pages (pipecat: 4), so a repo is fully synced only on startup, when added, and every 15 minutes. Polls in between fetch just the PRs updated since the last sync (5 minutes of overlap for search-index lag), which is usually one request of about a second. A newly added repo's pool is shown page by page as it arrives. A search that fails or comes back incomplete never removes anything.
 
 ## Review workers
 
@@ -208,6 +208,7 @@ Events (broadcast, everyone listens):
 
 - `session.answer {request_id, allow}` (reviews worker): answers an agent's permission request. ("Always for this PR" isn't there yet; it's allow once or deny.)
 - `pr.assign {pr}` (GitHub worker): assigns you, when you start a review on a pool PR with `r`.
+- `pr.details {prs}` (GitHub worker): description, base and head branches, +/- lines, files, labels, review decision and CI state of some PRs, batched 20 to a request.
 
 Commands: none yet. Everything that needs a reply is a job.
 
@@ -216,7 +217,7 @@ Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the
 ## SQLite store
 
 - `repos`: name (`owner/name`), added_at, synced_at (first complete poll; until then its pool isn't reported as new). The watched repos, managed from the UI.
-- `prs`: repo, number, title, author, url, head sha, state, gh_state (open/closed/merged), assigned_to_me, updated_at, last_seen_at (when you last looked at it; clears its alerts)
+- `prs`: repo, number, title, author, url, head sha, state, gh_state (open/closed/merged), assigned_to_me, assignees, created_at, updated_at, last_seen_at (when you last looked at it; clears its alerts). Descriptions and files aren't stored; the UI caches them in memory.
 - `reviews`: pr, session_id, worktree path, status, summary, started_at, finished_at
 - `findings`: review, file, line, severity, text
 - `pending_actions`: pr, action_id, kind (comment/request_changes/approve/merge), payload, status
@@ -260,36 +261,34 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere else (alerts, recaps, the switcher) as `whisker#112`, the repo name without its owner unless that's ambiguous.
 
 ```
-┌─ Purr › 2 pipecat-ai/pipecat ─────────────────────────── 🔔 1 · whisker#112 needs you ─┐
-├─ PRs ─────────────────────────────┬─ #2841: Add message bus ──────────────────────────┤
-│ ⚠ NEEDS YOU (2)                   │ ✓ Review done · 3 findings · 1 pending action     │
-│ ▸ #2841  Message bus         ⚠    │                                                   │
-│   #2838  Frame serializer    ⚠    │ ⏺ Reviewing #2841 at 3f2a91c                      │
-│                                   │   ⎿ Bash(gh pr diff 2841) · 412 lines             │
-│ REVIEWING (1)                     │   ⎿ Read(src/pipecat/bus/bus.py)                  │
-│ ● #2850  TTS context         ⟳    │   ⎿ Bash(uv run pytest tests/bus) · 48 passed     │
-│                                   │                                                   │
-│ NOT REVIEWED (3)                  │ ⏺ Clean refactor, tests pass. Concerns:           │
-│ ○ #2855  Evals report             │   1. Race in bus.subscribe() on shutdown          │
-│ ○ #2860  Sim scenarios            │   2. Missing docstring on publish()               │
-│ ○ #2861  Docs typo                │   3. Nit: unused import in frames.py              │
-│                                   │                                                   │
-│ DONE (1)                          │ ┌ Pending action ──────────────────────────────┐  │
-│ ✓ #2833  Frame cleanup            │ │ Post 3 comments + request changes?           │  │
-│                                   │ │            [a] approve   [x] dismiss         │  │
-│                                   │ └──────────────────────────────────────────────┘  │
-│                                   │                                                   │
-│                                   │ ╭──────────────────────────────────────────────╮  │
-│                                   │ │ > is the race reachable from user code?      │  │
-│                                   │ ╰──────────────────────────────────────────────╯  │
-├───────────────────────────────────┴───────────────────────────────────────────────────┤
-│ space mark · r review · enter open · a approve · x dismiss · esc repos · ctrl+p · 🎙   │
-└───────────────────────────────────────────────────────────────────────────────────────┘
+┌─ Purr › 2 pipecat-ai/pipecat ───────────────────────────────────────────── 🔔 1 · whisker#112 needs you ─┐
+│    #     TITLE                AUTHOR   OPENED ASSIGNED │ #2841  Add message bus                          │
+│ ⚠ NEEDS YOU (1)                                        │ by alice · opened 3d ago · main ← bus · +412 −30 │
+│ ⚠ #2841  Add message bus      alice        3d you      │ ✓ Review done · 3 findings · 1 pending action    │
+│                                                        │                                                  │
+│ ● REVIEWING (1)                                        │ Adds a message bus so workers can talk without   │
+│ ● #2850  TTS context          bob          1d you      │ knowing about each other. …                      │
+│                                                        │                                                  │
+│ ○ NOT REVIEWED (2)                                     │ 3 files changed  d full diff                     │
+│ ○ #2861  Docs typo            carol        2h          │ src/pipecat/bus/bus.py                +380 −12   │
+│ ○ #2855  Evals report         dave         5h          │ …                                                │
+│                                                        │                                                  │
+│ ✓ DONE (1)                                             │ ⏺ Clean refactor, tests pass. Concerns:          │
+│ ✓ #2833  Frame cleanup        erin         6d you      │   1. Race in bus.subscribe() on shutdown         │
+│                                                        │ ┌──────────────────────────────────────────────┐ │
+│ ◌ OTHERS REVIEWING (1)                                 │ │ Post 3 comments and request changes?          │ │
+│ ◌ #2790  Krisp filter         frank        2w grace    │ │ [a] approve   [x] dismiss                     │ │
+│                                                        │ └──────────────────────────────────────────────┘ │
+│                                                        │ > is the race reachable from user code?          │
+├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤
+│ esc repos · r review · space mark · a approve · x dismiss · d diff · z zoom · o Claude Code · i style      │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Header**: where you are (`Purr › 2 pipecat-ai/pipecat`) and the latest alert from other repos.
-- **Left pane**: the repo's PRs grouped by state, "Needs you" first.
-- **Right pane**: the selected PR's session, Claude Code style (see PR session): a status line, the transcript, the pending action box, and the prompt.
+- **Left pane**: the repo's PRs grouped by state, "Needs you" first and "Others reviewing" last, newest first within each group. Columns: number (in its own color), title, author, how long ago it was opened (`2h`, `3d`, `5mo`), and who's assigned (`you`, a login, `+1` for more).
+- **Right pane**: the selected PR. The header has its title, then `by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · labels`, then where its review stands. The transcript starts with the PR's description and the files it changes, so a PR nobody has reviewed yet shows what it's about and you can decide whether to take it; on a reviewed PR it sits above the session (Claude Code style, see PR session), with the pending action box and the prompt below. `d` opens the full diff in your pager (`gh pr diff`).
+- **Details are fetched ahead.** Selecting a PR fetches its details (about 0.5 s) and, in parallel, those of the 10 PRs below it in one request, so moving down the list doesn't wait. They're cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing.
 - **Status bar**: key hints and mic state.
 
 ### Alerts from other repos
@@ -314,7 +313,8 @@ List keys (letters and numbers act on lists; while a prompt has focus, typing go
 - `enter` open a repo, or a PR's session with its prompt focused
 - `esc` up one level: PR prompt → PR list → repo list
 - `space` mark/unmark PR
-- `r` start review on marked PRs (or the selected one)
+- `r` start review on marked PRs (or the selected one), assigning you
+- `d` the selected PR's full diff in your pager
 - `a` approve pending action, `x` dismiss
 - `z` zoom the PR session to full screen
 - `o` open the PR's session in Claude Code

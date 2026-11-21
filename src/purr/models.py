@@ -45,8 +45,8 @@ class PRChange(StrEnum):
 
     ASSIGNED = "assigned"  # assigned to you
     UNASSIGNED = "unassigned"  # no longer assigned to you
-    POOLED = "pooled"  # new in a watched repo's pool
-    UNPOOLED = "unpooled"  # left the pool (someone was assigned, or it closed)
+    POOLED = "pooled"  # new in a watched repo's pool, or back in it
+    UNPOOLED = "unpooled"  # left the pool (someone else was assigned, or it closed)
     NEW_COMMITS = "new_commits"  # head moved on a PR Purr has reviewed
     CLOSED = "closed"
     MERGED = "merged"
@@ -113,6 +113,8 @@ class PR:
     url: str
     head_sha: str
     updated_at: str
+    created_at: str = ""
+    assignees: tuple[str, ...] = ()
     assigned_to_me: bool = False
     state: PRState = PRState.NOT_REVIEWED
     gh_state: GHState = GHState.OPEN
@@ -121,6 +123,49 @@ class PR:
     @property
     def ref(self) -> PRRef:
         return PRRef(self.repo, self.number)
+
+    @property
+    def in_pool(self) -> bool:
+        """Nobody is assigned: free for anyone to review."""
+        return not self.assignees and not self.assigned_to_me
+
+    @property
+    def others_on_it(self) -> bool:
+        """Someone else is assigned and you aren't."""
+        return bool(self.assignees) and not self.assigned_to_me
+
+
+@dataclass(frozen=True)
+class FileChange:
+    path: str
+    additions: int = 0
+    deletions: int = 0
+
+
+@dataclass(frozen=True)
+class PRDetails:
+    """What you look at before deciding to review a PR. Fetched on demand.
+
+    ``checks`` is the head commit's combined CI state as GitHub names it
+    (``SUCCESS``, ``FAILURE``, ``PENDING``, ...), or None without CI.
+    """
+
+    body: str = ""
+    base: str = ""
+    head: str = ""
+    additions: int = 0
+    deletions: int = 0
+    changed_files: int = 0
+    files: tuple[FileChange, ...] = ()
+    labels: tuple[str, ...] = ()
+    review_decision: str | None = None
+    checks: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PRDetails":
+        """From its JSON form (``dataclasses.asdict``), as it crosses the bus."""
+        files = tuple(FileChange(**f) for f in data.get("files") or ())
+        return cls(**{**data, "files": files, "labels": tuple(data.get("labels") or ())})
 
 
 @dataclass

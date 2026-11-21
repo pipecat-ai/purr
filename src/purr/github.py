@@ -12,25 +12,32 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
-from purr.models import PR, GHState, PRRef
+from purr.models import PR, FileChange, GHState, PRDetails, PRRef
 
 # Searches are sorted by creation so that pages stay stable while PRs get updated.
-POOL_QUERY = (
-    "is:pr is:open archived:false draft:false no:assignee -author:@me sort:created-desc repo:{repo}"
-)
+# A repo's list is every open PR by other people, whoever is assigned: the
+# unassigned ones are the pool, the rest show who's on them.
+OPEN_QUERY = "is:pr is:open archived:false draft:false -author:@me sort:created-desc repo:{repo}"
 ASSIGNED_QUERY = "is:pr is:open archived:false assignee:@me sort:created-desc"
 # Every PR in a repo touched since a time, whatever its state: used between full
-# syncs. Leaving the pool (assigned, closed, drafted) updates a PR too.
+# syncs. Being assigned, closed or drafted updates a PR too.
 UPDATED_QUERY = "is:pr archived:false updated:>={since} sort:updated-desc repo:{repo}"
 
 _PR_FIELDS = """
-    number title url state isDraft updatedAt headRefOid
+    number title url state isDraft updatedAt createdAt headRefOid
     author { login }
     assignees(first: 20) { nodes { login } }
     repository { nameWithOwner }
 """
+_DETAILS_FIELDS = """
+    body baseRefName headRefName additions deletions changedFiles reviewDecision
+    labels(first: 10) { nodes { name } }
+    files(first: 100) { nodes { path additions deletions } }
+    commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+"""
 _PAGE_SIZE = 100
 _STATUS_BATCH = 50
+_DETAILS_BATCH = 20
 
 
 class GitHubError(Exception):
@@ -48,6 +55,7 @@ class RemotePR:
     url: str
     head_sha: str
     updated_at: str
+    created_at: str = ""
     is_draft: bool = False
     state: GHState = GHState.OPEN
     assignees: tuple[str, ...] = ()
@@ -56,16 +64,18 @@ class RemotePR:
     def ref(self) -> PRRef:
         return PRRef(self.repo, self.number)
 
-    def in_pool(self, me: str) -> bool:
-        """Open, ready for review, nobody assigned, and not yours."""
+    def listed(self, me: str) -> bool:
+        """Shown in its repo: open, ready for review, and not yours."""
         return (
-            self.state == GHState.OPEN
-            and not self.is_draft
-            and not self.assignees
-            and self.author.lower() != me.lower()
+            self.state == GHState.OPEN and not self.is_draft and self.author.lower() != me.lower()
         )
 
-    def to_pr(self, *, assigned_to_me: bool) -> PR:
+    def in_pool(self, me: str) -> bool:
+        """Listed, and nobody is assigned."""
+        return self.listed(me) and not self.assignees
+
+    def to_pr(self, me: str) -> PR:
+        """As a stored PR; ``me`` is your login, to tell whether it's assigned to you."""
         return PR(
             repo=self.repo,
             number=self.number,
@@ -74,7 +84,9 @@ class RemotePR:
             url=self.url,
             head_sha=self.head_sha,
             updated_at=self.updated_at,
-            assigned_to_me=assigned_to_me,
+            created_at=self.created_at,
+            assignees=self.assignees,
+            assigned_to_me=me.lower() in {a.lower() for a in self.assignees},
         )
 
 
@@ -83,18 +95,19 @@ class Snapshot:
     """One poll's view of GitHub.
 
     Parameters:
-        pool: Fully synced repos: every PR in each repo's pool.
+        open: Fully synced repos: every listed PR in each (open, not a draft,
+            not yours), whoever is assigned.
         assigned: Every open PR assigned to you, in any repo.
         updates: Incrementally synced repos: every PR touched since the last
             sync, whatever its state. Absence means "unchanged".
-        viewer: Your GitHub login (needed to classify ``updates``).
+        viewer: Your GitHub login.
 
     Only complete results are included: a repo whose search failed or came back
-    partial is missing from ``pool``/``updates``, and ``assigned`` is None if
+    partial is missing from ``open``/``updates``, and ``assigned`` is None if
     that search did. Absence from an incomplete result says nothing about a PR.
     """
 
-    pool: dict[str, list[RemotePR]]
+    open: dict[str, list[RemotePR]]
     assigned: list[RemotePR] | None
     updates: dict[str, list[RemotePR]] = field(default_factory=dict)
     viewer: str | None = None
@@ -115,6 +128,7 @@ def _remote_pr(node: dict) -> RemotePR:
         url=node["url"],
         head_sha=node["headRefOid"],
         updated_at=node["updatedAt"],
+        created_at=node.get("createdAt", ""),
         is_draft=node["isDraft"],
         state=GHState(node.get("state", "OPEN").lower()),
         assignees=tuple(a["login"] for a in (node.get("assignees") or {}).get("nodes", [])),
@@ -195,9 +209,9 @@ class GitHub:
         (one per page of results, all searches batched together).
 
         Args:
-            full: Repos to fetch whole pools for.
+            full: Repos to fetch every listed PR of.
             incremental: Repos to fetch only PRs updated since a time (``YYYY-MM-DDTHH:MM:SSZ``).
-            on_page: Called with ``(repo, prs)`` for each page of a full pool as it
+            on_page: Called with ``(repo, prs)`` for each page of a full sync as it
                 arrives, so a newly added repo can show up before all pages are in.
         """
         incremental = dict(incremental or {})
@@ -206,7 +220,7 @@ class GitHub:
         updated_aliases: dict[str, str] = {}
         for i, repo in enumerate(full):
             full_aliases[f"r{i}"] = repo
-            searches[f"r{i}"] = POOL_QUERY.format(repo=repo)
+            searches[f"r{i}"] = OPEN_QUERY.format(repo=repo)
         for i, (repo, since) in enumerate(incremental.items()):
             updated_aliases[f"u{i}"] = repo
             searches[f"u{i}"] = UPDATED_QUERY.format(repo=repo, since=since)
@@ -215,10 +229,10 @@ class GitHub:
             if on_page and alias in full_aliases:
                 await on_page(full_aliases[alias], prs)
 
-        viewer = await self.viewer_login() if incremental else None
+        viewer = await self.viewer_login()
         results = await self._search_all(searches, on_page=page)
         return Snapshot(
-            pool={full_aliases[a]: prs for a, prs in results.items() if a in full_aliases},
+            open={full_aliases[a]: prs for a, prs in results.items() if a in full_aliases},
             assigned=results.get("assigned"),
             updates={updated_aliases[a]: prs for a, prs in results.items() if a in updated_aliases},
             viewer=viewer,
@@ -345,6 +359,54 @@ class GitHub:
                         state=GHState(pr["state"].lower()), head_sha=pr["headRefOid"]
                     )
         return statuses
+
+    async def pr_details(self, refs: Iterable[PRRef]) -> dict[PRRef, PRDetails]:
+        """Description, files and CI state of specific PRs. PRs that can't be read are left out."""
+        refs = list(refs)
+        details: dict[PRRef, PRDetails] = {}
+        for start in range(0, len(refs), _DETAILS_BATCH):
+            batch = refs[start : start + _DETAILS_BATCH]
+            declared = ", ".join(
+                f"$o{i}: String!, $n{i}: String!, $k{i}: Int!" for i in range(len(batch))
+            )
+            fields = " ".join(
+                f"t{i}: repository(owner: $o{i}, name: $n{i}) {{"
+                f" pullRequest(number: $k{i}) {{ {_DETAILS_FIELDS} }} }}"
+                for i in range(len(batch))
+            )
+            variables: dict[str, str | int | None] = {}
+            for i, ref in enumerate(batch):
+                owner, _, name = ref.repo.partition("/")
+                variables.update({f"o{i}": owner, f"n{i}": name, f"k{i}": ref.number})
+            body = await self.graphql(f"query({declared}) {{ {fields} }}", variables)
+            for i, ref in enumerate(batch):
+                if pr := (body["data"].get(f"t{i}") or {}).get("pullRequest"):
+                    details[ref] = _details(pr)
+        return details
+
+
+def _nodes(connection: dict | None) -> list[dict]:
+    return [node for node in (connection or {}).get("nodes") or [] if node]
+
+
+def _details(pr: dict) -> PRDetails:
+    commits = _nodes(pr.get("commits"))
+    rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
+    return PRDetails(
+        body=pr.get("body") or "",
+        base=pr.get("baseRefName") or "",
+        head=pr.get("headRefName") or "",
+        additions=pr.get("additions") or 0,
+        deletions=pr.get("deletions") or 0,
+        changed_files=pr.get("changedFiles") or 0,
+        files=tuple(
+            FileChange(f["path"], f.get("additions") or 0, f.get("deletions") or 0)
+            for f in _nodes(pr.get("files"))
+        ),
+        labels=tuple(label["name"] for label in _nodes(pr.get("labels"))),
+        review_decision=pr.get("reviewDecision"),
+        checks=(rollup or {}).get("state"),
+    )
 
 
 def _clip(text: str, limit: int = 1500) -> str:

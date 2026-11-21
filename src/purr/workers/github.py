@@ -18,6 +18,7 @@ from purr.messages import (
     ACTION_DISMISS,
     GITHUB_WORKER,
     PR_ASSIGN,
+    PR_DETAILS,
     REPO_ADD,
     REPO_REMOVE,
     ActionResolved,
@@ -52,7 +53,7 @@ class GitHubWorker(BaseWorker):
     Each repo gets a full sync on its first poll after startup and every
     ``FULL_SYNC_EVERY`` seconds; polls in between only fetch PRs updated since
     the last sync, which is usually a single cheap request. A newly added repo's
-    pool is stored page by page as it arrives, so it shows up quickly.
+    PRs are stored page by page as they arrive, so it shows up quickly.
 
     Args:
         name: Bus name.
@@ -113,12 +114,11 @@ class GitHubWorker(BaseWorker):
             first_sync = {repo.name for repo in repos if repo.synced_at is None}
 
             async def on_page(repo: str, prs: list[RemotePR]) -> None:
-                # Show a brand new repo's pool as it arrives. Upserting pool PRs
-                # is safe before the poll completes; removals wait for the end.
+                # Show a brand new repo's PRs as they arrive. Upserting them is
+                # safe before the poll completes; removals wait for the end.
                 if repo in first_sync:
-                    await self._store.apply_sync(
-                        upserts=[pr.to_pr(assigned_to_me=False) for pr in prs]
-                    )
+                    me = await self._github.viewer_login()
+                    await self._store.apply_sync(upserts=[pr.to_pr(me) for pr in prs])
                     await self.send_bus_message(PRListUpdated(source=self.name))
 
             snapshot = await self._github.snapshot(full, incremental, on_page=on_page)
@@ -136,9 +136,9 @@ class GitHubWorker(BaseWorker):
                 upserts=plan.upserts, deletes=plan.deletes, gh_states=plan.gh_states
             )
             now = time.monotonic()
-            for name in snapshot.pool:
+            for name in snapshot.open:
                 self._last_full_sync[name] = now
-            await self._store.mark_synced([*snapshot.pool, *snapshot.updates], at=started)
+            await self._store.mark_synced([*snapshot.open, *snapshot.updates], at=started)
 
         for change in plan.changes:
             await self.send_bus_message(
@@ -213,10 +213,25 @@ class GitHubWorker(BaseWorker):
         # Show it right away; the next poll confirms it.
         pr = await self._store.get_pr(ref)
         if pr and not pr.assigned_to_me:
-            await self._store.apply_sync(upserts=[dataclasses.replace(pr, assigned_to_me=True)])
+            me = await self._github.viewer_login()
+            mine = dataclasses.replace(pr, assigned_to_me=True, assignees=(*pr.assignees, me))
+            await self._store.apply_sync(upserts=[mine])
             await self.send_bus_message(PRListUpdated(source=self.name))
         await self.send_job_response(message.job_id, {"ok": True})
         self.request_poll()
+
+    # -- Reads for the UIs ------------------------------------------------------------
+
+    @job(name=PR_DETAILS)
+    async def on_pr_details(self, message: BusJobRequestMessage) -> None:
+        try:
+            refs = [PRRef.parse(str(pr)) for pr in (message.payload or {}).get("prs") or []]
+            details = await self._github.pr_details(refs)
+        except (ValueError, GitHubError) as e:
+            await self._reject(message, f"Couldn't read the PR from GitHub: {e}")
+            return
+        payload = {str(ref): dataclasses.asdict(d) for ref, d in details.items()}
+        await self.send_job_response(message.job_id, {"details": payload})
 
     # -- Approved actions --------------------------------------------------------
 

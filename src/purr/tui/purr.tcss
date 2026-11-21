@@ -34,8 +34,8 @@
 }
 
 #prs {
-    width: 45%;
-    min-width: 36;
+    width: 55%;
+    min-width: 60;
     border: none;
     text-wrap: nowrap;
     text-overflow: ellipsis;

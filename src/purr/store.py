@@ -122,6 +122,10 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE reviews ADD COLUMN head_sha TEXT;
     """,
+    """
+    ALTER TABLE prs ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+    ALTER TABLE prs ADD COLUMN assignees TEXT NOT NULL DEFAULT '[]';
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -152,6 +156,8 @@ def _pr(row: aiosqlite.Row) -> PR:
         gh_state=GHState(row["gh_state"]),
         assigned_to_me=bool(row["assigned_to_me"]),
         updated_at=row["updated_at"],
+        created_at=row["created_at"],
+        assignees=tuple(json.loads(row["assignees"])),
     )
 
 
@@ -179,8 +185,8 @@ def _activity(row: aiosqlite.Row) -> Activity:
 
 _UPSERT_PR = """
     INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
-                     updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     updated_at, created_at, assignees)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET
         title = excluded.title,
         author = excluded.author,
@@ -188,7 +194,9 @@ _UPSERT_PR = """
         head_sha = excluded.head_sha,
         assigned_to_me = excluded.assigned_to_me,
         gh_state = excluded.gh_state,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        created_at = excluded.created_at,
+        assignees = excluded.assignees
 """
 
 
@@ -203,6 +211,8 @@ def _upsert_params(pr: PR) -> tuple:
         int(pr.assigned_to_me),
         pr.gh_state,
         pr.updated_at,
+        pr.created_at,
+        json.dumps(list(pr.assignees)),
     )
 
 
@@ -338,7 +348,8 @@ class Store:
             params.append(GHState.OPEN)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self._fetchall(
-            f"SELECT * FROM prs {where} ORDER BY {_STATE_ORDER}, updated_at DESC", params
+            f"SELECT * FROM prs {where} ORDER BY {_STATE_ORDER}, created_at DESC, number DESC",
+            params,
         )
         return [_pr(row) for row in rows]
 
@@ -417,7 +428,10 @@ class Store:
                 names.watched,
                 COALESCE(SUM(prs.state = 'needs_you'), 0) AS needs_you,
                 COALESCE(SUM(prs.state = 'reviewing'), 0) AS reviewing,
-                COALESCE(SUM(prs.state = 'not_reviewed'), 0) AS not_reviewed,
+                COALESCE(
+                    SUM(prs.state = 'not_reviewed'
+                        AND (prs.assigned_to_me OR prs.assignees = '[]')), 0
+                ) AS not_reviewed,
                 (SELECT MAX(at) FROM activity WHERE activity.repo = names.name) AS last_activity
             FROM names
             LEFT JOIN prs ON prs.repo = names.name AND prs.gh_state = 'open'
