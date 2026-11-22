@@ -28,6 +28,7 @@ from purr.models import (
     Review,
     ReviewStatus,
 )
+from purr.review.agent import thought_headline
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.bridge import RequestError
 from purr.tui.commands import (
@@ -133,11 +134,14 @@ def outcome_mark(outcome: Outcome) -> Text:
     return Text("●", style="bold red") if outcome.found else Text("✓", style="bold green")
 
 
-def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
+def render_entry(
+    entry: dict, signature: str = "", *, full_thinking: bool = False
+) -> RenderableType | None:
     """A transcript entry as Claude Code would show it.
 
     Subagents' own steps aren't shown, only the call that started each one and
-    what it came back with (they're recorded all the same).
+    what it came back with (they're recorded all the same). Each thought is a
+    line, unless ``full_thinking``.
     """
     if entry.get("agent"):
         return None
@@ -145,8 +149,10 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
     if kind == "text":
         return _bullet(Markdown(entry["text"], code_theme=CODE_THEME))
     if kind == "thinking":
-        # Like Claude Code: the reasoning, dimmed, ahead of what it leads to.
-        return _bullet(Text(entry["text"].strip(), style="dim italic"), style="dim")
+        # Like Claude Code: the reasoning, dimmed, ahead of what it leads to. In
+        # full it's ten times what the agent says, so a line each unless you ask (t).
+        text = entry["text"].strip() if full_thinking else thought_headline(entry["text"])
+        return _bullet(Text(text, style="dim italic"), style="dim")
     if kind == "user":
         return Text(f"> {entry['text'].replace(chr(10), chr(10) + '  ')}", style="bold")
     if kind == "tool_use":
@@ -372,11 +378,15 @@ class PRSession(Vertical):
             asked = await self.purr_app.purr.store.prompts(pr.ref)
             self.query_one(PromptArea).set_history([text for _, text in reversed(asked)])
 
-    def redraw(self) -> None:
-        """Rewrite the transcript: the overview, then the session."""
+    def redraw(self, *, keep_place: bool = False) -> None:
+        """Rewrite the transcript: the overview, then the session.
+
+        ``keep_place``: stay about as far down it as you were, rather than at its end.
+        """
         assert self.pr is not None
         state = self.state()
         log = self.query_one(RichLog)
+        place = log.scroll_y / log.max_scroll_y if log.max_scroll_y else 1.0
         log.clear()
         details = self.purr_app.details.get(self.pr)
         diff = self.purr_app.details.diff(self.pr)
@@ -387,6 +397,11 @@ class PRSession(Vertical):
             self._write(entry)
         if not state.entries:
             log.scroll_home(animate=False)
+        elif keep_place and place < 1:
+            # After the writes' own scrolling to the end.
+            log.call_after_refresh(
+                lambda: log.scroll_to(y=round(place * log.max_scroll_y), animate=False)
+            )
         self._drawn = self.pr.ref
 
     async def details_changed(self) -> None:
@@ -422,8 +437,9 @@ class PRSession(Vertical):
 
         Like Claude Code, a tool call and its result are one step: no line between.
         """
-        signature = self.purr_app.purr.config.signature
-        if (renderable := render_entry(entry, signature)) is None:
+        app = self.purr_app
+        signature = app.purr.config.signature
+        if (renderable := render_entry(entry, signature, full_thinking=app.full_thinking)) is None:
             return
         log = self.query_one(RichLog)
         if self._wrote and entry.get("kind") != "tool_result":

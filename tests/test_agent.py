@@ -246,3 +246,15 @@ def test_a_stopped_background_task_isnt_a_failure():
     assert shown("completed") == ("✓", "dim green")
     assert shown("stopped") == ("◼", "dim")  # the agent stopped what it no longer needed
     assert shown("failed") == ("✗", "dim red")
+
+
+def test_a_thought_in_a_line():
+    from purr.review.agent import thought_headline
+
+    assert thought_headline("Checking the lock file. The bump is deliberate.") == (
+        "Checking the lock file…"
+    )
+    assert thought_headline("Look at shutdown first.") == "Look at shutdown first."
+    assert thought_headline("**Weighing the verdict**\n\nA comment, then.") == (
+        "Weighing the verdict…"
+    )

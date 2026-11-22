@@ -59,6 +59,7 @@ from purr.review.agent import (
     describe_tool_use,
     rereview_prompt,
     review_prompt,
+    thought_headline,
 )
 from purr.review.skills import repo_skills, review_skills
 from purr.store import Store
@@ -638,8 +639,7 @@ class ReviewWorker(BaseWorker):
             elif entry["kind"] == "task" and entry.get("event") == "started":
                 await self._progress(ref, f"Working in the background: {entry['text']}")
             elif entry["kind"] == "thinking":
-                first_line = entry["text"].strip().splitlines()[0]
-                await self._progress(ref, f"Thinking: {first_line}")
+                await self._progress(ref, f"Thinking: {thought_headline(entry['text'])}")
 
         async def on_submit(summary: str, findings: list[Finding]) -> None:
             submitted["summary"] = summary

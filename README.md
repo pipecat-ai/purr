@@ -106,6 +106,7 @@ uv run purr --no-auto-review
 | | `a` / `x` | Approve / dismiss what's proposed (or allow / deny what's asked) |
 | | `A` | Always allow what's asked |
 | | `d` | The full diff, in your pager |
+| | `t` | The agent's reasoning in full (it's a line per thought otherwise) |
 | | `!` | A shell in the PR's checkout, to run things yourself (`exit` to come back) |
 | | `c` | Open the PR's conversation in Claude Code itself |
 | | `z` | Full screen |

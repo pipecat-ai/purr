@@ -355,6 +355,7 @@ class RepoView(PurrView):
         Binding("A", "always", "Always allow", show=False),
         Binding("x", "dismiss", "Dismiss"),
         Binding("d", "diff", "Diff"),
+        Binding("t", "thinking", "Thinking", show=False),
         Binding("z", "zoom", "Zoom"),
         Binding("c", "open_claude", "Claude Code", show=False),  # also /claude
         Binding("exclamation_mark", "shell", "Shell"),
@@ -826,6 +827,15 @@ class RepoView(PurrView):
         with self.app.suspend():
             process = await asyncio.create_subprocess_exec(*command, env=env)
             await process.wait()
+
+    def action_thinking(self) -> None:
+        """The agents' reasoning in full, or a line per thought."""
+        app = self.purr_app
+        app.full_thinking = not app.full_thinking
+        if self.session.pr is not None:
+            self.session.redraw(keep_place=True)
+        what = "in full" if app.full_thinking else "a line per thought"
+        self.notify(f"The agent's reasoning: {what}", timeout=2)
 
     def action_zoom(self) -> None:
         pane = self.query_one("#prs-pane")

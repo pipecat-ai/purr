@@ -97,6 +97,7 @@ class PurrApp(App):
         self._cwd = cwd
         self.data_version = 0  # bumped whenever the store's data changes
         self.sessions: dict[str, SessionState] = {}  # per PR, see SessionState
+        self.full_thinking = False  # the agents' reasoning in full, or a line per thought (t)
         self.details = DetailsCache()  # PR descriptions, files and CI
         self.repo_skills: dict[str, list[dict]] = {}  # for / commands, fetched once per repo
         # PR -> what happened since you last looked at it, newest last (from

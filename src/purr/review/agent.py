@@ -381,6 +381,25 @@ def _as_typed(text: str) -> str:
     return text
 
 
+_SENTENCE = re.compile(r"(.+?[.?!])(?:\s|$)")
+
+
+def thought_headline(text: str) -> str:
+    """A thought in a line, as Claude Code shows it: its heading or first sentence.
+
+    ``Checking the lock file. The bump is deliberate, since ...`` becomes
+    ``Checking the lock file…``.
+    """
+    text = text.strip()
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    first = first.strip("*#_ ")  # a **heading**
+    if match := _SENTENCE.match(first):
+        first = match.group(1)
+    if first != text:
+        first = first.rstrip(".:;, ") + "…"
+    return first
+
+
 def describe_tool_use(name: str, tool_input: dict) -> str:
     """A one-line description of a tool call, for progress lines."""
     if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:

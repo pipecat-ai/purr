@@ -967,3 +967,25 @@ async def test_the_colors_are_solarized(tmp_path):
         assert app.theme == "solarized-dark"
         # Purr's named colors ("green" in a transcript line) are Solarized's too.
         assert app.ansi_theme.ansi_colors[2] == (0x85, 0x99, 0x00)
+
+
+async def test_the_agents_reasoning_is_a_line_per_thought(tmp_path):
+    """In full it's ten times what the agent says: a line each, unless you press t."""
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        session = app.main.repo.session
+        await until(pilot, lambda: session.pr is not None and session._drawn is not None)
+        thought = "Checking the lock file. The bump looks deliberate: the changelog says so."
+        session.append(str(session.pr.ref), {"kind": "thinking", "text": thought})
+        await pilot.pause(0.1)
+        assert "Checking the lock file…" in transcript(app)
+        assert "looks deliberate" not in transcript(app)
+        await pilot.press("t")
+        await until(pilot, lambda: "looks deliberate" in transcript(app))
+        await pilot.press("t")
+        await until(pilot, lambda: "looks deliberate" not in transcript(app))
