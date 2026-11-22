@@ -62,8 +62,8 @@ class LeadWorker(BaseWorker):
     - New commits on a reviewed PR assigned to you get it re-reviewed, planned
       from what the new commits say and touch (with the new reviews of the same
       poll, in one call).
-    - ``lead.review {prs}``: PRs you asked to review, planned at high priority.
-      Answers once they've started: ``{"started": [...], "errors": {pr: error}}``.
+    - ``PlanReviews {prs, depth}``: PRs you asked to review, planned at high
+      priority. Answers once they've started, with why any didn't (``Planned``).
 
     The first two only when ``auto_review``. Planning is one call per batch;
     if it fails, the PRs get a full review anyway, so nothing waits on it.

@@ -43,8 +43,8 @@ class Planned:
 
 @dataclass(kw_only=True)
 class PlanReviews(Request[Planned]):
-    """Have the lead plan these PRs' reviews, and start them. It answers once it has
-    the PRs; their reviews start after it has planned them. ``depth`` overrides its."""
+    """Have the lead plan these PRs' reviews, and start them. It answers once they've
+    started (``Planned``: which did, and why the rest didn't). ``depth`` overrides its."""
 
     worker: ClassVar[str] = LEAD_WORKER
     timeout: ClassVar[float] = 180

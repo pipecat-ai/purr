@@ -944,7 +944,7 @@ class ClaudeReviewAgent:
         )
 
 
-# Opening a session in Claude Code itself (the `o` key). Same protections as in
+# Opening a session in Claude Code itself (the `c` key). Same protections as in
 # Purr: only the user's settings load (a PR's could define hooks), and GitHub
 # writes are disallowed. Everything else gets Claude Code's usual prompts.
 CLAUDE_CODE_NOTE = (

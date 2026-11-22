@@ -121,27 +121,27 @@ class ReviewWorker(BaseWorker):
     What gets reviewed, how deep and when is up to the lead worker
     (:mod:`purr.workers.lead`); this one runs what it's asked to:
 
-    - ``review.start {pr, plan}`` starts a review following ``plan`` (a
-      :class:`ReviewPlan`; a full review without one) and responds right away
-      with ``{"review_id": ...}`` (or ``{"error": ...}``); progress comes as events.
-    - ``review.rereview {pr}`` has a finished review of a PR assigned to you
+    - ``StartReview {pr, plan}`` starts a review following ``plan`` (a
+      :class:`ReviewPlan`; a full review without one) and answers right away
+      with its id; progress comes as events.
+    - ``Rereview {pr, plan}`` has a finished review of a PR assigned to you
       look at its new commits, in the same session.
-    - ``review.message {pr, text}`` sends a follow-up into the PR's session.
+    - ``SendMessage {pr, text}`` says something in the PR's session.
     - At most ``max_reviews`` reviews (and re-reviews) run at once; the rest
       wait in line by the plan's priority, then in order, saying where they
       are. Your own messages in a PR's session don't wait.
     - On startup, reviews interrupted by the last shutdown are resumed.
     - When Claude Code wants to ask about something (its permissions decide,
       see :mod:`purr.review.policy`), a :class:`PermissionRequest` goes out,
-      the PR needs you, and the agent waits for a ``session.answer
+      the PR needs you, and the agent waits for an ``AnswerPermission
       {request_id, allow, remember}`` job. ``remember`` (``repo`` or ``all``)
       keeps Claude Code's suggested rule (see :mod:`purr.review.rules`).
     - A full review follows the repo's own review skill when it has one (see
       :mod:`purr.review.skills`): one clearly for reviewing PRs is chosen
       without asking (:class:`SkillChosen`); otherwise, if some skills may be,
       a :class:`SkillQuestion` asks you once and the review waits a while for
-      a ``review.skill {repo, skill}`` answer. ``review.skills {repo}`` lists
-      them, for changing your mind.
+      a ``ChooseReviewSkill {repo, skill}`` answer. ``ListReviewSkills {repo}``
+      lists them, for changing your mind.
 
     Stopping cancels running sessions; their reviews stay "running" in the
     store, which is how they get resumed next time.

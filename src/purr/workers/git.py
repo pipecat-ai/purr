@@ -34,13 +34,13 @@ class GitWorker(BaseWorker):
 
     It syncs on start and whenever the PR list changes (a poll found new or
     updated PRs, mostly), after a short pause so a burst of changes is one
-    sync. ``pr.diff`` answers from the clone, and from GitHub for a PR that
+    sync. ``GetDiff`` answers from the clone, and from GitHub for a PR that
     isn't synced yet (a repo still being cloned, a push since the last sync).
 
     A PR's worktree is removed once it's not needed: when you approve the PR
     through Purr, and when it's merged or closed; after the first poll, any
     left from before go too. Not while a review is running in it. Its review
-    session survives, and ``pr.worktree`` (or the next review turn) makes the
+    session survives, and ``GetWorktree`` (or the next review turn) makes the
     worktree again.
     """
 

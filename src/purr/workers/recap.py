@@ -20,7 +20,7 @@ def now() -> str:
 
 
 class RecapWorker(BaseWorker):
-    """Handles ``recap.create {since}`` and records ``user.active`` as the last-active time.
+    """Handles ``MakeRecap {since}`` and records ``user.active`` as the last-active time.
 
     The TUI (and later the voice agent) decide when the user is back; this
     worker turns the notable activity since then into a recap.

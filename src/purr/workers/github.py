@@ -87,8 +87,8 @@ class GitHubWorker(BaseWorker):
 
     Polls every ``interval`` seconds (and right away when a repo is added),
     broadcasting a :class:`PRChanged` per change it finds and a
-    :class:`PRListUpdated` when anything changed. Handles the ``repo.add`` and
-    ``repo.remove`` jobs.
+    :class:`PRListUpdated` when anything changed. Handles the jobs that change
+    GitHub or the watched repos (``WatchRepo``, ``ApproveAction``, ``MergePR``, ...).
 
     After a poll it reads the conversation of the PRs Purr reviewed or you took
     part in that changed (all of them on the first poll) for replies to you since
