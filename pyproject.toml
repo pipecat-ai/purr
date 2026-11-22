@@ -1,7 +1,7 @@
 [project]
 name = "purr"
 version = "0.1.0"
-description = "Review GitHub pull requests with Claude from a keyboard TUI or by voice."
+description = "A human-in-the-loop agentic code reviewer."
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
