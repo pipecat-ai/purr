@@ -187,6 +187,19 @@ class PurrApp(App):
 
         return answer
 
+    async def run_outside(
+        self, command: list[str], cwd: str, env: dict[str, str] | None = None
+    ) -> None:
+        """Hand the terminal to another program (Claude Code, a shell) until it exits.
+
+        Purr keeps running underneath: polls, reviews.
+        """
+        with self.suspend():
+            process = await asyncio.create_subprocess_exec(
+                *command, cwd=cwd, env={**os.environ, **(env or {})}
+            )
+            await process.wait()
+
     async def _edit(self, path: Path) -> None:
         editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi")
         with self.suspend():

@@ -269,3 +269,36 @@ async def test_removing_a_worktree(tmp_path, upstream):
     # Needed again (a follow-up, a re-review): made again at the same path.
     assert await repos.checkout(ref, head) == path
     assert (path / "a.txt").read_text() == "two\n"
+
+
+async def test_your_changes_in_a_worktree_are_never_thrown_away(tmp_path, upstream):
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    ref = PRRef("a/b", 7)
+    head = git(upstream, "rev-parse", "refs/pull/7/head")
+    path = await repos.checkout(ref, head)
+
+    # You (or the agent) change things; the next turn on the same head keeps them.
+    (path / "a.txt").write_text("my experiment\n")
+    (path / "notes.txt").write_text("try this\n")
+    await repos.checkout(ref, head)
+    assert (path / "a.txt").read_text() == "my experiment\n"
+
+    # A worktree with changes isn't removed.
+    assert await repos.remove_worktree(ref) is False
+    assert path.exists()
+
+    # New commits: the worktree moves on, and the changes go to a stash.
+    git(upstream, "checkout", "-q", "feature")
+    (upstream / "a.txt").write_text("three\n")
+    git(upstream, "commit", "-qam", "three")
+    git(upstream, "update-ref", "refs/pull/7/head", "HEAD")
+    git(upstream, "checkout", "-q", "main")
+    new_head = git(upstream, "rev-parse", "refs/pull/7/head")
+    await repos.checkout(ref, new_head)
+    assert (path / "a.txt").read_text() == "three\n" and not (path / "notes.txt").exists()
+    assert f"purr: changes in a/b#7 at {head[:7]}, before {new_head[:7]}" in git(
+        path, "stash", "list"
+    )
+    # Both are in it: the edit, and the new file (git keeps untracked files in ^3).
+    assert git(path, "show", "stash@{0}:a.txt") == "my experiment"
+    assert git(path, "show", "stash@{0}^3:notes.txt") == "try this"

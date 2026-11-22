@@ -291,6 +291,7 @@ class RepoView(PurrView):
         Binding("d", "diff", "Diff"),
         Binding("z", "zoom", "Zoom"),
         Binding("c", "open_claude", "Claude Code"),
+        Binding("exclamation_mark", "shell", "Shell"),
     ]
 
     def __init__(self, **kwargs):
@@ -650,16 +651,35 @@ class RepoView(PurrView):
         except RequestError as e:
             self.notify(str(e), severity="warning")
             return
-        command = claude_code_command(review.session_id, str(pr.ref))
-        # Purr keeps running underneath (polls, other reviews) while Claude Code
-        # has the terminal.
-        with self.app.suspend():
-            process = await asyncio.create_subprocess_exec(*command, cwd=worktree)
-            await process.wait()
+        await self.purr_app.run_outside(
+            claude_code_command(review.session_id, str(pr.ref)), worktree
+        )
         # The session may have grown in Claude Code: reload its transcript.
         self.purr_app.sessions.pop(str(pr.ref), None)
         self.session.pr = None
         await self.session.show(pr)
+
+    async def action_shell(self) -> None:
+        """A shell in the PR's worktree, to run or change things yourself; exit to come back.
+
+        The worktree is made if the PR doesn't have one (never reviewed, or
+        removed once approved).
+        """
+        pr = self.selected_pr()
+        if not pr:
+            return
+        try:
+            worktree = await self.purr_app.bus.worktree(pr.ref)
+        except RequestError as e:
+            self.notify(str(e), severity="warning")
+            return
+        shell = os.environ.get("SHELL") or "/bin/sh"
+        banner = f"{pr.ref} at {pr.head_sha[:7]}, in {worktree}. Exit the shell to go back to Purr."
+        command = ["/bin/sh", "-c", 'printf "%s\\n" "$PURR_BANNER"; exec "$PURR_SHELL"']
+        env = {"PURR_BANNER": banner, "PURR_SHELL": shell, "PURR_PR": str(pr.ref)}
+        await self.purr_app.run_outside(command, worktree, env)
+        self.purr_app.data_version += 1  # its header says whether it has a worktree now
+        await self.session.refresh_status()
 
     async def action_diff(self) -> None:
         """The PR's full diff in your pager (gh's pager settings, or less)."""

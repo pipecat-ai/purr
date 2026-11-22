@@ -601,3 +601,38 @@ async def test_always_allowing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: len(agent.answers) == 2)
         assert agent.answers == [True, True]
         assert "allowed by your permission Bash(uv run pytest:*)" in transcript(app)
+
+
+async def test_a_shell_in_the_worktree_and_claude_code(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    ran: list[tuple] = []
+
+    async def run_outside(command, cwd, env=None):
+        ran.append((command, cwd, env or {}))
+
+    app.run_outside = run_outside
+    worktree = str(tmp_path / "data/worktrees/pipecat-ai/pipecat/1")
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await until(pilot, lambda: home(app))
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+
+        # ! works before any review: the worktree is made for it.
+        await pilot.press("exclamation_mark")
+        await until(pilot, lambda: ran)
+        command, cwd, env = ran[-1]
+        assert cwd == worktree and env["PURR_PR"] == "pipecat-ai/pipecat#1"
+        assert "Exit the shell to go back to Purr." in env["PURR_BANNER"]
+
+        # After a review, the header says where it is; c opens its session there.
+        await pilot.press("r")
+        await until(pilot, lambda: "[a] approve" in decision(app))
+        assert "Worktree " in header(app) and "! opens a shell there" in header(app)
+        await pilot.press("c")
+        await until(pilot, lambda: len(ran) == 2)
+        command, cwd, _ = ran[-1]
+        assert command[:2] == ["claude", "--resume"] and cwd == worktree

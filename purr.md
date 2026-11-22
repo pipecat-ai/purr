@@ -83,6 +83,8 @@ Two things keep this cheap:
 
   Nothing new, no network (bases are refetched every 10 minutes regardless). The diff is then `git diff <base>...<head>` in the clone, the same as GitHub's, with no 300-file or 20,000-line limit. Measured on pipecat from scratch: the clone and first sync of 337 open PRs took 19 s in the background, the clone is 31 MB, and a diff over the bus takes 7 ms on average (23 ms for a 3,000-line one). A PR the clone doesn't have yet (a push since the last sync, a repo still cloning) gets its diff from GitHub instead.
 - **A worktree only once a review starts.** Diffs don't need one. Starting a review (`r`, or auto-review) makes the PR's worktree, where the agent, and you through the PR session or `c`, can run the code and change it. It's made from what the sync already brought, so there's no fetch unless the PR moved since. Measured on pipecat: the first worktree takes 3 s (the clone downloads the rest of the repo's files once, ending at 61 MB), the next ones 1.4 s and 0.2 s.
+- **Where they are, and using one yourself.** `~/.local/share/purr/worktrees/<owner>/<repo>/<number>` (under the data dir), shown in the PR's header (`Worktree ~/.local/share/purr/worktrees/pipecat-ai/pipecat/6940 · ! opens a shell there`). `!` opens your `$SHELL` there, making the worktree first if the PR has none (not reviewed yet, or removed); exit it to come back to Purr, which keeps running underneath.
+- **Your changes are never thrown away.** A review turn on the same head leaves the worktree as it is, with whatever you (or the agent, with your OK) changed. When new commits move it on, uncommitted changes go to a stash first (`git stash list` there: "purr: changes in owner/repo#N at abc1234, before def5678"). A worktree with uncommitted changes is never removed.
 - **Worktrees go when they're done.** A PR's worktree is removed when you approve the PR through Purr, and when it's merged or closed; after the first poll on startup, any left from before go too (`GitWorker.sweep`). Never while a review is running in it. Nothing is lost: Claude Code keeps the session under `~/.claude`, not in the worktree, and finds it by path even with the directory gone. A follow-up, a re-review or `c` (`pr.worktree`) makes it again at the same path, and the session carries on.
 
 ## PR states
@@ -355,7 +357,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 │                                                        │ └──────────────────────────────────────────────┘ │
 │                                                        │ > is the race reachable from user code?          │
 ├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤
-│ esc back · o open · n/p next/prev · / search · r review · a approve · x dismiss · d diff · c Claude Code   │
+│ esc back · o open · n/p next/prev · / search · r review · a approve · x dismiss · d diff · c Claude · ! sh │
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 

@@ -120,7 +120,26 @@ class GitRepos:
                 )
             path = self.worktree_path(ref)
             if (path / ".git").exists():
-                await self._git(path, "checkout", "--quiet", "--detach", "--force", head_sha)
+                # Already there: leave it as it is, with whatever you (or the agent)
+                # changed in it. Moving on: those changes are stashed, not lost.
+                current = (await self._git(path, "rev-parse", "HEAD")).strip()
+                if current != head_sha:
+                    if await self.has_changes(path):
+                        message = f"purr: changes in {ref} at {current[:7]}, before {head_sha[:7]}"
+                        await self._git(
+                            path,
+                            "-c",
+                            "user.name=Purr",
+                            "-c",
+                            "user.email=purr@localhost",
+                            "stash",
+                            "push",
+                            "--include-untracked",
+                            "--quiet",
+                            "-m",
+                            message,
+                        )
+                    await self._git(path, "checkout", "--quiet", "--detach", "--force", head_sha)
             else:
                 if path.exists():
                     shutil.rmtree(path)  # a leftover from an interrupted checkout
@@ -145,15 +164,27 @@ class GitRepos:
                 found.append(PRRef(f"{path.parent.parent.name}/{path.parent.name}", int(path.name)))
         return found
 
-    async def remove_worktree(self, ref: PRRef) -> bool:
-        """Remove the PR's worktree, if it has one; whether there was one.
+    async def has_changes(self, path: Path) -> bool:
+        """Whether a worktree has uncommitted changes (ignored files don't count)."""
+        return bool((await self._git(path, "status", "--porcelain")).strip())
 
-        Its review session survives (Claude Code keeps it under ~/.claude), and
+    async def remove_worktree(self, ref: PRRef) -> bool:
+        """Remove the PR's worktree, if it has one; whether it was removed.
+
+        One with uncommitted changes (yours, or the agent's) is kept. Its review
+        session survives (Claude Code keeps it under ~/.claude), and
         :meth:`checkout` makes the worktree again, at the same path, when it's needed.
         """
         path = self.worktree_path(ref)
         if not path.exists():
             return False
+        if (path / ".git").exists():
+            try:
+                if await self.has_changes(path):
+                    logger.info(f"Keeping {ref}'s worktree: it has uncommitted changes")
+                    return False
+            except GitError:
+                pass  # broken: remove it
         async with self._locks.setdefault(ref.repo, asyncio.Lock()):
             clone = self.clone_path(ref.repo)
             try:

@@ -3,6 +3,7 @@
 import asyncio
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from rich.console import Group, RenderableType
@@ -355,6 +356,12 @@ class PRSession(Vertical):
             text.append("○ Not reviewed", style="bold")
             hint = " · r to review it" + ("" if pr.assigned_to_me else " and take it")
             text.append(f"{hint} · d diff", style="dim")
+        if review and review.worktree_path:
+            path = Path(review.worktree_path)
+            home = str(Path.home())
+            shown = "~" + str(path)[len(home) :] if str(path).startswith(home) else str(path)
+            where = "! opens a shell there" if path.exists() else "removed; ! makes it again"
+            text.append(f"\nWorktree {shown} · {where}", style="dim")
         if review and review.plan and pr.state != PRState.NOT_REVIEWED:
             # What the lead planned, and why.
             plan = review.plan
