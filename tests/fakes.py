@@ -24,6 +24,7 @@ class FakeGitHub:
         self.repos = {"pipecat-ai/pipecat", "pipecat-ai/whisker"}
         self.open: dict[str, list[RemotePR]] = {}
         self.details: dict = {}  # PRRef -> PRDetails
+        self.merge_checks: dict = {}  # PRRef -> MergeCheck
         self.details_calls: list[list] = []
         self.diffs: dict = {}  # PRRef -> unified diff
         self.diff_calls: list = []
@@ -67,6 +68,9 @@ class FakeGitHub:
     async def pr_diff(self, ref):
         self.diff_calls.append(ref)
         return self.diffs.get(ref, "")
+
+    async def merge_check(self, ref):
+        return self.merge_checks.get(ref)
 
     async def replies(self, refs):
         refs = list(refs)

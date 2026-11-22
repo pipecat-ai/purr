@@ -173,11 +173,7 @@ class PRDetails:
     """What you look at before deciding to review a PR. Fetched on demand.
 
     ``checks`` is the head commit's combined CI state as GitHub names it
-    (``SUCCESS``, ``FAILURE``, ``PENDING``, ...), or None without CI. Whether it
-    can be merged, as GitHub says: ``mergeable`` (``MERGEABLE``, ``CONFLICTING``,
-    ``UNKNOWN``) and ``merge_state`` (``CLEAN``, ``BLOCKED``, ``BEHIND``, ``DIRTY``,
-    ...); ``merge_method`` is your default in its repo (``MERGE``, ``SQUASH``,
-    ``REBASE``), what GitHub's own page picks for you.
+    (``SUCCESS``, ``FAILURE``, ``PENDING``, ...), or None without CI.
     """
 
     body: str = ""
@@ -190,10 +186,43 @@ class PRDetails:
     labels: tuple[str, ...] = ()
     review_decision: str | None = None
     checks: str | None = None
-    head_sha: str = ""
+
+
+class CheckState(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    RUNNING = "running"
+    SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class Check:
+    """One CI check on a PR's head: a GitHub Actions run, or a status (readthedocs)."""
+
+    name: str
+    state: CheckState
+    required: bool = False  # by the base branch's rules
+
+
+@dataclass(frozen=True)
+class MergeCheck:
+    """Where a PR stands for merging, as GitHub says now (see :mod:`purr.merging`).
+
+    ``mergeable`` is ``MERGEABLE``, ``CONFLICTING`` or ``UNKNOWN``; ``merge_state``
+    is GitHub's ``mergeStateStatus`` (``CLEAN``, ``BLOCKED``, ``BEHIND``, ``DIRTY``,
+    ``UNSTABLE``, ...). ``method`` is your default in its repo (merge, squash or
+    rebase), what GitHub's own page picks for you. ``reviews`` is each reviewer's
+    latest approval or change request (``APPROVED``, ``CHANGES_REQUESTED``).
+    """
+
+    head_sha: str
+    base: str
+    method: str
     mergeable: str | None = None
     merge_state: str | None = None
-    merge_method: str = ""
+    checks: tuple[Check, ...] = ()
+    assignees: tuple[str, ...] = ()
+    reviews: tuple[tuple[str, str], ...] = ()  # (login, state)
 
 
 @dataclass

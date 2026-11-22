@@ -13,7 +13,17 @@ from itertools import batched
 
 from loguru import logger
 
-from purr.models import PR, FileChange, GHState, PRDetails, PRRef, Reply
+from purr.models import (
+    PR,
+    Check,
+    CheckState,
+    FileChange,
+    GHState,
+    MergeCheck,
+    PRDetails,
+    PRRef,
+    Reply,
+)
 
 # Searches are sorted by creation so that pages stay stable while PRs get updated.
 # A repo's list is every open PR by other people, whoever is assigned: the
@@ -52,8 +62,7 @@ _PR_FIELDS = """
     repository { nameWithOwner }
 """
 _DETAILS_FIELDS = """
-    body baseRefName headRefName headRefOid additions deletions changedFiles reviewDecision
-    mergeable mergeStateStatus baseRepository { viewerDefaultMergeMethod }
+    body baseRefName headRefName additions deletions changedFiles reviewDecision
     labels(first: 10) { nodes { name } }
     files(first: 100) { nodes { path additions deletions } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
@@ -445,6 +454,11 @@ class GitHub:
             for ref, pr in found.items()
         }
 
+    async def merge_check(self, ref: PRRef) -> MergeCheck | None:
+        """Where the PR stands for merging, now; None if GitHub doesn't show it."""
+        found = await self._pull_requests([ref], _merge_fields(ref.number))
+        return _merge_check(found[ref]) if ref in found else None
+
     async def replies(self, refs: Iterable[PRRef]) -> dict[PRRef, list[Reply]]:
         """What others said to you on these PRs since your last word (see :func:`replies_to`).
 
@@ -556,6 +570,69 @@ def _involved(results: Mapping[str, list[RemotePR]]) -> list[RemotePR] | None:
     return list(both.values())
 
 
+def _merge_fields(number: int) -> str:
+    """What merging looks at. Whether a check is required depends on the PR's base."""
+    required = f"isRequired(pullRequestNumber: {number})"
+    return f"""
+        headRefOid baseRefName mergeable mergeStateStatus
+        baseRepository {{ viewerDefaultMergeMethod }}
+        assignees(first: 20) {{ nodes {{ login }} }}
+        latestOpinionatedReviews(first: 20) {{ nodes {{ author {{ login }} state }} }}
+        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{
+            nodes {{
+                ... on CheckRun {{ name status conclusion {required} }}
+                ... on StatusContext {{ context state {required} }}
+            }}
+        }} }} }} }} }}
+    """
+
+
+# A finished check run's conclusion, or a status's state, as Purr sees it.
+_CHECK_STATES = {
+    "SUCCESS": CheckState.PASSED,
+    "NEUTRAL": CheckState.PASSED,
+    "SKIPPED": CheckState.SKIPPED,
+    "PENDING": CheckState.RUNNING,
+    "EXPECTED": CheckState.RUNNING,
+}
+
+
+def _check(node: dict) -> Check | None:
+    """A check run or a status; None for anything else in the rollup."""
+    if "context" in node:  # a status, as readthedocs reports
+        name, outcome = node["context"], node.get("state") or ""
+    elif "name" in node:
+        name = node["name"]
+        finished = node.get("status") == "COMPLETED"
+        outcome = (node.get("conclusion") or "") if finished else "PENDING"
+    else:
+        return None
+    state = _CHECK_STATES.get(outcome, CheckState.FAILED)  # failure, error, timed out, ...
+    return Check(name, state, required=bool(node.get("isRequired")))
+
+
+def _merge_check(pr: dict) -> MergeCheck:
+    commits = _nodes(pr.get("commits"))
+    rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
+    checks = [_check(node) for node in _nodes((rollup or {}).get("contexts"))]
+    reviews = [
+        ((review.get("author") or {}).get("login", "ghost"), review.get("state") or "")
+        for review in _nodes(pr.get("latestOpinionatedReviews"))
+    ]
+    return MergeCheck(
+        head_sha=pr.get("headRefOid") or "",
+        base=pr.get("baseRefName") or "",
+        method=(
+            (pr.get("baseRepository") or {}).get("viewerDefaultMergeMethod") or "MERGE"
+        ).lower(),
+        mergeable=pr.get("mergeable"),
+        merge_state=pr.get("mergeStateStatus"),
+        checks=tuple(check for check in checks if check),
+        assignees=tuple(a["login"] for a in _nodes(pr.get("assignees"))),
+        reviews=tuple(reviews),
+    )
+
+
 def _details(pr: dict) -> PRDetails:
     commits = _nodes(pr.get("commits"))
     rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
@@ -573,10 +650,6 @@ def _details(pr: dict) -> PRDetails:
         labels=tuple(label["name"] for label in _nodes(pr.get("labels"))),
         review_decision=pr.get("reviewDecision"),
         checks=(rollup or {}).get("state"),
-        head_sha=pr.get("headRefOid") or "",
-        mergeable=pr.get("mergeable"),
-        merge_state=pr.get("mergeStateStatus"),
-        merge_method=(pr.get("baseRepository") or {}).get("viewerDefaultMergeMethod") or "",
     )
 
 

@@ -19,7 +19,7 @@ from typing import ClassVar, Literal
 from pipecat.bus import BusDataMessage, BusMessage
 
 from purr.jobs import Done, Request
-from purr.models import Depth, PRDetails, PRRef, ReviewPlan
+from purr.models import Depth, MergeCheck, PRDetails, PRRef, ReviewPlan
 from purr.review.skills import RepoSkill, Skill
 
 # Worker names (bus addresses).
@@ -118,16 +118,43 @@ class DismissReplies(Request[Done]):
 
 
 @dataclass(kw_only=True)
+class MergeReadiness:
+    """Where a PR stands for merging, fresh from GitHub (see :mod:`purr.merging`)."""
+
+    check: MergeCheck
+    blockers: list[str]  # no merging past these
+    concerns: list[str]  # merging anyway is your call
+
+
+@dataclass(kw_only=True)
+class CheckMerge(Request[MergeReadiness]):
+    """Where the PR stands for merging: the first ``m``."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class Merged:
-    method: str  # how: merge, squash or rebase
+    """Merged (how: merge, squash or rebase); or not, since something new came up after you
+    looked (``readiness``: how it stands now)."""
+
+    merged: bool
+    method: str = ""
+    readiness: MergeReadiness | None = None
 
 
 @dataclass(kw_only=True)
 class MergePR(Request[Merged]):
-    """Merge the PR you approved, as you approved it, once CI passed (see merge_blocker)."""
+    """Merge the PR you approved, at the commit you approved: the second ``m``.
+
+    ``seen`` is the concerns you decided past; one that wasn't there then means
+    you look again instead.
+    """
 
     worker: ClassVar[str] = GITHUB_WORKER
     pr: PRRef
+    seen: list[str]
 
 
 @dataclass(kw_only=True)

@@ -14,7 +14,16 @@ from purr.github import (
     PRStatus,
     replies_to,
 )
-from purr.models import FileChange, GHState, PRDetails, PRRef, Reply
+from purr.models import (
+    Check,
+    CheckState,
+    FileChange,
+    GHState,
+    MergeCheck,
+    PRDetails,
+    PRRef,
+    Reply,
+)
 
 
 def node(number: int, repo: str = "pipecat-ai/pipecat", **overrides) -> dict:
@@ -224,10 +233,6 @@ async def test_pr_details():
                 "body": "Fixes the bus.",
                 "baseRefName": "main",
                 "headRefName": "fix-bus",
-                "headRefOid": "abc",
-                "mergeable": "MERGEABLE",
-                "mergeStateStatus": "BLOCKED",
-                "baseRepository": {"viewerDefaultMergeMethod": "SQUASH"},
                 "additions": 22,
                 "deletions": 4,
                 "changedFiles": 1,
@@ -250,10 +255,6 @@ async def test_pr_details():
             files=(FileChange("bus.py", 22, 4),),
             labels=("bug",),
             checks="FAILURE",
-            head_sha="abc",
-            mergeable="MERGEABLE",
-            merge_state="BLOCKED",
-            merge_method="SQUASH",
         )
     }
 
@@ -330,3 +331,56 @@ def test_saying_something_on_the_pr_answers_everything_before():
         reviews=[review("me", "t3")],
     )
     assert [reply.at for reply in replies_to("me", elsewhere)] == ["t2"]
+
+
+async def test_merge_check():
+    class Merging(GitHub):
+        async def graphql(self, query, variables):
+            if query.startswith("query { viewer"):
+                return {"data": {"viewer": {"login": "me"}}}
+            assert "isRequired(pullRequestNumber: 7)" in query
+            contexts = [
+                {"name": "Unit Tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"name": "Lint", "status": "IN_PROGRESS", "conclusion": None},
+                {
+                    "name": "Build",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                    "isRequired": True,
+                },
+                {"context": "docs/readthedocs", "state": "ERROR"},
+                {"context": "deploy", "state": "PENDING"},
+            ]
+            pr = {
+                "headRefOid": "abc",
+                "baseRefName": "main",
+                "mergeable": "MERGEABLE",
+                "mergeStateStatus": "UNSTABLE",
+                "baseRepository": {"viewerDefaultMergeMethod": "SQUASH"},
+                "assignees": {"nodes": [{"login": "me"}, {"login": "alice"}]},
+                "latestOpinionatedReviews": {
+                    "nodes": [{"author": {"login": "me"}, "state": "APPROVED"}]
+                },
+                "commits": {
+                    "nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}}]
+                },
+            }
+            return {"data": {"t0": {"pullRequest": pr}}}
+
+    check = await Merging().merge_check(PRRef("a/b", 7))
+    assert check == MergeCheck(
+        head_sha="abc",
+        base="main",
+        method="squash",
+        mergeable="MERGEABLE",
+        merge_state="UNSTABLE",
+        checks=(
+            Check("Unit Tests", CheckState.PASSED),
+            Check("Lint", CheckState.RUNNING),
+            Check("Build", CheckState.FAILED, required=True),
+            Check("docs/readthedocs", CheckState.FAILED),
+            Check("deploy", CheckState.RUNNING),
+        ),
+        assignees=("me", "alice"),
+        reviews=(("me", "APPROVED"),),
+    )

@@ -9,14 +9,16 @@ from datetime import UTC, datetime, timedelta
 from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.actions import ActionError, GhWriter, GitHubWriter, execute, merge_blocker
+from purr.actions import ActionError, GhWriter, GitHubWriter, execute
 from purr.github import GitHub, GitHubError, RemotePR, Snapshot
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, handles
+from purr.merging import blockers, concerns, new_concerns
 from purr.messages import (
     GITHUB_WORKER,
     ActionResolved,
     ApproveAction,
     AssignMe,
+    CheckMerge,
     DismissAction,
     DismissReplies,
     FetchDetails,
@@ -24,6 +26,7 @@ from purr.messages import (
     MarkSeen,
     Merged,
     MergePR,
+    MergeReadiness,
     Posted,
     PRChanged,
     PRListUpdated,
@@ -37,7 +40,6 @@ from purr.models import (
     ActionStatus,
     GHState,
     PRChange,
-    PRDetails,
     PRRef,
     PRState,
     Reply,
@@ -406,42 +408,51 @@ class GitHubWorker(BaseWorker):
 
     # -- Merging ----------------------------------------------------------------
 
+    @handles(CheckMerge)
+    async def check_merge(self, request: CheckMerge) -> MergeReadiness:
+        return await self._readiness(request.pr)
+
     @handles(MergePR)
     async def merge_pr(self, request: MergePR) -> Merged:
-        """Merge what you approved, as you approved it, once GitHub says it's ready: checked
-        again here, just before, since CI and the PR move on their own."""
-        ref = request.pr
+        """Merge what you approved, at the commit you approved, if nothing new came up since
+        you looked: checked again here, since CI and the PR move on their own."""
+        readiness = await self._readiness(request.pr)
+        if readiness.blockers:
+            raise Busy(readiness.blockers[0])
+        if new_concerns(readiness.concerns, request.seen):
+            return Merged(merged=False, readiness=readiness)
+        check = readiness.check
+        try:
+            # Only at that commit: GitHub refuses if the PR moved on meanwhile.
+            await self._writer.merge(request.pr, method=check.method, sha=check.head_sha)
+        except ActionError as e:
+            raise Failed(f"GitHub didn't merge it: {e}") from e
+        await self._merged(request.pr)
+        return Merged(merged=True, method=check.method)
+
+    async def _readiness(self, ref: PRRef) -> MergeReadiness:
+        """Where the open PR stands for merging, fresh from GitHub."""
         pr = await self._store.get_pr(ref)
         if pr is None or pr.gh_state != GHState.OPEN:
             raise NotFound(f"{ref} isn't open")
-        approved = await self._store.approved_head(ref)
-        details = await self._fresh_details(ref)
-        if blocker := merge_blocker(details, approved):
-            raise Busy(blocker)
-        method = (details.merge_method or "MERGE").lower()
         try:
-            # Only at the commit you approved: GitHub refuses if the PR moved since.
-            await self._writer.merge(ref, method=method, sha=approved)
-        except ActionError as e:
-            raise Failed(f"GitHub didn't merge it: {e}") from e
-        await self._merged(pr)
-        return Merged(method=method)
-
-    async def _fresh_details(self, ref: PRRef) -> PRDetails:
-        try:
-            details = await self._github.pr_details([ref])
+            check = await self._github.merge_check(ref)
         except GitHubError as e:
             raise Failed(f"Couldn't read the PR from GitHub: {e}") from e
-        if ref not in details:
+        if check is None:
             raise NotFound(f"GitHub doesn't show {ref}")
-        return details[ref]
-
-    async def _merged(self, pr: PR) -> None:
-        """Show it merged right away; the next poll would only find it out."""
-        await self._store.apply_sync(gh_states={pr.ref: GHState.MERGED})
-        change = PRChanged(
-            source=self.name, pr=str(pr.ref), change=PRChange.MERGED.value, title=pr.title
+        approved = await self._store.approved_head(ref)
+        me = await self._github.viewer_login()
+        return MergeReadiness(
+            check=check, blockers=blockers(check, approved), concerns=concerns(check, me)
         )
+
+    async def _merged(self, ref: PRRef) -> None:
+        """Show it merged right away; the next poll would only find it out."""
+        await self._store.apply_sync(gh_states={ref: GHState.MERGED})
+        pr = await self._store.get_pr(ref)
+        title = pr.title if pr else ""
+        change = PRChanged(source=self.name, pr=str(ref), change=PRChange.MERGED.value, title=title)
         await self.send_bus_message(change)
         await self.send_bus_message(PRListUpdated(source=self.name))
 

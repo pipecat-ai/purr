@@ -8,16 +8,18 @@ import pytest
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
-from purr.actions import ActionError, execute, merge_blocker
+from purr.actions import ActionError, execute
 from purr.jobs import Busy, Done, Failed, NotFound, request
-from purr.messages import ApproveAction, AssignMe, DismissAction, Merged, MergePR
+from purr.messages import ApproveAction, AssignMe, CheckMerge, DismissAction, Merged, MergePR
 from purr.models import (
     PR,
     ActionKind,
     ActionStatus,
+    Check,
+    CheckState,
     GHState,
+    MergeCheck,
     PendingAction,
-    PRDetails,
     PRRef,
     PRState,
 )
@@ -238,27 +240,15 @@ def test_the_default_signature_links_to_purr_and_reads_plainly_in_purr():
     assert lines[-2:] == ["LGTM", "Sent from Purr."]
 
 
-READY = PRDetails(
-    base="main",
+READY = MergeCheck(
     head_sha="abc",
-    checks="SUCCESS",
+    base="main",
+    method="squash",
     mergeable="MERGEABLE",
     merge_state="CLEAN",
-    merge_method="SQUASH",
+    checks=(Check("Unit Tests", CheckState.PASSED),),
+    assignees=("me",),
 )
-
-
-def test_what_stands_in_the_way_of_a_merge():
-    assert merge_blocker(READY, "abc") is None
-    assert merge_blocker(replace(READY, checks=None), "abc") is None  # no CI to wait for
-    assert merge_blocker(READY, None) == "Approve it first"
-    assert merge_blocker(READY, "older") == "It has new commits since you approved it"
-    assert merge_blocker(replace(READY, checks="PENDING"), "abc") == "CI is still running"
-    assert merge_blocker(replace(READY, checks="FAILURE"), "abc") == "CI failed"
-    conflicts = replace(READY, mergeable="CONFLICTING", merge_state="DIRTY")
-    assert merge_blocker(conflicts, "abc") == "It has conflicts with main"
-    assert "blocked" in merge_blocker(replace(READY, merge_state="BLOCKED"), "abc")
-    assert "behind main" in merge_blocker(replace(READY, merge_state="BEHIND"), "abc")
 
 
 @pytest.fixture
@@ -271,7 +261,7 @@ async def approved():
         await store.set_pr_state(REF, PRState.NEEDS_YOU)
         approval = await store.add_pending_action(REF, kind=ActionKind.APPROVE, description="LGTM")
         github, writer = FakeGitHub(), FakeWriter()
-        github.details[REF] = READY
+        github.merge_checks[REF] = READY
         worker = GitHubWorker(store=store, github=github, writer=writer, interval=3600)
         client = BaseWorker("client")
         runner = WorkerRunner(handle_sigint=False)
@@ -284,35 +274,56 @@ async def approved():
             await asyncio.wait_for(task, 5)
 
 
-async def test_merging_what_you_approved_once_ci_passed(approved):
+async def test_merging_is_your_final_decision(approved):
     store, github, writer, client, approval = approved
-    with pytest.raises(Busy, match="Approve it first"):
-        await request(client, MergePR(pr=REF), timeout=5)
+    readiness = await request(client, CheckMerge(pr=REF), timeout=5)
+    assert readiness.blockers == ["You haven't approved it here"]
+    with pytest.raises(Busy, match="haven't approved"):
+        await request(client, MergePR(pr=REF, seen=[]), timeout=5)
     await request(client, ApproveAction(action_id=approval.id), timeout=5)
     assert await store.approved_head(REF) == "abc"
 
-    # Checked again with GitHub, just before: nothing's merged until it's ready.
-    github.details[REF] = replace(READY, checks="PENDING")
-    with pytest.raises(Busy, match="CI is still running"):
-        await request(client, MergePR(pr=REF), timeout=5)
-    github.details[REF] = replace(READY, head_sha="def")
-    with pytest.raises(Busy, match="new commits"):
-        await request(client, MergePR(pr=REF), timeout=5)
+    # The docs build failed, and alice (assigned too) hasn't approved: your call.
+    github.merge_checks[REF] = replace(
+        READY,
+        checks=(Check("docs/readthedocs", CheckState.FAILED),),
+        assignees=("me", "alice"),
+    )
+    readiness = await request(client, CheckMerge(pr=REF), timeout=5)
+    assert readiness.blockers == []
+    assert readiness.concerns == ["docs/readthedocs failed", "alice hasn't approved"]
+
+    # Something new came up after you looked: nothing's merged, you look again.
+    github.merge_checks[REF] = replace(
+        github.merge_checks[REF], checks=(Check("Unit Tests", CheckState.FAILED),)
+    )
+    merged = await request(client, MergePR(pr=REF, seen=readiness.concerns), timeout=5)
+    assert not merged.merged and merged.readiness.concerns[0] == "Unit Tests failed"
     assert writer.merges == []
 
-    # Ready: your way of merging, and only the commit you approved.
-    github.details[REF] = READY
-    assert await request(client, MergePR(pr=REF), timeout=5) == Merged(method="squash")
+    # You decide past what you saw: merged, your way, at the commit you approved.
+    seen = merged.readiness.concerns
+    merged = await request(client, MergePR(pr=REF, seen=seen), timeout=5)
+    assert merged == Merged(merged=True, method="squash")
     assert writer.merges == [(REF, "squash", "abc")]
     assert (await store.get_pr(REF)).gh_state == GHState.MERGED
     with pytest.raises(NotFound, match="isn't open"):
-        await request(client, MergePR(pr=REF), timeout=5)
+        await request(client, CheckMerge(pr=REF), timeout=5)
+
+
+async def test_commits_since_you_approved_stop_a_merge(approved):
+    store, github, writer, client, approval = approved
+    await request(client, ApproveAction(action_id=approval.id), timeout=5)
+    github.merge_checks[REF] = replace(READY, head_sha="def")
+    with pytest.raises(Busy, match="new commits since you approved"):
+        await request(client, MergePR(pr=REF, seen=[]), timeout=5)
+    assert writer.merges == []
 
 
 async def test_a_merge_github_refuses_says_why(approved):
     store, github, writer, client, approval = approved
     await request(client, ApproveAction(action_id=approval.id), timeout=5)
-    writer.fail_with = ["Head branch was modified. Review and try the merge again."]
-    with pytest.raises(Failed, match="Head branch was modified"):
-        await request(client, MergePR(pr=REF), timeout=5)
+    writer.fail_with = ['Required status check "Build" is failing.']
+    with pytest.raises(Failed, match="Required status check"):
+        await request(client, MergePR(pr=REF, seen=[]), timeout=5)
     assert (await store.get_pr(REF)).gh_state == GHState.OPEN
