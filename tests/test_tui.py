@@ -81,14 +81,14 @@ async def test_repos_navigation_and_live_updates(tmp_path):
         await pilot.press(*"nobody/nothing", "enter")
         await pilot.pause(0.1)
         assert isinstance(app.screen, AddRepoScreen)
-        # ...a real one is added, by URL too, and the list stays alphabetical.
+        # ...a real one is added, by URL too. Watched repos come first.
         app.screen.query_one(Input).value = "https://github.com/Pipecat-AI/pipecat"
         await pilot.press("enter")
         await until(pilot, lambda: home(app))
-        await until(pilot, lambda: app.repo_names == ["daily-co/daily-x", "pipecat-ai/pipecat"])
+        await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
 
-        # 2 opens pipecat; its PRs arrive with the first poll.
-        await pilot.press("2")
+        # 1 opens pipecat; its PRs arrive with the first poll.
+        await pilot.press("1")
         await until(pilot, lambda: in_repo(app))
         assert in_repo(app, "pipecat-ai/pipecat")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
@@ -99,7 +99,7 @@ async def test_repos_navigation_and_live_updates(tmp_path):
         await until(pilot, lambda: "pipecat-ai/pipecat#3" in pr_ids(app))
 
         # Jumping between repos, back and forth with ctrl+o, and home.
-        await pilot.press("1")
+        await pilot.press("2")
         await until(pilot, lambda: in_repo(app, "daily-co/daily-x"))
         await pilot.press("ctrl+o")
         await until(pilot, lambda: in_repo(app, "pipecat-ai/pipecat"))
@@ -110,8 +110,9 @@ async def test_repos_navigation_and_live_updates(tmp_path):
         await pilot.press("0")
         await until(pilot, lambda: home(app))
 
-        # Removing pipecat (row 2) after confirming.
-        await pilot.press("down", "minus")
+        # Removing pipecat (the first row) after confirming.
+        app.main.repos.select_repo("pipecat-ai/pipecat")
+        await pilot.press("minus")
         assert isinstance(app.screen, ConfirmScreen)
         await pilot.press("y")
         await until(pilot, lambda: app.repo_names == ["daily-co/daily-x"])
@@ -291,8 +292,8 @@ async def test_alerts_and_the_switcher(tmp_path):
     async with app.run_test(size=(140, 45)) as pilot:
         alert = app.main.query_one("#alert")
         await app.bus.add_repo("pipecat-ai/pipecat")
-        await until(pilot, lambda: app.repo_names == ["daily-co/daily-x", "pipecat-ai/pipecat"])
-        await pilot.press("2")
+        await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
+        await pilot.press("1")
         await until(pilot, lambda: in_repo(app, "pipecat-ai/pipecat"))
 
         # The assigned PR elsewhere gets reviewed; that shows up as an alert here.
@@ -731,12 +732,20 @@ async def test_home_says_what_watching_means(tmp_path):
         assert hint.display and hint.has_class("alone")
         assert "No repos yet" in str(hint.render())
 
-        # A PR assigned to you, in a repo you don't watch: the hint under the list.
+        # A PR assigned to you, in a repo you don't watch: listed under NOT WATCHED.
         github.assigned = [remote(7, repo="daily-co/daily-x", assignees=("me",))]
+        github.open["pipecat-ai/pipecat"] = [remote(1)]
+        await app.bus.add_repo("pipecat-ai/pipecat")
         await app.purr.runner.get_worker("github").poll()
-        await until(pilot, lambda: app.repo_names == ["daily-co/daily-x"])
-        await until(pilot, lambda: not hint.has_class("alone"))
-        assert "show only those" in str(hint.render())
+        await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
+        await until(pilot, lambda: not hint.display)
+        repo_list = app.main.repos.query_one(OptionList)
+        rows = [str(repo_list.get_option_at_index(i).prompt) for i in range(repo_list.option_count)]
+        headings = [row for row in rows if "WATCHED (" in row]
+        assert headings[0].startswith("● WATCHED (1)")
+        assert headings[1].startswith("○ NOT WATCHED (1)")
+        assert "only the PRs assigned to you" in headings[1]
+        app.main.repos.select_repo("daily-co/daily-x")
         # Not typing: the terminal's cursor is parked out of the way.
         assert app.cursor_position == Offset(app.size.width - 1, app.size.height - 1)
 

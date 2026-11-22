@@ -5,8 +5,9 @@ approved a pending action (or, for assignment, asked for a review). Writes go
 through ``gh``, as the user.
 
 What Purr posts says so: the review's text and each reply in a thread end with
-a small signature ("Sent from Purr." by default). Inline comments don't; they
-belong to the review, whose text already says it.
+a small signature ("Sent from Purr.", linking to Purr, by default). Inline
+comments don't; they belong to the review, whose text already says it. An
+approval with nothing else to say is "LGTM".
 """
 
 import asyncio
@@ -108,8 +109,9 @@ async def _review(
     ]
     if not body and not comments and event == "COMMENT" and only_replies:
         return ""  # just replies, no review to submit
-    if not body and not comments and event != "APPROVE":
-        body = action.description  # GitHub wants some text for these
+    if not body and not comments:
+        # GitHub wants some text for these; an approval with nothing else to say: LGTM.
+        body = "LGTM" if event == "APPROVE" else action.description
     try:
         return await writer.submit_review(
             action.pr,

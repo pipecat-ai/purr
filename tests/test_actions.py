@@ -1,6 +1,7 @@
 """Approving and dismissing pending actions."""
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from pipecat.pipeline.job_context import JobParams
@@ -75,7 +76,7 @@ async def test_execute_details():
     await execute(writer, action(ActionKind.APPROVE), head_sha="abc")
     await execute(writer, action(ActionKind.COMMENT), head_sha="abc")
     assert [r["event"] for r in writer.reviews] == ["APPROVE", "COMMENT"]
-    assert writer.reviews[0]["body"] == ""  # approving needs no text
+    assert writer.reviews[0]["body"] == "LGTM"  # an approval with nothing else to say
     assert writer.reviews[1]["body"] == "Post 1 comment and request changes"
     with pytest.raises(ActionError, match="can't merge"):
         await execute(writer, action(ActionKind.MERGE), head_sha="abc")
@@ -177,10 +178,13 @@ async def test_what_purr_posts_says_so():
     assert review["comments"][0]["body"] == "Race here"  # the review's text already says it
     assert writer.replies == [("T1", "Fixed now, thanks.\n\n<sub>Sent from Purr.</sub>")]
 
-    # An approval with nothing to say still says where it came from.
+    # An approval with nothing else to say: LGTM, and where it came from.
     writer = FakeWriter()
     await execute(writer, action(ActionKind.APPROVE), head_sha="abc", signature=sig)
-    assert writer.reviews[0]["body"] == "<sub>Sent from Purr.</sub>"
+    assert writer.reviews[0]["body"] == "LGTM\n\n<sub>Sent from Purr.</sub>"
+    writer = FakeWriter()
+    await execute(writer, action(ActionKind.APPROVE), head_sha="abc")
+    assert writer.reviews[0]["body"] == "LGTM"
 
     # Comments folded into the text: the signature stays last.
     writer = FakeWriter()
@@ -216,3 +220,19 @@ def test_the_proposal_shows_the_signature():
     lines = [line.strip() for line in console.export_text().splitlines()]
     assert lines[lines.index("Looks good.") + 1] == "Sent from Purr."
     assert "↳ reply in thread  Done.  Sent from Purr." in lines
+
+
+def test_the_default_signature_links_to_purr_and_reads_plainly_in_purr():
+    import io
+
+    from rich.console import Console
+
+    from purr.config import Config
+    from purr.tui.session import render_proposal
+
+    signature = Config(data_dir=Path("/tmp")).signature
+    assert signature == "Sent from [Purr](https://github.com/pipecat-ai/purr)."
+    console = Console(width=100, record=True, file=io.StringIO())
+    console.print(render_proposal({"kind": "approve", "description": "Approve"}, signature))
+    lines = [line.strip() for line in console.export_text().splitlines()]
+    assert lines[-2:] == ["LGTM", "Sent from Purr."]

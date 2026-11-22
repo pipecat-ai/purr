@@ -20,7 +20,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
-from textual.widgets import ContentSwitcher, DataTable, Footer, Input, Label, OptionList, Static
+from textual.widgets import ContentSwitcher, Footer, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
 from purr.messages import REVIEW_WORKER
@@ -93,6 +93,22 @@ def _row(*cells: Text | str, number_width: int = 5) -> Table:
     return grid
 
 
+_REPO_COLUMNS = ("", "REPO", "NEEDS YOU", "REVIEWING", "NOT REVIEWED", "LAST ACTIVITY")
+
+
+def _repo_row(*cells: Text | str, header: bool = False) -> Table:
+    """A row of the repo list: number, name, then counts and when, in columns."""
+    widths = [2, None, 10, 10, 13, 14]
+    grid = Table.grid(expand=True, padding=(0, 1))
+    for width in widths:
+        if width is None:
+            grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+        else:
+            grid.add_column(width=width, no_wrap=True)
+    grid.add_row(*(Text(str(c), style="dim") if header else c for c in cells))
+    return grid
+
+
 def matches(pr: PR, search: str) -> bool:
     """Whether every word searched for is in the PR's number, title, author or assignees."""
     text = f"#{pr.number} {pr.title} {pr.author} {' '.join(pr.assignees)}".lower()
@@ -146,10 +162,15 @@ class PurrView(Widget):
 
 
 class ReposView(PurrView):
-    """Home: one row per repo, alphabetical, with what's going on in each."""
+    """Home: the repos you watch, then those listed only because PRs there are yours.
+
+    Watching a repo (``+``) shows all its open PRs; the others show only the PRs
+    assigned to you, which you can review all the same. Alphabetical within
+    each group; ``1``-``9`` follow the order on screen.
+    """
 
     BINDINGS = [
-        Binding("enter,o", "open", "Open", key_display="o"),
+        Binding("o", "open", "Open"),
         Binding("n", "move(1)", "Next", show=False),
         Binding("p", "move(-1)", "Previous", show=False),
         Binding("plus", "add", "Watch repo"),
@@ -161,52 +182,56 @@ class ReposView(PurrView):
         self._watched: set[str] = set()
 
     def compose(self) -> ComposeResult:
-        yield DataTable(id="repo-table", cursor_type="row")
+        yield OptionList(id="repo-list")
         yield Static(id="empty")
         yield Static("[yellow]●[/] something new you haven't looked at", id="legend")
 
     def on_mount(self) -> None:
-        table = self.query_one(DataTable)
-        table.add_column("", key="number", width=2)
-        table.add_column("REPO", key="repo")
-        # Watched repos show all their open PRs; the rest are listed only because a PR
-        # there is assigned to you, and show just those.
-        table.add_column("SHOWS", key="shows")
-        table.add_column("NEEDS YOU", key="needs_you")
-        table.add_column("REVIEWING", key="reviewing")
-        table.add_column("NOT REVIEWED", key="not_reviewed")
-        table.add_column("LAST ACTIVITY", key="activity")
         self.set_interval(30, self.reload)  # keeps "last activity" fresh
 
     def focus_main(self) -> None:
-        self.query_one(DataTable).focus()
+        self.query_one(OptionList).focus()
 
     async def reload(self) -> None:
         await super().reload()
         summaries = await self.purr_app.purr.store.repo_summaries()
-        self.purr_app.repo_names = [s.name for s in summaries]
-        self._watched = {s.name for s in summaries if s.watched}
-        table = self.query_one(DataTable)
-        selected = self.selected_repo()
+        watched = [s for s in summaries if s.watched]
+        yours = [s for s in summaries if not s.watched]
+        self.purr_app.repo_names = [s.name for s in watched + yours]
+        self._watched = {s.name for s in watched}
         alerted = {pr.split("#")[0] for pr in self.purr_app.alerts}
-        table.clear()
-        for i, summary in enumerate(summaries, start=1):
-            table.add_row(*self._cells(i, summary, summary.name in alerted), key=summary.name)
-        if selected:
+        selected = self.selected_repo()
+        options: list[Option] = [Option(_repo_row(*_REPO_COLUMNS, header=True), disabled=True)]
+        number = 0
+        for summaries_in, heading, note in [
+            (watched, "● WATCHED", "all their open PRs"),
+            (yours, "○ NOT WATCHED", "only the PRs assigned to you · + watches one"),
+        ]:
+            if not summaries_in:
+                continue
+            if len(options) > 1:
+                options.append(Option(" ", disabled=True))
+            title = Text(f"{heading} ({len(summaries_in)})", style="bold")
+            title.append(f"  {note}", style="dim")
+            options.append(Option(title, disabled=True))
+            for summary in summaries_in:
+                number += 1
+                cells = self._cells(number, summary, summary.name in alerted)
+                options.append(Option(_repo_row(*cells), id=summary.name))
+        repo_list = self.query_one(OptionList)
+        repo_list.set_options(options if summaries else [])
+        repo_list.display = bool(summaries)
+        if selected in self.purr_app.repo_names:
             self.select_repo(selected)
-        empty = self.query_one("#empty", Static)
-        empty.display = not summaries or any(not s.watched for s in summaries)
-        empty.set_class(not summaries, "alone")
-        table.display = bool(summaries)
+        elif summaries:
+            repo_list.highlighted = next(i for i, o in enumerate(options) if not o.disabled)
         # Hidden while there were no repos, it couldn't keep focus: give it back.
         if summaries and self.purr_app.location is None and self.app.focused is None:
-            table.focus()
-        empty.update(
-            "Repos showing [b]yours[/b] are listed because PRs there are assigned to you, and "
-            "show only those. Select one and press [b]+[/b] to watch it: all its open PRs."
-            if summaries
-            else "No repos yet. Press [b]+[/b] to watch one and see its open PRs."
-        )
+            repo_list.focus()
+        empty = self.query_one("#empty", Static)
+        empty.display = not summaries
+        empty.set_class(not summaries, "alone")
+        empty.update("No repos yet. Press [b]+[/b] to watch one and see its open PRs.")
         self.query_one("#legend").display = bool(alerted)
 
     @staticmethod
@@ -214,12 +239,10 @@ class ReposView(PurrView):
         name = Text(summary.name)
         if alerted:
             name.append(" ●", style="bold yellow")
-        shows = Text("all PRs") if summary.watched else Text("yours", style="dim")
         needs = Text(_count(summary.needs_you), style="bold yellow" if summary.needs_you else "")
         return [
             str(i) if i <= 9 else "",
             name,
-            shows,
             needs,
             _count(summary.reviewing),
             _count(summary.not_reviewed),
@@ -227,23 +250,22 @@ class ReposView(PurrView):
         ]
 
     def selected_repo(self) -> str | None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return None
-        return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        option = self.query_one(OptionList).highlighted_option
+        return option.id if option and option.id else None
 
     def select_repo(self, name: str) -> None:
+        repo_list = self.query_one(OptionList)
         if name in self.purr_app.repo_names:
-            self.query_one(DataTable).move_cursor(row=self.purr_app.repo_names.index(name))
+            repo_list.highlighted = repo_list.get_option_index(name)
 
-    @on(DataTable.RowSelected)
+    @on(OptionList.OptionSelected, "#repo-list")
     async def action_open(self) -> None:
         if repo := self.selected_repo():
             await self.purr_app.open_repo(repo)
 
     def action_move(self, delta: int) -> None:
-        table = self.query_one(DataTable)
-        table.action_cursor_down() if delta > 0 else table.action_cursor_up()
+        repo_list = self.query_one(OptionList)
+        repo_list.action_cursor_down() if delta > 0 else repo_list.action_cursor_up()
 
     def action_add(self) -> None:
         async def added(name: str | None) -> None:

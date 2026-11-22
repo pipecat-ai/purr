@@ -77,6 +77,9 @@ def _short(value: str, width: int = 100) -> str:
 _VERDICT = {"request_changes": "Request changes", "approve": "Approve", "comment": "Comment"}
 
 
+_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+
+
 def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
     """A proposed review, in full: what would be posted if the user approves.
 
@@ -89,6 +92,9 @@ def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
     parts.append(Text(f"{verdict}", style="magenta"))
     if body := str(proposal.get("body") or "").strip():
         parts.append(Markdown(body))
+    elif proposal.get("kind") == "approve" and not proposal.get("comments"):
+        parts.append(Text("LGTM"))  # what an approval with nothing to say posts
+    signature = _MARKDOWN_LINK.sub(r"\1", signature)  # as it reads on GitHub
     if signature:
         parts.append(Text(signature, style="dim italic"))
     for comment in proposal.get("comments") or []:

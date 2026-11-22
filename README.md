@@ -53,8 +53,9 @@ uv sync
 uv run purr
 ```
 
-The first time, Purr lists only the repos where PRs are assigned to you, with just those PRs.
-To see all of a repo's open PRs, watch it: select it and press `+` (or press `+` and type a
+The first time, Purr lists only the repos where PRs are assigned to you, under *Not watched*,
+with just those PRs (you can review them all the same). To see all of a repo's open PRs, watch
+it: select it and press `+` (or press `+` and type a
 repo, like `pipecat-ai/pipecat`, or paste its GitHub URL). If you start Purr inside a checkout
 of a repo, it offers to watch that one.
 
@@ -70,7 +71,8 @@ uv run purr --no-auto-review
 
 ## How to use it
 
-1. **Home** lists your repos and how many PRs need you in each. `enter` opens one (or press
+1. **Home** lists the repos you watch, then the ones listed only for PRs assigned to you, with
+   how many PRs need you in each. `enter` opens one (or press
    its number, `1` to `9`).
 2. **A repo** shows its PRs on the left, grouped: *Needs you*, *Reviewing*, *Not reviewed*,
    *Done*, and *Others reviewing*. A reviewed PR shows ✓ if the review found nothing and ● if
