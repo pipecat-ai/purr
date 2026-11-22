@@ -691,10 +691,11 @@ class RepoView(PurrView):
     async def action_back(self) -> None:
         """Home, in one step from anywhere in the repo (tab goes between its panes).
 
-        Nothing's lost: the search, and anything half-typed in the prompt, are
-        there when you're back. Only the / suggestions close first.
+        Except from the prompt: there esc only leaves it, for the PR's pane, like
+        the / suggestions close first. Nothing's lost: the search, and anything
+        half-typed in the prompt, are there when you're back.
         """
-        if self.session.close_suggestions():
+        if self.session.close_suggestions() or self.session.leave_prompt():
             return
         if self.query_one("#search").has_focus:
             self._leave_search()

@@ -279,15 +279,17 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: log.scroll_y < bottom)
         assert focused(app) == "prompt"
 
-        # esc goes home, from the prompt too (tab goes between the panes), and
-        # what you'd typed is there when you're back.
+        # esc leaves the prompt for the PR's pane; esc again goes home, and what
+        # you'd typed is there when you're back.
+        await pilot.press("escape")
+        assert in_repo(app) and focused(app) == "transcript"
         await pilot.press("escape")
         await until(pilot, lambda: home(app))
         await pilot.press("o")
         await until(pilot, lambda: in_repo(app))
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
 
-        # Only the / suggestions close first.
+        # The / suggestions close first.
         await pilot.press("enter")
         assert focused(app) == "prompt"
         prompt.set_text("")
@@ -295,7 +297,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: session.active())
         await pilot.press("escape")
         assert not session.active() and in_repo(app) and focused(app) == "prompt"
-        await pilot.press("escape")
+        await pilot.press("escape", "escape")
         await until(pilot, lambda: home(app))
 
 

@@ -779,6 +779,13 @@ class PRSession(Vertical):
     def focus_transcript(self) -> None:
         self.query_one("#transcript").focus()
 
+    def leave_prompt(self) -> bool:
+        """Out of the prompt, to the PR's pane (esc); False if you weren't in it."""
+        if not self.query_one(PromptArea).has_focus:
+            return False
+        self.focus_transcript()
+        return True
+
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         # Typing a question, enter sends it.
         return not (action == "ask" and self.query_one("#prompt").has_focus)

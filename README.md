@@ -123,7 +123,7 @@ uv run purr --no-auto-review
 | | `!` | A shell in the PR's checkout, to run things yourself (`exit` to come back) |
 | | `c` | Open the PR's conversation in Claude Code itself |
 | | `z` | Full screen |
-| | `esc` | Home, from anywhere in the repo (your search and anything typed stay) |
+| | `esc` | Home, from anywhere in the repo (your search and anything typed stay); from the prompt, back to the PR |
 | The prompt | `enter` / `ctrl+j` | Send / new line |
 | | `↑` `↓` / `ctrl+r` | Earlier messages / search them |
 | | `/` | Commands (below) |
