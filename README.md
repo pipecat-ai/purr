@@ -190,4 +190,4 @@ uv run ruff check .
 uv run ruff format .
 ```
 
-How Purr works and why: [`purr.md`](purr.md).
+How Purr works and why: [`docs/purr.md`](docs/purr.md).
