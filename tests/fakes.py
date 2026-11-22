@@ -30,6 +30,7 @@ class FakeGitHub:
         self.updates: dict[str, list[RemotePR]] = {}
         self.assigned: list[RemotePR] = []
         self.requested: list[RemotePR] = []
+        self.involved: list[RemotePR] = []  # PRs you commented on or reviewed
         self.conversations: dict = {}  # PRRef -> [Reply], what replies() answers
         self.replies_calls: list[list] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
@@ -49,6 +50,7 @@ class FakeGitHub:
             updates={r: list(self.updates.get(r, [])) for r in incremental},
             viewer="me",
             requested=list(self.requested),
+            involved=list(self.involved),
         )
 
     async def viewer_login(self):

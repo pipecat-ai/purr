@@ -24,6 +24,14 @@ ASSIGNED_QUERY = "is:pr is:open archived:false assignee:@me sort:created-desc"
 REQUESTED_QUERY = (
     "is:pr is:open archived:false draft:false user-review-requested:@me sort:created-desc"
 )
+# PRs by others you've taken part in, in any repo, to keep track of replies to you.
+# Commenting covers review comments; reviewing covers an approval that said nothing.
+COMMENTED_QUERY = (
+    "is:pr is:open archived:false draft:false -author:@me commenter:@me sort:created-desc"
+)
+REVIEWED_QUERY = (
+    "is:pr is:open archived:false draft:false -author:@me reviewed-by:@me sort:created-desc"
+)
 # Every PR in a repo touched since a time, whatever its state: used between full
 # syncs. Being assigned, closed or drafted updates a PR too.
 UPDATED_QUERY = "is:pr archived:false updated:>={since} sort:updated-desc repo:{repo}"
@@ -118,14 +126,15 @@ class Snapshot:
             not yours), whoever is assigned.
         assigned: Every open PR assigned to you, in any repo.
         requested: Every open PR asking for your review by name, in any repo.
+        involved: Every open PR by others you've commented on or reviewed, in any repo.
         updates: Incrementally synced repos: every PR touched since the last
             sync, whatever its state. Absence means "unchanged".
         viewer: Your GitHub login.
 
     Only complete results are included: a repo whose search failed or came back
     partial is missing from ``open``/``updates``, and ``assigned`` is None if
-    that search did (``requested`` likewise). Absence from an incomplete result
-    says nothing about a PR.
+    that search did (``requested`` and ``involved`` likewise). Absence from an
+    incomplete result says nothing about a PR.
     """
 
     open: dict[str, list[RemotePR]]
@@ -133,6 +142,7 @@ class Snapshot:
     updates: dict[str, list[RemotePR]] = field(default_factory=dict)
     viewer: str | None = None
     requested: list[RemotePR] | None = field(default_factory=list)
+    involved: list[RemotePR] | None = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -250,8 +260,9 @@ class GitHub:
         *,
         on_page: Callable[[str, list[RemotePR]], Awaitable[None]] | None = None,
     ) -> Snapshot:
-        """Fetch watched repos and the PRs assigned to you or asking for your review, in as
-        few requests as possible (one per page of results, all searches batched together).
+        """Fetch watched repos, and the PRs assigned to you, asking for your review or that
+        you've taken part in, in as few requests as possible (one per page of results, all
+        searches batched together).
 
         Args:
             full: Repos to fetch every listed PR of.
@@ -260,7 +271,12 @@ class GitHub:
                 arrives, so a newly added repo can show up before all pages are in.
         """
         incremental = dict(incremental or {})
-        searches = {"assigned": ASSIGNED_QUERY, "requested": REQUESTED_QUERY}
+        searches = {
+            "assigned": ASSIGNED_QUERY,
+            "requested": REQUESTED_QUERY,
+            "commented": COMMENTED_QUERY,
+            "reviewed": REVIEWED_QUERY,
+        }
         full_aliases: dict[str, str] = {}
         updated_aliases: dict[str, str] = {}
         for i, repo in enumerate(full):
@@ -276,12 +292,17 @@ class GitHub:
 
         viewer = await self.viewer_login()
         results = await self._search_all(searches, on_page=page)
+        involved = None
+        if "commented" in results and "reviewed" in results:
+            both = {pr.ref: pr for pr in [*results["commented"], *results["reviewed"]]}
+            involved = list(both.values())
         return Snapshot(
             open={full_aliases[a]: prs for a, prs in results.items() if a in full_aliases},
             assigned=results.get("assigned"),
             updates={updated_aliases[a]: prs for a, prs in results.items() if a in updated_aliases},
             viewer=viewer,
             requested=results.get("requested"),
+            involved=involved,
         )
 
     async def _search_all(

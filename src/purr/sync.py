@@ -6,6 +6,10 @@ Pure functions, so the rules are easy to test without GitHub or a database:
   assigned. The unassigned ones are the pool.
 - PRs assigned to you, or asking for your review by name, are tracked from any
   repo. A request is news, but only being assigned starts a review.
+- So are PRs by others you've commented on or reviewed on GitHub ("involved",
+  which sticks), for replies to you; quietly: they're news only when someone
+  replies (see the GitHub worker).
+- The pool is a watched repo's: PRs from other repos never join or leave it.
 - A PR that drops out of both is removed if Purr never reviewed it. If Purr did,
   it stays, and its GitHub state is looked up to tell closed/merged from
   "drafted" or "unassigned from you elsewhere".
@@ -60,7 +64,7 @@ def _updated(snapshot: Snapshot) -> tuple[list, set[PRRef]]:
 
 def _covered(ref: PRRef, snapshot: Snapshot, watched: set[str]) -> bool:
     """Whether the snapshot says for sure that this PR is in none of the searches."""
-    if snapshot.assigned is None or snapshot.requested is None:
+    if snapshot.assigned is None or snapshot.requested is None or snapshot.involved is None:
         return False
     if ref.repo not in watched or ref.repo in snapshot.open:
         return True
@@ -74,6 +78,10 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
     seen.update((pr.ref, pr.to_pr(me)) for pr in listed)
     for pr in snapshot.requested or []:
         seen.setdefault(pr.ref, replace(pr.to_pr(me), requested_from_me=True))
+    for pr in snapshot.involved or []:
+        seen.setdefault(pr.ref, pr.to_pr(me))
+    for ref in {pr.ref for pr in snapshot.involved or []}:
+        seen[ref] = replace(seen[ref], involved=True)
     for pr in snapshot.assigned or []:
         seen[pr.ref] = replace(pr.to_pr(me), assigned_to_me=True)
     return seen
@@ -104,11 +112,11 @@ def _new_pr_change(pr: PR, first_sync: bool) -> PRChange | None:
     return None  # someone else's, or part of a repo's first sync
 
 
-def _gone_change(pr: PR) -> PRChange | None:
+def _gone_change(pr: PR, watched: bool) -> PRChange | None:
     """An unreviewed PR that's no longer listed (closed, drafted, unassigned elsewhere)."""
     if pr.assigned_to_me:
         return PRChange.UNASSIGNED
-    return PRChange.UNPOOLED if pr.in_pool else None
+    return PRChange.UNPOOLED if pr.in_pool and watched else None
 
 
 def missing_reviewed(
@@ -155,16 +163,22 @@ def plan_sync(
         if change:
             plan.changes.append(Change(ref, change, title))
 
+    def pool(change: PRChange | None, ref: PRRef) -> PRChange | None:
+        """Only watched repos have a pool."""
+        pooling = change in (PRChange.POOLED, PRChange.UNPOOLED)
+        return None if pooling and ref.repo not in watched else change
+
     seen = _seen(snapshot)
     for ref, new in seen.items():
         old = current_by_ref.get(ref)
         if old is None:
             plan.upserts.append(new)
-            report(ref, _new_pr_change(new, ref.repo in first_sync), new.title)
+            report(ref, pool(_new_pr_change(new, ref.repo in first_sync), ref), new.title)
             continue
+        new = replace(new, involved=new.involved or old.involved)  # it sticks
         if not _same_metadata(old, new):
             plan.upserts.append(new)
-        report(ref, _assignment_change(old, new), new.title)
+        report(ref, pool(_assignment_change(old, new), ref), new.title)
         if new.requested_from_me and not old.requested_from_me and not new.assigned_to_me:
             report(ref, PRChange.REQUESTED, new.title)
         if new.head_sha != old.head_sha and old.state != PRState.NOT_REVIEWED:
@@ -175,7 +189,7 @@ def plan_sync(
             continue
         if old.state == PRState.NOT_REVIEWED:
             plan.deletes.append(ref)
-            report(ref, _gone_change(old), old.title)
+            report(ref, _gone_change(old, ref.repo in watched), old.title)
             continue
         status = statuses.get(ref)
         if status is None:

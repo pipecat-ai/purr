@@ -65,9 +65,9 @@ class GitHubWorker(BaseWorker):
     :class:`PRListUpdated` when anything changed. Handles the ``repo.add`` and
     ``repo.remove`` jobs.
 
-    After a poll it reads the conversation of the reviewed PRs that changed (all
-    of them on the first poll) for replies to you since your last word there: a
-    PR with replies you haven't answered needs you.
+    After a poll it reads the conversation of the PRs Purr reviewed or you took
+    part in that changed (all of them on the first poll) for replies to you since
+    your last word there: a PR with replies you haven't answered needs you.
 
     Each repo gets a full sync on its first poll after startup and every
     ``FULL_SYNC_EVERY`` seconds; polls in between only fetch PRs updated since
@@ -187,12 +187,15 @@ class GitHubWorker(BaseWorker):
         return plan
 
     async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
-        """Read what others said to you on reviewed PRs that changed (all, the first time).
+        """Read what others said to you on PRs Purr reviewed or you took part in, that
+        changed (all of them, the first time).
 
         Returns the PRs with new replies, and whether any PR's replies or state changed.
         """
         reviewed = {
-            pr.ref: pr for pr in await self._store.open_prs() if pr.state != PRState.NOT_REVIEWED
+            pr.ref: pr
+            for pr in await self._store.open_prs()
+            if pr.state != PRState.NOT_REVIEWED or pr.involved
         }
         due = set(reviewed) if self._replies_due is None else self._replies_due | changed
         due &= reviewed.keys()
@@ -217,14 +220,16 @@ class GitHubWorker(BaseWorker):
             if new := [reply for reply in pr.replies if reply not in old.replies]:
                 by = ", ".join(dict.fromkeys(reply.author for reply in new))
                 news.append(Change(ref, PRChange.REPLIED, pr.title, by=by))
-            if pr.replies and pr.state == PRState.DONE:
+            if pr.replies and pr.state in (PRState.DONE, PRState.NOT_REVIEWED):
                 await self._store.set_pr_state(ref, PRState.NEEDS_YOU)
             elif not pr.replies:
                 await self._settle(pr)
         return news, settled
 
-    async def _settle(self, pr: PR) -> None:
-        """Done, if it needed you and nothing does any more (and no agent is at it)."""
+    async def _settle(self, pr: PR, *, done: bool = False) -> None:
+        """Back where it was, if it needed you and nothing does any more (and no agent is
+        at it): done (``done``: you decided something), or not reviewed if only replies
+        on GitHub brought a PR Purr never reviewed here."""
         if pr.state != PRState.NEEDS_YOU or pr.gh_state != GHState.OPEN:
             return
         if await self._store.waits_on_you(pr.ref) or await self._store.running(pr.ref):
@@ -232,7 +237,9 @@ class GitHubWorker(BaseWorker):
         review = await self._store.latest_review(pr.ref)
         if review and review.status == ReviewStatus.FAILED:
             return  # it needs you for that
-        await self._store.set_pr_state(pr.ref, PRState.DONE)
+        await self._store.set_pr_state(
+            pr.ref, PRState.DONE if review or done else PRState.NOT_REVIEWED
+        )
 
     def _needs_full_sync(self, repo: Repo) -> bool:
         last = self._last_full_sync.get(repo.name)
@@ -364,7 +371,7 @@ class GitHubWorker(BaseWorker):
     async def _resolved(self, ref: PRRef, action_id: str, *, approved: bool) -> None:
         # Nothing left to decide: the PR is done (unless something else needs you).
         if pr := await self._store.get_pr(ref):
-            await self._settle(pr)
+            await self._settle(pr, done=True)
         await self.send_bus_message(
             ActionResolved(source=self.name, pr=str(ref), action_id=action_id, approved=approved)
         )

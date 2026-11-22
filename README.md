@@ -88,8 +88,9 @@ uv run purr --no-auto-review
    repo or everywhere), `x` says no. Or write what to do instead ("only run the bus tests"):
    that's a no, with directions, and the agent carries on. Claude Code decides what to ask
    about, as it does everywhere else (see below).
-6. **When someone answers you** on a PR you reviewed (a reply in your thread, a comment after
-   your review), it's back in *Needs you*, with what they said under its conversation.
+6. **When someone answers you** on a PR you reviewed or commented on, here or on GitHub (a
+   reply in your thread, a comment after yours), it's in *Needs you*, with what they said
+   under its conversation.
    Answer on GitHub or through the agent, or press `x` if it needs no reply.
 
 ### Keys

@@ -4,8 +4,10 @@ import pytest
 
 from purr.github import (
     ASSIGNED_QUERY,
+    COMMENTED_QUERY,
     OPEN_QUERY,
     REQUESTED_QUERY,
+    REVIEWED_QUERY,
     UPDATED_QUERY,
     GitHub,
     GitHubError,
@@ -81,6 +83,8 @@ async def test_snapshot_follows_pages():
         {
             ASSIGNED_QUERY: [page([node(9, "other/repo")], total=1)],
             REQUESTED_QUERY: [page([node(8, "other/repo", reviewRequests=requests)], total=1)],
+            COMMENTED_QUERY: [page([node(5, "else/where"), node(6, "else/where")], total=2)],
+            REVIEWED_QUERY: [page([node(6, "else/where"), node(7, "else/where")], total=2)],
             open_query("pipecat-ai/pipecat"): [
                 page([node(1), node(2)], total=3, cursor="1"),
                 page([node(3)], total=3),
@@ -97,6 +101,8 @@ async def test_snapshot_follows_pages():
     assert requested.requested == ("teammate", "Me")  # teams aren't listed
     assert requested.to_pr("me").requested_from_me
     assert not snapshot.assigned[0].to_pr("me").requested_from_me
+    # Commented on or reviewed: once each.
+    assert sorted(pr.number for pr in snapshot.involved) == [5, 6, 7]
     # One request for the first pages, a second only for the repo with more.
     assert len(github.calls) == 2
     assert [k for k in github.calls[1] if k.startswith("q_")] == ["q_r0"]
@@ -107,12 +113,15 @@ async def test_snapshot_drops_failed_and_incomplete_searches():
         {
             ASSIGNED_QUERY: "rate limited",
             REQUESTED_QUERY: [page([], total=0)],
+            COMMENTED_QUERY: [page([], total=0)],
+            REVIEWED_QUERY: "rate limited",
             open_query("pipecat-ai/pipecat"): [page([node(1)], total=2)],  # one missing
         }
     )
     snapshot = await github.snapshot(["pipecat-ai/pipecat"])
     assert snapshot.assigned is None
     assert snapshot.requested == []
+    assert snapshot.involved is None  # half of it isn't all of it
     assert snapshot.open == {}
 
 
@@ -151,6 +160,8 @@ async def test_snapshot_incremental_and_pages():
         {
             ASSIGNED_QUERY: [page([], total=0)],
             REQUESTED_QUERY: [page([], total=0)],
+            COMMENTED_QUERY: [page([], total=0)],
+            REVIEWED_QUERY: [page([], total=0)],
             open_query("a/full"): [
                 page([node(1, "a/full")], total=2, cursor="1"),
                 page([node(2, "a/full")], total=2),

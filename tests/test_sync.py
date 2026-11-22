@@ -224,3 +224,24 @@ def test_review_requests_from_other_repos_come_and_go():
     snapshot = Snapshot(open={"pipecat-ai/pipecat": []}, assigned=[], requested=[])
     plan = plan_sync(current, snapshot, watched=WATCHED)
     assert plan.deletes == [PRRef("other/repo", 5)]
+
+
+def test_prs_you_took_part_in_are_tracked_quietly_and_stay_so():
+    elsewhere = remote(8, repo="other/repo")
+    pool = remote(1)
+    snapshot = Snapshot(
+        open={"pipecat-ai/pipecat": [pool]}, assigned=[], involved=[elsewhere, pool], viewer="me"
+    )
+    plan = plan_sync([stored(1)], snapshot, watched=WATCHED)
+    assert {(pr.number, pr.involved) for pr in plan.upserts} == {(1, True), (8, True)}
+    assert plan.changes == []  # not news; and other repos have no pool to join
+
+    # Once you've taken part, you have, whatever a search says next.
+    current = [stored(1, involved=True), stored(8, repo="other/repo", involved=True)]
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": [pool]}, assigned=[], involved=[elsewhere])
+    assert plan_sync(current, snapshot, watched=WATCHED).empty
+    # Nothing is concluded from a failed search; a closed PR drops out (never reviewed).
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": [pool]}, assigned=[], involved=None)
+    assert plan_sync(current, snapshot, watched=WATCHED).deletes == []
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": [pool]}, assigned=[], involved=[])
+    assert plan_sync(current, snapshot, watched=WATCHED).deletes == [PRRef("other/repo", 8)]

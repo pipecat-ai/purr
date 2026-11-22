@@ -122,7 +122,9 @@ async def test_replies_to_you_need_you_until_answered(setup):
     github.assigned = [remote(1, assignees=("me",))]
     await worker.poll()
     assert (await client.next_event(PRChanged)).change == PRChange.ASSIGNED
-    await store.set_pr_state(ref, PRState.DONE)  # reviewed, nothing left to decide
+    review = await store.start_review(ref)  # reviewed, nothing left to decide
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    await store.set_pr_state(ref, PRState.DONE)
 
     # Someone answers you: it changed on GitHub, so its conversation is read.
     alice = Reply("alice", "Fixed it.", "2026-11-21T10:00:00Z", "u1", "bus.py:42")
@@ -186,3 +188,28 @@ async def test_replies_are_read_for_every_reviewed_pr_on_startup():
         finally:
             await runner.end()
             await asyncio.wait_for(task, 5)
+
+
+async def test_replies_on_prs_you_took_part_in_on_github(setup):
+    store, github, worker, client = setup
+    await client.next_event(Synced)
+    ref = PRRef("other/repo", 8)
+    github.involved = [remote(8, "other/repo")]  # you commented; Purr never reviewed it
+    await worker.poll()
+    pr = await store.get_pr(ref)
+    assert pr.involved and pr.state == PRState.NOT_REVIEWED
+    # Quietly: not news, and its repo isn't listed for it.
+    assert await store.repo_summaries() == []
+
+    github.conversations[ref] = [Reply("alice", "@me thoughts?", "2026-11-21T10:00:00Z")]
+    github.involved = [remote(8, "other/repo", updated_at="2026-11-21T10:00:00Z")]
+    await worker.poll()
+    event = await client.next_event(PRChanged)
+    assert (event.pr, event.change) == ("other/repo#8", PRChange.REPLIED)
+    assert (await store.get_pr(ref)).state == PRState.NEEDS_YOU
+    [summary] = await store.repo_summaries()
+    assert (summary.name, summary.needs_you) == ("other/repo", 1)
+
+    # Answered: back to where it was, not reviewed by Purr.
+    await request(client, DismissReplies(pr=ref))
+    assert (await store.get_pr(ref)).state == PRState.NOT_REVIEWED

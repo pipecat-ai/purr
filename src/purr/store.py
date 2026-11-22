@@ -232,6 +232,10 @@ MIGRATIONS: list[str] = [
     ALTER TABLE prs ADD COLUMN replies TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE prs ADD COLUMN replies_done_at TEXT;
     """,
+    # PRs by others you've commented on or reviewed on GitHub: for replies to you.
+    """
+    ALTER TABLE prs ADD COLUMN involved INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -301,6 +305,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         gh_state=GHState(row["gh_state"]),
         assigned_to_me=bool(row["assigned_to_me"]),
         requested_from_me=bool(row["requested_from_me"]),
+        involved=bool(row["involved"]),
         updated_at=row["updated_at"],
         created_at=row["created_at"],
         base=row["base"],
@@ -337,8 +342,8 @@ def _activity(row: aiosqlite.Row) -> Activity:
 _UPSERT_PR = """
     INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
                      updated_at, created_at, assignees, base, author_association,
-                     requested_from_me)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     requested_from_me, involved)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET
         title = excluded.title,
         author = excluded.author,
@@ -351,7 +356,8 @@ _UPSERT_PR = """
         assignees = excluded.assignees,
         base = excluded.base,
         author_association = excluded.author_association,
-        requested_from_me = excluded.requested_from_me
+        requested_from_me = excluded.requested_from_me,
+        involved = MAX(prs.involved, excluded.involved)  -- once you've taken part, you have
 """
 
 
@@ -371,6 +377,7 @@ def _upsert_params(pr: PR) -> tuple:
         pr.base,
         pr.author_association,
         int(pr.requested_from_me),
+        int(pr.involved),
     )
 
 
@@ -622,8 +629,11 @@ class Store:
             WITH names (name, watched) AS (
                 SELECT name, 1 FROM repos
                 UNION
+                -- Other repos only for a PR that concerns you (not just one you
+                -- commented on once).
                 SELECT DISTINCT repo, 0 FROM prs
                 WHERE gh_state = 'open' AND repo NOT IN (SELECT name FROM repos)
+                  AND (assigned_to_me OR requested_from_me OR state != 'not_reviewed')
             )
             SELECT
                 names.name,
@@ -657,7 +667,8 @@ class Store:
     async def remove_repo(self, name: str) -> bool:
         """Stop watching a repo and drop its pool.
 
-        PRs assigned to you, or that Purr has started reviewing, are kept.
+        PRs assigned to you, asking for your review, that you've taken part in, or that
+        Purr has started reviewing, are kept.
         Returns whether the repo was being watched.
         """
         cursor = await self._db.execute("DELETE FROM repos WHERE name = ?", (name,))
@@ -665,7 +676,8 @@ class Store:
         await self._db.execute(
             """
             DELETE FROM prs
-            WHERE repo = ? COLLATE NOCASE AND state = ? AND assigned_to_me = 0
+            WHERE repo = ? COLLATE NOCASE AND state = ?
+              AND assigned_to_me = 0 AND requested_from_me = 0 AND involved = 0
             """,
             (name, PRState.NOT_REVIEWED),
         )

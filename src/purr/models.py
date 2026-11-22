@@ -137,6 +137,7 @@ class PR:
     assignees: tuple[str, ...] = ()
     assigned_to_me: bool = False
     requested_from_me: bool = False  # your review is requested (by name, not as a team)
+    involved: bool = False  # you've commented on it or reviewed it on GitHub
     state: PRState = PRState.NOT_REVIEWED
     gh_state: GHState = GHState.OPEN
     model: str | None = None  # you chose it for the PR's conversation (/model)

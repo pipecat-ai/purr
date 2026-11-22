@@ -1042,6 +1042,8 @@ async def test_requests_for_your_review_and_replies_to_you(tmp_path):
         await until(pilot, lambda: len(pr_ids(app)) == 3)
         store = app.purr.store
         answered = PRRef("pipecat-ai/pipecat", 3)
+        review = await store.start_review(answered)  # reviewed, then answered on GitHub
+        await store.finish_review(review.id, summary="Fine", findings=[])
         await store.set_pr_state(answered, PRState.NEEDS_YOU)  # as a poll leaves it
         await store.set_replies(
             answered,
