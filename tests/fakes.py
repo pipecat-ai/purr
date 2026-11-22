@@ -127,6 +127,8 @@ class FakeAgent:
         self.ask: tuple | None = None  # (tool, input, reason[, suggested rules])
         self.answers: list[bool | None] = []
         self.insteads: list[str | None] = []  # what you wrote instead of answering
+        self.read: list[str] = []  # what you wrote while it worked, as it read it
+        self.reads_inbox = True  # False: like a Claude Code that can't take it mid-run
         self.remembered: list[str | None] = []
         self.entries: dict[str, list[dict]] = {}
         self.findings: dict = {}  # PRRef -> what its review finds (default: one race)
@@ -151,6 +153,7 @@ class FakeAgent:
         skill=None,
         plan=None,
         model=None,
+        inbox=None,
     ):
         from purr.models import ActionKind, Finding, Severity
         from purr.review.agent import AgentResult
@@ -171,6 +174,8 @@ class FakeAgent:
         self.sessions.add(session_id)
         if self.gate:
             await self.gate.wait()
+        while self.reads_inbox and inbox is not None and not inbox.empty():
+            self.read.append(inbox.get_nowait())  # what you wrote meanwhile
         if self.fail_with:
             raise RuntimeError(self.fail_with)
         if self.ask:

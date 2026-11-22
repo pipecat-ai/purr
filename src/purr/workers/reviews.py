@@ -151,6 +151,9 @@ class ReviewWorker(BaseWorker):
         self._startup_task: asyncio.Task | None = None
         self._asks: dict[str, asyncio.Future[PermissionAnswer]] = {}
         self._ask_prs: dict[str, PRRef] = {}  # request id -> the PR whose agent is asking
+        # What you write to a PR's agent while it works, for it to take up as it goes.
+        self._inboxes: dict[PRRef, asyncio.Queue[str]] = {}
+        self._run_ids: dict[PRRef, int] = {}
         self._ask_rules: dict[str, str] = {}  # request id -> the rule "always" would keep
         self._slots = Slots(max_reviews)
         # Per repo (lowercase): its review skill question, and until when reviews wait for it.
@@ -371,22 +374,31 @@ class ReviewWorker(BaseWorker):
     async def send_followup(self, ref: PRRef, text: str) -> dict:
         """Continue a PR's session with a message from the user.
 
-        Writing when the agent waits on you to decide something is deciding it,
-        as in Claude Code: to a permission request, it's a no, and what to do
-        instead; a proposal is set aside, and the agent proposes again if it
-        still stands. A slash command (``/compact``) decides nothing.
+        As in Claude Code: writing while the agent works goes to it straight
+        away, for it to take up at its next step. Writing when it waits on you
+        to decide something is deciding it: to a permission request, it's a no,
+        and what to do instead; a proposal is set aside, and the agent proposes
+        again if it still stands. A slash command (``/compact``) decides nothing,
+        and waits until the agent's done.
 
-        Returns what it decided: ``{"answered": True}`` (the permission request),
-        ``{"set_aside": [proposal, ...]}``, or ``{}``.
+        Returns what it did: ``{"answered": True}`` (the permission request),
+        ``{"set_aside": [proposal, ...]}``, ``{"while_working": True}``, or ``{}``.
         """
         if not text.strip():
             raise ReviewError("Nothing to send")
         command = text.lstrip().startswith("/")  # /compact, a skill: not a reply
         async with self._start_lock:
             if ref in self._running:
-                if not command and self._answer_instead(ref, text):
+                if command or ref not in self._inboxes:
+                    raise ReviewError(f"The agent is still working on {ref}")
+                if self._answer_instead(ref, text):
                     return {"answered": True}
-                raise ReviewError(f"The agent is still working on {ref}")
+                self._inboxes[ref].put_nowait(text)
+                if (run_id := self._run_ids.get(ref)) is not None:
+                    await self._store.add_message(
+                        run_id, ref, {"kind": "prompt", "text": text}, author="you"
+                    )
+                return {"while_working": True}
             review = await self._store.latest_review(ref)
             pr = await self._store.get_pr(ref)
             if review is None or pr is None or not review.session_id:
@@ -404,6 +416,13 @@ class ReviewWorker(BaseWorker):
                 pr, review, prompt=text, resume=True, followup=True, queued=False, kind="message"
             )
             return decided
+
+    async def _send_after(self, ref: PRRef, text: str) -> None:
+        """What you wrote that the agent didn't get to read in its run, as a follow-up."""
+        try:
+            await self.send_followup(ref, text)
+        except ReviewError as e:
+            logger.warning(f"Couldn't send what you wrote to {ref}'s agent: {e}")
 
     def _answer_instead(self, ref: PRRef, text: str) -> bool:
         """No to what the PR's agent asks to do, with what to do instead; whether it asked."""
@@ -432,6 +451,7 @@ class ReviewWorker(BaseWorker):
         recorded as, with every message in it (see Store.start_run). A new
         review (``review``) makes its own prompt.
         """
+        self._inboxes[pr.ref] = asyncio.Queue()
         run = self._run(
             pr,
             review,
@@ -540,6 +560,8 @@ class ReviewWorker(BaseWorker):
         run_id = await self._store.start_run(
             ref, kind=kind, review_id=review.id, session_id=review.session_id
         )
+        self._run_ids[ref] = run_id
+        stopping = False
         result: AgentResult | None = None
         try:
             if followup:
@@ -578,6 +600,7 @@ class ReviewWorker(BaseWorker):
                 skill=skill,
                 plan=plan,
                 model=await self._model(ref, plan, kind),
+                inbox=self._inboxes.get(ref),
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")
@@ -598,6 +621,7 @@ class ReviewWorker(BaseWorker):
                 )
             await self._settle(ref, state_before if followup else PRState.NEEDS_YOU)
         except asyncio.CancelledError:
+            stopping = True
             raise  # Purr is stopping; the review stays "running" and resumes next time
         except Exception as e:
             logger.exception(f"Review of {ref} failed")
@@ -622,6 +646,14 @@ class ReviewWorker(BaseWorker):
             if slot:
                 self._slots.release()
             self._running.pop(ref, None)
+            self._run_ids.pop(ref, None)
+            inbox = self._inboxes.pop(ref, None)
+            unread = []
+            while inbox is not None and not inbox.empty():
+                unread.append(inbox.get_nowait())
+            if unread and not stopping:
+                # Written as it finished, or to a CLI that can't take it mid-run.
+                self.create_task(self._send_after(ref, "\n\n".join(unread)))
 
     async def _model(self, ref: PRRef, plan: ReviewPlan, kind: str) -> str | None:
         """The model for a run: yours for the PR (/model), else the cheaper one for quick

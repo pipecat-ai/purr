@@ -77,14 +77,15 @@ uv run purr --no-auto-review
    latest 5; `/` finds the rest), *Not reviewed*, and *Others reviewing*. A reviewed PR shows
    ✓ if the review found nothing and ● if it found issues; one being reviewed spins.
 3. **Pick a PR** to read its description, files and diff on the right (`o` to scroll through
-   it). Press `r` to review it (Purr also assigns it to you, so your teammates know).
+   it). Press `r` to review it (Purr also assigns it to you, so your teammates know). You can
+   write to the agent while it works ("focus on the bus"); it reads it at its next step.
 4. **When the review is done**, read the findings and the review it proposes. `a` posts it,
    `x` dismisses it. To change it, just write ("drop the second comment"): writing sets the
    proposal aside, and the agent proposes again.
 5. **If the agent asks for permission**: `a` allows it once, `A` always allows it (in this
    repo or everywhere), `x` says no. Or write what to do instead ("only run the bus tests"):
-   that's a no, with directions, and the agent carries on. Claude Code decides what to ask about, as it does
-   everywhere else (see below).
+   that's a no, with directions, and the agent carries on. Claude Code decides what to ask
+   about, as it does everywhere else (see below).
 
 ### Keys
 

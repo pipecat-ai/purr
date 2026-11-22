@@ -260,3 +260,150 @@ def test_a_thought_in_a_line():
     assert thought_headline("**Weighing the verdict**\n\nA comment, then.") == (
         "Weighing the verdict…"
     )
+
+
+class _ScriptedClient:
+    """A ClaudeSDKClient that plays ``script``: messages, or async steps to run."""
+
+    script: list = []
+    queries: list[str] = []
+
+    def __init__(self, options):
+        self.options = options
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def query(self, prompt):
+        type(self).queries.append(prompt)
+
+    async def receive_messages(self):
+        for item in type(self).script:
+            if callable(item):
+                await item()
+            else:
+                yield item
+
+
+def _state(state: str):
+    from claude_agent_sdk.types import SystemMessage
+
+    return SystemMessage(subtype="session_state_changed", data={"state": state})
+
+
+def _result(text: str):
+    from claude_agent_sdk import ResultMessage
+
+    return ResultMessage(
+        subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+        session_id="s", total_cost_usd=0.1, usage={}, result=text,
+    )  # fmt: skip
+
+
+async def _run(monkeypatch, tmp_path, script, inbox=None):
+    import purr.review.agent
+    from purr.models import PR
+
+    _ScriptedClient.script, _ScriptedClient.queries = script, []
+    monkeypatch.setattr(purr.review.agent, "ClaudeSDKClient", _ScriptedClient)
+    entries = []
+
+    async def on_message(entry):
+        entries.append(entry)
+
+    callbacks = purr.review.agent.ReviewCallbacks(
+        on_message=on_message, on_submit=None, on_propose=None, on_ask=None, on_threads=None
+    )
+    pr = PR(repo="a/b", number=1, title="t", author="x", url="u", head_sha="h", updated_at="")
+    result = await purr.review.agent.ClaudeReviewAgent().run(
+        pr=pr, worktree=tmp_path, session_id="s", resume=False, prompt="p",
+        callbacks=callbacks, inbox=inbox,
+    )  # fmt: skip
+    return result, entries
+
+
+async def test_what_you_write_while_it_works_goes_in_straight_away(monkeypatch, tmp_path):
+    """Claude Code takes it at the agent's next step; the run ends when it's "idle"."""
+    import asyncio
+
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    inbox: asyncio.Queue[str] = asyncio.Queue()
+
+    async def you_write():
+        inbox.put_nowait("Focus on the bus.")
+        while len(_ScriptedClient.queries) < 2:  # it's sent before the agent's next step
+            await asyncio.sleep(0)
+
+    script = [
+        _state("running"),
+        AssistantMessage(content=[TextBlock("Reading the diff.")], model="m"),
+        you_write,
+        AssistantMessage(content=[TextBlock("On the bus, then.")], model="m"),
+        _result("On the bus, then."),
+        _state("idle"),
+        AssistantMessage(content=[TextBlock("never read")], model="m"),
+    ]
+    result, entries = await _run(monkeypatch, tmp_path, script, inbox)
+    assert _ScriptedClient.queries == ["p", "Focus on the bus."]
+    assert result.text == "On the bus, then." and inbox.empty()
+    assert [e["text"] for e in entries if e["kind"] == "text"] == [
+        "Reading the diff.",
+        "On the bus, then.",
+    ]
+    assert [e["kind"] for e in entries][-1] == "result"
+
+
+async def test_a_run_ends_when_the_session_is_idle_and_its_turn_is_over(monkeypatch, tmp_path):
+    """Some hosts say "idle" just before the result: the run waits for the result too."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    script = [
+        _state("running"),
+        _result("First turn; an agent's out."),
+        AssistantMessage(content=[TextBlock("It reported back.")], model="m"),
+        _state("idle"),  # ahead of this turn's result
+        _result("All done."),
+        AssistantMessage(content=[TextBlock("never read")], model="m"),
+    ]
+    result, entries = await _run(monkeypatch, tmp_path, script)
+    assert result.text == "All done."
+    assert [e["text"] for e in entries if e["kind"] == "result"] == ["All done."]
+    assert all(e.get("text") != "never read" for e in entries)
+
+
+def test_what_the_agent_took_mid_turn_is_there_when_reloaded(monkeypatch, tmp_path):
+    """Claude Code stores it as an attachment, which the SDK's reader leaves out."""
+    import json
+
+    import claude_agent_sdk._internal.sessions as sessions
+
+    from purr.review.agent import queued_prompts
+
+    lines = [
+        {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "Review it"}},
+        {"type": "assistant", "uuid": "a1"},
+        {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "The bus?"}},
+        {"type": "user", "uuid": "m1", "isMeta": True},  # not shown: not a place to put it
+        {"type": "assistant", "uuid": "a2"},
+    ]
+    content = "\n".join(json.dumps(line) for line in lines)
+    monkeypatch.setattr(sessions, "_read_session_file", lambda session_id, directory: content)
+    queued = queued_prompts("s", tmp_path)
+    assert queued == {"a1": ["The bus?"]}
+
+    def said(uuid: str, text: str) -> SimpleNamespace:
+        content = [{"type": "text", "text": text}]
+        return SimpleNamespace(type="assistant", uuid=uuid, message={"content": content})
+
+    entries = history_entries(
+        [said("a1", "Reading the diff."), said("a2", "The bus, then.")], queued
+    )
+    assert [(e["kind"], e["text"]) for e in entries] == [
+        ("text", "Reading the diff."),
+        ("user", "The bus?"),
+        ("text", "The bus, then."),
+    ]

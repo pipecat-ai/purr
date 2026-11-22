@@ -232,10 +232,27 @@ async def test_one_review_at_a_time_per_pr(make):
     await s.client.request(REVIEW_START, {"pr": str(REF)})
     response = await s.client.request(REVIEW_START, {"pr": str(REF)})
     assert "already being reviewed" in response["error"]
+    # What you write while it works goes to it, as in Claude Code; commands wait.
     response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "why?"})
+    assert response == {"ok": True, "while_working": True}
+    response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "/compact"})
     assert "still working" in response["error"]
     s.agent.gate.set()
     await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.read == ["why?"] and len(s.agent.runs) == 1
+
+
+async def test_what_the_agent_didnt_read_in_its_run_comes_after(make):
+    """Written as it finished, or to a Claude Code that can't take it mid-run."""
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    s.agent.gate, s.agent.reads_inbox = asyncio.Event(), False
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.agent.runs)
+    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "and the tests?"})
+    s.agent.gate.set()
+    await eventually(lambda: len(s.agent.runs) == 2)
+    assert s.agent.runs[1]["prompt"].endswith("and the tests?")
 
 
 async def test_follow_up_continues_the_session(make):

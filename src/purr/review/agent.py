@@ -7,6 +7,7 @@ session ID is chosen up front, so a review can be resumed after a restart,
 from the TUI, or in Claude Code itself (``claude --resume``).
 """
 
+import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -34,7 +35,9 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import (
     TERMINAL_TASK_STATUSES,
+    SystemMessage,
     TaskNotificationMessage,
+    TaskProgressMessage,
     TaskStartedMessage,
     TaskUpdatedMessage,
 )
@@ -256,6 +259,7 @@ class ReviewAgent(Protocol):
         skill: str | None = None,
         plan: ReviewPlan | None = None,
         model: str | None = None,
+        inbox: "asyncio.Queue[str] | None" = None,
     ) -> AgentResult: ...
 
 
@@ -296,10 +300,30 @@ def track_tasks(message: Any, running: dict[str, str]) -> None:
             running.pop(message.task_id, None)
 
 
+def session_state(message: Any) -> str | None:
+    """The CLI's session state, if ``message`` reports it: ``running``,
+    ``requires_action`` (it's asking something) or ``idle`` (no further turn owed:
+    no background task left, nothing of yours unread)."""
+    if isinstance(message, SystemMessage) and message.subtype == "session_state_changed":
+        return (message.data or {}).get("state")
+    return None
+
+
 def _entries(message: Any) -> list[dict]:
     if isinstance(message, TaskStartedMessage):
         return [
             {"kind": "task", "event": "started", "text": message.description, "id": message.task_id}
+        ]
+    if isinstance(message, TaskProgressMessage):  # what a background task is up to
+        usage = message.usage or {}
+        return [
+            {
+                "kind": "task_progress",
+                "id": message.task_id,
+                "text": message.description,
+                "tool": message.last_tool_name,
+                "tools": usage.get("tool_uses", 0),
+            }
         ]
     if isinstance(message, TaskNotificationMessage):
         return [
@@ -356,44 +380,85 @@ def _models(message: ResultMessage) -> str | None:
     return ", ".join(message.model_usage) if message.model_usage else None
 
 
-def history_entries(session_messages: list[Any]) -> list[dict]:
-    """The SDK's stored transcript (raw API messages) as transcript entries."""
+def queued_prompts(session_id: str, worktree: Path) -> dict[str, list[str]]:
+    """What you wrote that the agent took mid-turn, by the message it came after.
+
+    Claude Code stores those as attachments (``queued_command``), which the
+    SDK's session reader leaves out, so they come from the session file.
+    """
+    try:
+        from claude_agent_sdk._internal.sessions import _read_session_file
+
+        content = _read_session_file(session_id, str(worktree)) or ""
+    except Exception:  # the SDK's own reader moved: just without them
+        return {}
+    after: dict[str, list[str]] = {}
+    last = ""  # the latest message the reader keeps (see its _is_visible_message)
+    for line in content.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        kind = entry.get("type")
+        visible = not (entry.get("isMeta") or entry.get("isSidechain") or entry.get("teamName"))
+        if kind in ("user", "assistant") and visible and entry.get("uuid"):
+            last = entry["uuid"]
+        attachment = entry.get("attachment") or {}
+        queued = kind == "attachment" and attachment.get("type") == "queued_command"
+        if queued and isinstance(prompt := attachment.get("prompt"), str) and prompt.strip():
+            after.setdefault(last, []).append(prompt)
+    return after
+
+
+def history_entries(
+    session_messages: list[Any], queued: dict[str, list[str]] | None = None
+) -> list[dict]:
+    """The SDK's stored transcript (raw API messages) as transcript entries, with
+    what you wrote mid-turn (``queued``, see :func:`queued_prompts`) where it went."""
     entries: list[dict] = []
     for item in session_messages:
-        body = item.message if isinstance(item.message, dict) else {}
-        content = body.get("content")
-        if item.type == "assistant" and isinstance(content, list):
+        entries += _history_entries(item)
+        for prompt in (queued or {}).get(getattr(item, "uuid", None) or "", []):
+            entries.append({"kind": "user", "text": prompt})
+    return entries
+
+
+def _history_entries(item: Any) -> list[dict]:
+    entries: list[dict] = []
+    body = item.message if isinstance(item.message, dict) else {}
+    content = body.get("content")
+    if item.type == "assistant" and isinstance(content, list):
+        for block in content:
+            if block.get("type") == "text" and str(block.get("text", "")).strip():
+                entries.append({"kind": "text", "text": block["text"]})
+            elif block.get("type") == "thinking" and str(block.get("thinking") or "").strip():
+                entries.append({"kind": "thinking", "text": block["thinking"]})
+            elif block.get("type") == "tool_use":
+                entries.append(
+                    {
+                        "kind": "tool_use",
+                        "id": block.get("id"),
+                        "name": block.get("name"),
+                        "input": block.get("input") or {},
+                    }
+                )
+    elif item.type == "user":
+        if isinstance(content, str):
+            entries += [{"kind": "set_aside", "text": p} for p in set_aside_in(content)]
+            entries.append({"kind": "user", "text": _as_typed(content)})
+        elif isinstance(content, list):
             for block in content:
-                if block.get("type") == "text" and str(block.get("text", "")).strip():
-                    entries.append({"kind": "text", "text": block["text"]})
-                elif block.get("type") == "thinking" and str(block.get("thinking") or "").strip():
-                    entries.append({"kind": "thinking", "text": block["thinking"]})
-                elif block.get("type") == "tool_use":
+                if block.get("type") == "tool_result":
                     entries.append(
                         {
-                            "kind": "tool_use",
-                            "id": block.get("id"),
-                            "name": block.get("name"),
-                            "input": block.get("input") or {},
+                            "kind": "tool_result",
+                            "tool_use_id": block.get("tool_use_id"),
+                            "is_error": bool(block.get("is_error")),
+                            "text": _text(block.get("content")),
                         }
                     )
-        elif item.type == "user":
-            if isinstance(content, str):
-                entries += [{"kind": "set_aside", "text": p} for p in set_aside_in(content)]
-                entries.append({"kind": "user", "text": _as_typed(content)})
-            elif isinstance(content, list):
-                for block in content:
-                    if block.get("type") == "tool_result":
-                        entries.append(
-                            {
-                                "kind": "tool_result",
-                                "tool_use_id": block.get("tool_use_id"),
-                                "is_error": bool(block.get("is_error")),
-                                "text": _text(block.get("content")),
-                            }
-                        )
-                    elif block.get("type") == "text":
-                        entries.append({"kind": "user", "text": block.get("text", "")})
+                elif block.get("type") == "text":
+                    entries.append({"kind": "user", "text": block.get("text", "")})
     return entries
 
 
@@ -509,7 +574,8 @@ class ClaudeReviewAgent:
         return get_session_info(session_id, directory=str(worktree)) is not None
 
     def history(self, session_id: str, worktree: Path) -> list[dict]:
-        return history_entries(get_session_messages(session_id, directory=str(worktree)))
+        messages = get_session_messages(session_id, directory=str(worktree))
+        return history_entries(messages, queued_prompts(session_id, worktree))
 
     async def run(
         self,
@@ -525,7 +591,16 @@ class ClaudeReviewAgent:
         skill: str | None = None,
         plan: ReviewPlan | None = None,
         model: str | None = None,
+        inbox: "asyncio.Queue[str] | None" = None,
     ) -> AgentResult:
+        """Run the agent until it's done: its turn ended, its background tasks
+        reported, and nothing you wrote meanwhile (``inbox``) is left unread.
+
+        What you write while it works goes into its session straight away, and
+        Claude Code takes it at the agent's next step, as when you type while it
+        works. That takes the CLI saying when it's done (``session_state``); from
+        one that doesn't, it stays in ``inbox`` for after the run.
+        """
 
         @tool(
             SUBMIT_REVIEW,
@@ -623,48 +698,96 @@ class ClaudeReviewAgent:
             max_budget_usd=self._max_budget_usd,
             resume=session_id if resume else None,
             session_id=None if resume else session_id,
+            # When the session's done for now ("idle"), and when it takes up work again.
+            env={"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS": "1"},
         )
 
         result = AgentResult()
         running: dict[str, str] = {}  # background tasks (agents, shells) still at work
+        state: str | None = None  # the CLI's session state, once it reports one
+        turn_over = False  # a turn ended, and no other has started since
+        unseen = 0  # your messages sent while it was idle, until it takes up work
+        sending = 0
+        reports = asyncio.Event()  # the CLI reports its state: messages can go in live
+        done: dict | None = None  # the last turn's result: "done", once, at the end
+
+        def over() -> bool:
+            if state is None:  # a CLI that doesn't say: the result is all there is
+                return turn_over and not running
+            pending = sending or unseen or (inbox is not None and not inbox.empty())
+            return turn_over and state == "idle" and not pending
+
+        async def deliver(client: ClaudeSDKClient) -> None:
+            nonlocal sending, unseen
+            await reports.wait()
+            while True:
+                text = await inbox.get()
+                sending += 1
+                if state == "idle":
+                    unseen += 1  # it's done for now: wait until it takes this up
+                try:
+                    await client.query(text)
+                finally:
+                    sending -= 1
+
         async with ClaudeSDKClient(options) as client:
             await client.query(prompt)
-            async for message in client.receive_messages():
-                entries = transcript_entries(message)
-                for entry in entries:
-                    if entry["kind"] == "task" and entry.get("id") in running:
-                        # Say which task it was: its report is often a note to the agent
-                        # ("delivered to you as a message from ...").
-                        entry["text"] = running[entry["id"]]
-                out = len(running)
-                track_tasks(message, running)
-                if len(running) != out:  # for the working line; not part of the transcript
-                    entries.append({"kind": "background", "running": len(running)})
-                for entry in entries:
-                    if entry["kind"] == "result" and running:
-                        continue  # a turn's end, not the run's: agents are still at work
-                    await callbacks.on_message(entry)
-                if isinstance(message, ResultMessage):
-                    # Figures are running totals: the last result has the whole run's.
-                    result = AgentResult(
-                        text=message.result,
-                        is_error=message.is_error,
-                        error=message.result if message.is_error else None,
-                        cost_usd=message.total_cost_usd,
-                        turns=message.num_turns,
-                        denials=[
-                            json.dumps(d, default=str) for d in (message.permission_denials or [])
-                        ],
-                        duration_ms=message.duration_ms,
-                        api_duration_ms=message.duration_api_ms,
-                        model=_models(message),
-                        usage=message.usage or {},
-                    )
-                    # A turn can end with agents still working in the background
-                    # ("I'll get back to you"): Claude Code carries on when they
-                    # report, so the run isn't over until none are left.
-                    if not running:
-                        break
+            delivering = asyncio.create_task(deliver(client)) if inbox is not None else None
+            try:
+                async for message in client.receive_messages():
+                    if (now := session_state(message)) is not None:
+                        state = now
+                        reports.set()
+                        if now == "running":
+                            unseen = 0
+                        if over():
+                            break
+                        continue
+                    if isinstance(message, AssistantMessage) and not message.parent_tool_use_id:
+                        turn_over, unseen = False, 0  # a turn under way
+                    entries = transcript_entries(message)
+                    for entry in entries:
+                        if entry["kind"] == "task" and entry.get("id") in running:
+                            # Say which task it was: its report is often a note to the
+                            # agent ("delivered to you as a message from ...").
+                            entry["text"] = running[entry["id"]]
+                    out = len(running)
+                    track_tasks(message, running)
+                    if len(running) != out:  # for the working line, not the transcript
+                        entries.append({"kind": "background", "running": len(running)})
+                    for entry in entries:
+                        if entry["kind"] == "result":
+                            done = entry  # a turn's end, maybe not the run's
+                            continue
+                        await callbacks.on_message(entry)
+                    if isinstance(message, ResultMessage):
+                        # Figures are running totals: the last result has the whole run's.
+                        result = AgentResult(
+                            text=message.result,
+                            is_error=message.is_error,
+                            error=message.result if message.is_error else None,
+                            cost_usd=message.total_cost_usd,
+                            turns=message.num_turns,
+                            denials=[
+                                json.dumps(d, default=str)
+                                for d in (message.permission_denials or [])
+                            ],
+                            duration_ms=message.duration_ms,
+                            api_duration_ms=message.duration_api_ms,
+                            model=_models(message),
+                            usage=message.usage or {},
+                        )
+                        # A turn can end with agents still working in the background
+                        # ("I'll get back to you"): Claude Code carries on when they
+                        # report, so the run isn't over until none are left.
+                        turn_over = True
+                        if over():
+                            break
+            finally:
+                if delivering:
+                    delivering.cancel()
+        if done:
+            await callbacks.on_message(done)
         return result
 
 
