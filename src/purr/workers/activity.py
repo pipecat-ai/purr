@@ -4,7 +4,7 @@ from loguru import logger
 from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.messages import PurrCommand, PurrEvent, describe, payload
+from purr.messages import PurrEvent, describe, payload
 from purr.models import PRRef
 from purr.store import Store
 
@@ -13,7 +13,7 @@ class ActivityWorker(BaseWorker):
     """Appends every recorded :class:`PurrEvent` to the store's activity log.
 
     The activity log is what recaps and each PR's timeline are built from.
-    Events and commands are also logged, so headless runs show what's happening.
+    Events are also logged, briefly, so headless runs show what's happening.
     """
 
     def __init__(self, name: str = "activity", *, store: Store):
@@ -22,9 +22,10 @@ class ActivityWorker(BaseWorker):
 
     async def on_bus_message(self, message: BusMessage) -> None:
         await super().on_bus_message(message)
-        if isinstance(message, (PurrEvent, PurrCommand)):
-            logger.info(describe(message))
-        if isinstance(message, PurrEvent) and message.recorded:
+        if not isinstance(message, PurrEvent):
+            return
+        logger.info(describe(message))
+        if message.recorded:
             data = payload(message)
             pr = data.pop("pr", None)
             await self._store.record_activity(

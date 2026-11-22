@@ -1,4 +1,4 @@
-"""Purr's bus vocabulary: worker names, job names, events and commands.
+"""Purr's bus vocabulary: worker names, jobs and events.
 
 Everything in Purr talks over one Pipecat worker bus:
 
@@ -8,8 +8,6 @@ Everything in Purr talks over one Pipecat worker bus:
 - **Events** (:class:`PurrEvent`) are broadcast, so the TUI, the voice agent and
   anything else listening all see the same thing. Most are also recorded in the
   activity log (see ``recorded``).
-- **Commands** (:class:`PurrCommand`) are targeted at the worker that executes
-  them.
 
 Fields stay plain JSON-friendly types so the messages can cross a network bus
 if components ever move to separate processes.
@@ -455,11 +453,6 @@ class RecapReady(PurrEvent):
     headline: str
 
 
-@dataclass(kw_only=True)
-class PurrCommand(BusDataMessage):
-    """Base for Purr's targeted commands."""
-
-
 _BASE_FIELDS = {f.name for f in fields(BusMessage)}
 
 
@@ -468,8 +461,16 @@ def payload(message: BusMessage) -> dict:
     return {f.name: getattr(message, f.name) for f in fields(message) if f.name not in _BASE_FIELDS}
 
 
-def describe(message: BusMessage) -> str:
-    """One-line rendering of a message and its payload fields, for logs."""
-    args = ", ".join(f"{key}={value!r}" for key, value in payload(message).items())
-    target = f" → {message.target}" if message.target else ""
-    return f"{type(message).__name__}({args}) from {message.source}{target}"
+def describe(message: BusMessage, *, width: int = 200) -> str:
+    """One-line rendering of a message and its payload fields, for logs.
+
+    Each value is cut to ``width`` characters: a session message carries whole tool
+    results, which the session's own transcript already keeps.
+    """
+    values = payload(message).items()
+    args = ", ".join(f"{key}={_short(repr(value), width)}" for key, value in values)
+    return f"{type(message).__name__}({args}) from {message.source}"
+
+
+def _short(text: str, width: int) -> str:
+    return text if len(text) <= width else f"{text[: width - 1]}…"

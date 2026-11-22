@@ -13,19 +13,14 @@ from pipecat.workers.runner import WorkerRunner
 from purr.jobs import Busy, PurrError, Request, Unanswered, handles, request
 from purr.messages import (
     REVIEW_WORKER,
-    PurrCommand,
     PurrEvent,
     ReviewOpened,
     ReviewStarted,
+    SessionMessage,
     StartReview,
     describe,
 )
 from purr.models import PRRef
-
-
-@dataclass(kw_only=True)
-class ApproveAction(PurrCommand):
-    action_id: str
 
 
 @dataclass(kw_only=True)
@@ -58,7 +53,7 @@ class Recorder(BaseWorker):
 
     async def on_bus_message(self, message: BusMessage) -> None:
         await super().on_bus_message(message)
-        if isinstance(message, (PurrEvent, PurrCommand)) and message.target in (None, self.name):
+        if isinstance(message, PurrEvent):
             await self.received.put(message)
 
 
@@ -112,20 +107,14 @@ async def test_errors_come_back_as_themselves():
         await asyncio.wait_for(task, 5)
 
 
-async def test_targeted_command_reaches_its_target():
-    github, other = Recorder("github"), Recorder("other")
-    runner, task = await run_workers(github, other)
-    try:
-        await other.send_bus_message(ApproveAction(source="other", target="github", action_id="x"))
-        command = await asyncio.wait_for(github.received.get(), 5)
-        assert isinstance(command, ApproveAction)
-        assert command.action_id == "x"
-        assert other.received.empty()
-    finally:
-        await runner.end()
-        await asyncio.wait_for(task, 5)
-
-
 def test_describe_shows_payload_fields():
-    text = describe(ApproveAction(source="tui", target="github", action_id="x"))
-    assert text == "ApproveAction(action_id='x') from tui → github"
+    text = describe(ReviewStarted(source="reviews", pr="a/b#1"))
+    assert text == "ReviewStarted(pr='a/b#1', plan={}) from reviews"
+
+
+def test_describe_cuts_long_values():
+    result = {"kind": "tool_result", "content": "x" * 5000}
+    text = describe(SessionMessage(source="reviews", pr="a/b#1", message=result), width=40)
+    assert text == (
+        "SessionMessage(pr='a/b#1', message={'kind': 'tool_result', 'content': 'xxx…) from reviews"
+    )

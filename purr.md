@@ -274,9 +274,7 @@ Events (broadcast, everyone listens):
 - `user.active` (from the TUI and the voice agent, throttled)
 - `recap.ready {recap_id, headline}`
 
-Commands: none yet. Everything that needs a reply is a job.
-
-Events (`PurrEvent`) and commands (`PurrCommand`) are `BusDataMessage` subclasses in `src/purr/messages.py`, with plain JSON fields (PRs as `owner/repo#123` strings), since everything that listens gets them, and most go into the activity log. Events are broadcast (no target); commands target the worker that executes them.
+Events (`PurrEvent`) are `BusDataMessage` subclasses in `src/purr/messages.py`, broadcast (no target), with plain JSON fields (PRs as `owner/repo#123` strings), since everything that listens gets them, and most go into the activity log. Every event is also logged as one line, its values cut to 200 characters: a `session.message` carries whole tool results, which the session's transcript already keeps.
 
 ## SQLite store
 
