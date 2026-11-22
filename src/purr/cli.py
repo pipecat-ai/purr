@@ -21,6 +21,22 @@ def _setup_logging(config: Config, *, verbose: bool, stderr: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    args = _parser().parse_args(argv)
+    config = _config(args)
+    # With the UI up, stderr belongs to the terminal UI: log to the file only.
+    _setup_logging(config, verbose=args.verbose, stderr=args.headless)
+
+    from purr.app import Purr
+
+    if args.headless:
+        asyncio.run(Purr(config).run())
+    else:
+        from purr.tui import PurrApp
+
+        PurrApp(Purr(config, handle_sigint=False), cwd=Path.cwd()).run()
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="purr", description="Review GitHub pull requests with Claude."
     )
@@ -56,8 +72,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging on stderr")
     parser.add_argument("--version", action="version", version=f"purr {__version__}")
-    args = parser.parse_args(argv)
+    return parser
 
+
+def _config(args: argparse.Namespace) -> Config:
+    """Purr's settings, with what the command line says over them."""
     config = Config.load(data_dir=args.data_dir)
     if args.no_auto_review:
         config = dataclasses.replace(config, auto_review=False)
@@ -67,14 +86,4 @@ def main(argv: list[str] | None = None) -> None:
         config = dataclasses.replace(config, permission_mode=args.permission_mode)
     if args.sandbox:
         config = dataclasses.replace(config, sandbox=True)
-    # With the UI up, stderr belongs to the terminal UI: log to the file only.
-    _setup_logging(config, verbose=args.verbose, stderr=args.headless)
-
-    from purr.app import Purr
-
-    if args.headless:
-        asyncio.run(Purr(config).run())
-    else:
-        from purr.tui import PurrApp
-
-        PurrApp(Purr(config, handle_sigint=False), cwd=Path.cwd()).run()
+    return config

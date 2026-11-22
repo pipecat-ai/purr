@@ -306,7 +306,7 @@ class PurrApp(App):
         self.main.set_alert(self._alert_text())
         # The repo list's ● markers, the PR list's bold titles.
         self.data_version += 1
-        self.run_worker(self._reload())
+        self._start_reload()
 
     def _alerts_elsewhere(self) -> list[str]:
         return [pr for pr in self.alerts if PRRef.parse(pr).repo != self.location]
@@ -339,81 +339,149 @@ class PurrApp(App):
     # -- Live updates -------------------------------------------------------------
 
     def on_bus_event(self, message: BusEvent) -> None:
-        event = message.event
-        if isinstance(event, SkillQuestion):
-            skills = [Skill(**skill) for skill in event.skills]
-            screen = ReviewSkillScreen(event.repo, skills, asking=True)
-            self.push_screen(screen, self._set_review_skill(event.repo))
+        if self._shutting_down:
+            return  # nothing left to show it on, and the store may be closed
+        if handle := self._EVENT_HANDLERS.get(type(message.event)):
+            handle(self, message.event)
+
+    @property
+    def _shutting_down(self) -> bool:
+        """Purr is stopping, or Textual is taking the app down: the store and screens go."""
+        return self._stopping or not self.is_running
+
+    def _ask_review_skill(self, event: SkillQuestion) -> None:
+        skills = [Skill(**skill) for skill in event.skills]
+        screen = ReviewSkillScreen(event.repo, skills, asking=True)
+        self.push_screen(screen, self._set_review_skill(event.repo))
+
+    def _review_skill_chosen(self, event: SkillChosen) -> None:
+        if event.chosen_by != "purr":
             return
-        if isinstance(event, SkillChosen):
-            if event.chosen_by == "purr":
-                self.notify(
-                    f"Reviews in {event.repo} follow its /{event.skill} skill. "
-                    "To change that, press i in the repo.",
-                    timeout=12,
-                )
-            return
-        if isinstance(event, PRChanged) and event.change == PRChange.ASSIGNED:
+        self.notify(
+            f"Reviews in {event.repo} follow its /{event.skill} skill. "
+            "To change that, press i in the repo.",
+            timeout=12,
+        )
+
+    def _prs_updated(self, event: PRListUpdated) -> None:
+        self._schedule_reload()
+
+    def _pr_changed(self, event: PRChanged) -> None:
+        if event.change == PRChange.ASSIGNED:
             self._alert(event.pr, "assigned to you")
-        elif isinstance(event, ReviewFinished):
-            issues = Outcome.of(event.findings).issues
-            plural = "s" if issues != 1 else ""
-            self._alert(
-                event.pr,
-                f"review: found {issues} issue{plural}" if issues else "review: nothing found",
-            )
-        elif isinstance(event, ReviewFailed):
-            self._alert(event.pr, "review failed")
-        elif isinstance(event, PermissionRequest):
-            self._alert(event.pr, "needs your OK")
-        if isinstance(event, (PRListUpdated, PRChanged)):
-            self.data_version += 1
-            if not self._reload_scheduled:
-                # Coalesce bursts (a poll can send many events) into one redraw.
-                self._reload_scheduled = True
-                self.set_timer(0.05, self._reload)
-            return
-        pr = getattr(event, "pr", None)
-        if pr is None:
-            return
+        self._schedule_reload()
+
+    def _session_message(self, event: SessionMessage) -> None:
+        """A step in a PR's session: into its transcript, or how many tasks are out."""
         session = self.main.repo.session
-        state = self.sessions.setdefault(pr, SessionState())
-        if isinstance(event, SessionMessage):
-            if event.message.get("kind") == "background":  # how many tasks are out
-                state.background = int(event.message.get("running") or 0)
-                if session.pr and str(session.pr.ref) == pr:
-                    session.query_one(Working).set_background(state.background)
-                return
-            session.append(pr, event.message)
+        state = self._session_state(event.pr)
+        if event.message.get("kind") != "background":
+            session.append(event.pr, event.message)
             return
-        if isinstance(event, ReviewStarted):
-            state.entries, state.ask = [], None  # a new session
-            state.progress, state.waiting, state.since = None, False, None
-            state.background = 0
-        elif isinstance(event, ReviewProgress):
-            state.progress, state.waiting = event.text or None, event.waiting
-            if not state.progress:
-                state.since, state.background = None, 0
-            elif state.since is None:
-                state.since = time.monotonic()  # the agent's working: the spinner's clock
-        elif isinstance(event, (ReviewFinished, ReviewFailed)):
-            state.progress, state.waiting, state.since = None, False, None
-            state.background = 0
-        elif isinstance(event, PermissionRequest):
-            state.ask = event
-        elif isinstance(event, PermissionResolved):
-            state.ask = None
-        elif not isinstance(event, (ActionPending, ActionResolved)):
-            return
+        state.background = int(event.message.get("running") or 0)
+        if session.pr and str(session.pr.ref) == event.pr:
+            session.query_one(Working).set_background(state.background)
+
+    def _review_started(self, event: ReviewStarted) -> None:
+        state = self._session_state(event.pr)
+        state.entries, state.ask = [], None  # a new session
+        state.progress, state.waiting, state.since = None, False, None
+        state.background = 0
+        self._session_changed(event.pr, new=True)
+
+    def _review_progress(self, event: ReviewProgress) -> None:
+        state = self._session_state(event.pr)
+        state.progress, state.waiting = event.text or None, event.waiting
+        if not state.progress:
+            state.since, state.background = None, 0
+        elif state.since is None:
+            state.since = time.monotonic()  # the agent's working: the spinner's clock
+        self._session_changed(event.pr)
+
+    def _review_finished(self, event: ReviewFinished) -> None:
+        issues = Outcome.of(event.findings).issues
+        plural = "s" if issues != 1 else ""
+        found = f"found {issues} issue{plural}" if issues else "nothing found"
+        self._alert(event.pr, f"review: {found}")
+        self._review_ended(event.pr)
+
+    def _review_failed(self, event: ReviewFailed) -> None:
+        self._alert(event.pr, "review failed")
+        self._review_ended(event.pr)
+
+    def _review_ended(self, pr: str) -> None:
+        state = self._session_state(pr)
+        state.progress, state.waiting, state.since = None, False, None
+        state.background = 0
+        self._session_changed(pr)
+
+    def _permission_asked(self, event: PermissionRequest) -> None:
+        self._alert(event.pr, "needs your OK")
+        self._session_state(event.pr).ask = event
+        self._session_changed(event.pr)
+
+    def _permission_answered(self, event: PermissionResolved) -> None:
+        self._session_state(event.pr).ask = None
+        self._session_changed(event.pr)
+
+    def _action_changed(self, event: ActionPending | ActionResolved) -> None:
+        """A proposal waits for you, or was settled: the decision box changes."""
+        self._session_changed(event.pr)
+
+    def _session_state(self, pr: str) -> SessionState:
+        return self.sessions.setdefault(pr, SessionState())
+
+    def _session_changed(self, pr: str, *, new: bool = False) -> None:
+        """A PR's review moved on: its mark in the list, and its pane if it's the one shown
+        (all of it for a new review, else what the header and decision box say)."""
         self.main.repo.working_changed()
-        if session.pr and str(session.pr.ref) == pr:
-            if isinstance(event, ReviewStarted):
-                self.run_worker(session.show(session.pr), group="session-status")
-            else:
-                self.run_worker(session.refresh_status(), group="session-status")
+        session = self.main.repo.session
+        if not session.pr or str(session.pr.ref) != pr:
+            return
+        update = session.show(session.pr) if new else session.refresh_status()
+        self.run_worker(update, group="session-status")
+
+    # What each bus event does here. A new event: its handler, and a line here.
+    _EVENT_HANDLERS = {
+        SkillQuestion: _ask_review_skill,
+        SkillChosen: _review_skill_chosen,
+        PRListUpdated: _prs_updated,
+        PRChanged: _pr_changed,
+        SessionMessage: _session_message,
+        ReviewStarted: _review_started,
+        ReviewProgress: _review_progress,
+        ReviewFinished: _review_finished,
+        ReviewFailed: _review_failed,
+        PermissionRequest: _permission_asked,
+        PermissionResolved: _permission_answered,
+        ActionPending: _action_changed,
+        ActionResolved: _action_changed,
+    }
+
+    def _schedule_reload(self) -> None:
+        self.data_version += 1
+        if not self._reload_scheduled:
+            # Coalesce bursts (a poll can send many events) into one redraw.
+            self._reload_scheduled = True
+            self.set_timer(0.05, self._start_reload)
+
+    def _start_reload(self) -> None:
+        """Redraw the view from the store, in a worker, the latest reload only.
+
+        A worker, not the app's own message loop: quitting cancels and waits for
+        workers before closing the store, while nothing waits for that loop (Textual
+        under test doesn't either), so a reload there could read a closed store.
+        """
+        self._reload_scheduled = False
+        # The method, not a coroutine: one cancelled before it starts leaves none behind.
+        self.run_worker(self._reload, group="reload", exclusive=True)
 
     async def _reload(self) -> None:
-        self._reload_scheduled = False
+        if self._shutting_down:
+            # Its timer can escape Textual stopping the app's timers (when set while
+            # they're being stopped), and Textual runs what it scheduled right after
+            # on_unmount, when the screens are gone and the store's closed.
+            return
         await self.main.current.reload()
         await self._count_needs_you()
 
@@ -463,15 +531,25 @@ class PurrApp(App):
         await self._stop_purr()
 
     async def _stop_purr(self) -> None:
-        if not self._stopping:
-            self._stopping = True
-            # Nothing on screen needs finishing, and a worker still reading the store
-            # (a PR's details, a repo opening) would fail once it's closed.
-            try:
-                current = get_current_worker()
-            except NoActiveWorker:
-                current = None
-            for worker in list(self.workers):
-                if worker is not current:
-                    worker.cancel()
-            await self.purr.stop()
+        if self._stopping:
+            return
+        self._stopping = True
+        # Nothing on screen needs finishing, and a worker still reading the store
+        # (a PR's details, a repo opening) would fail once it's closed.
+        await self._cancel_other_workers()
+        await self.purr.stop()
+
+    async def _cancel_other_workers(self) -> None:
+        """Cancel every worker but the one this runs in (quitting runs in one).
+
+        And wait until they've stopped: cancelling only asks, and a query cut short
+        still closes its cursor in the store on the way out.
+        """
+        try:
+            current = get_current_worker()
+        except NoActiveWorker:
+            current = None
+        others = [worker for worker in self.workers if worker is not current]
+        for worker in others:
+            worker.cancel()
+        await asyncio.gather(*(worker.wait() for worker in others), return_exceptions=True)

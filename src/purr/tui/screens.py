@@ -185,6 +185,14 @@ def _count(n: int) -> str:
     return str(n) if n else "-"
 
 
+def _review_anyway(taken: list[PR]) -> "ConfirmScreen":
+    """Ask before reviewing PRs someone else is already on."""
+    who = ", ".join(f"#{pr.number} ({', '.join(pr.assignees)})" for pr in taken)
+    return ConfirmScreen(
+        f"Someone's already on {who}. Review anyway?", "You'd be added as an assignee too."
+    )
+
+
 class PurrView(Widget):
     """A view in the main screen's switcher."""
 
@@ -247,23 +255,7 @@ class ReposView(PurrView):
         self._watched = {s.name for s in watched}
         alerted = {pr.split("#")[0] for pr in self.purr_app.alerts}
         selected = self.selected_repo()
-        options: list[Option] = [Option(_repo_row(*_REPO_COLUMNS, header=True), disabled=True)]
-        number = 0
-        for summaries_in, heading, note in [
-            (watched, "● WATCHED", "all their open PRs"),
-            (yours, "○ NOT WATCHED", "only the PRs assigned to you · + watches one"),
-        ]:
-            if not summaries_in:
-                continue
-            if len(options) > 1:
-                options.append(Option(" ", disabled=True))
-            title = Text(f"{heading} ({len(summaries_in)})", style="bold")
-            title.append(f"  {note}", style="dim")
-            options.append(Option(title, disabled=True))
-            for summary in summaries_in:
-                number += 1
-                cells = self._cells(number, summary, summary.name in alerted)
-                options.append(Option(_repo_row(*cells), id=summary.name))
+        options = self._options(watched, yours, alerted)
         repo_list = self.query_one(OptionList)
         repo_list.set_options(options if summaries else [])
         repo_list.display = bool(summaries)
@@ -279,6 +271,29 @@ class ReposView(PurrView):
         empty.set_class(not summaries, "alone")
         empty.update("No repos yet. Press [b]+[/b] to watch one and see its open PRs.")
         self.query_one("#legend").display = bool(alerted)
+
+    def _options(
+        self, watched: list[RepoSummary], yours: list[RepoSummary], alerted: set[str]
+    ) -> list[Option]:
+        """The column headings, then the watched repos and the others, each group headed."""
+        options = [Option(_repo_row(*_REPO_COLUMNS, header=True), disabled=True)]
+        number = 0
+        for summaries, heading, note in [
+            (watched, "● WATCHED", "all their open PRs"),
+            (yours, "○ NOT WATCHED", "only the PRs assigned to you · + watches one"),
+        ]:
+            if not summaries:
+                continue
+            if len(options) > 1:
+                options.append(Option(" ", disabled=True))
+            title = Text(f"{heading} ({len(summaries)})", style="bold")
+            title.append(f"  {note}", style="dim")
+            options.append(Option(title, disabled=True))
+            for summary in summaries:
+                number += 1
+                cells = self._cells(number, summary, summary.name in alerted)
+                options.append(Option(_repo_row(*cells), id=summary.name))
+        return options
 
     @staticmethod
     def _cells(i: int, summary: RepoSummary, alerted: bool) -> list:
@@ -433,36 +448,17 @@ class RepoView(PurrView):
     def _list(self) -> None:
         """Draw the list: the PRs matching the search, grouped."""
         prs = [pr for pr in self._all if matches(pr, self._search)]
-        self._prs = {}
+        groups = self._groups(prs)
+        self._prs = {str(pr.ref): pr for _, members in groups for pr in members}
         self._spinning = {str(pr.ref) for pr in prs if self._working(str(pr.ref))}
-        options: list[Option] = [Option(_columns(self._number_width), disabled=True)] if prs else []
-        if self._all and not prs:
-            options.append(
-                Option(Text(f"No PRs match “{self._search}”.", style="dim"), disabled=True)
-            )
-        for key, icon, label, style in _GROUPS:
-            members = [pr for pr in prs if group(pr) == key]
-            if not members:
-                continue
-            if len(options) > 1:
-                options.append(Option(" ", disabled=True))
-            heading = Text(f"{icon} {label} ({len(members)})", style=style)
-            if key == PRState.DONE:
-                members.sort(key=lambda pr: pr.state_at or "", reverse=True)  # latest first
-                if len(members) > DONE_SHOWN and not self._search:
-                    # An older one you went to (an alert, ctrl+p) shows too.
-                    chosen = self._selected.get(self.repo)
-                    members = [
-                        pr
-                        for i, pr in enumerate(members)
-                        if i < DONE_SHOWN or str(pr.ref) == chosen
-                    ]
-                    heading.append(f"  the latest {DONE_SHOWN}; / finds the others", style="dim")
-            options.append(Option(heading, disabled=True))
-            options += [Option(self._prompt(pr), id=str(pr.ref)) for pr in members]
-            self._prs.update((str(pr.ref), pr) for pr in members)
         self._marked &= {str(pr.ref) for pr in self._all}
         self._spinner.resume() if self._spinning else self._spinner.pause()
+        if prs:
+            options = self._options(groups)
+        elif self._all:
+            options = [Option(Text(f"No PRs match “{self._search}”.", style="dim"), disabled=True)]
+        else:
+            options = []
 
         option_list = self.query_one(OptionList)
         option_list.set_options(options)
@@ -473,6 +469,40 @@ class RepoView(PurrView):
             first = next((i for i, o in enumerate(options) if not o.disabled), None)
             option_list.highlighted = first
         self._show_highlighted()
+
+    def _groups(self, prs: list[PR]) -> list[tuple[Text, list[PR]]]:
+        """The PRs in their groups, each with its heading; empty groups left out."""
+        groups = []
+        for key, icon, label, style in _GROUPS:
+            members = [pr for pr in prs if group(pr) == key]
+            if not members:
+                continue
+            heading = Text(f"{icon} {label} ({len(members)})", style=style)
+            if key == PRState.DONE:
+                members, note = self._latest_done(members)
+                heading.append(note, style="dim")
+            groups.append((heading, members))
+        return groups
+
+    def _latest_done(self, done: list[PR]) -> tuple[list[PR], str]:
+        """Done PRs, latest first: only the latest few, unless searching, and a note saying so."""
+        done = sorted(done, key=lambda pr: pr.state_at or "", reverse=True)
+        if len(done) <= DONE_SHOWN or self._search:
+            return done, ""
+        # An older one you went to (an alert, ctrl+p) shows too.
+        chosen = self._selected.get(self.repo)
+        latest = [pr for i, pr in enumerate(done) if i < DONE_SHOWN or str(pr.ref) == chosen]
+        return latest, f"  the latest {DONE_SHOWN}; / finds the others"
+
+    def _options(self, groups: list[tuple[Text, list[PR]]]) -> list[Option]:
+        """The column headings, then each group's heading and its PRs, a line apart."""
+        options = [Option(_columns(self._number_width), disabled=True)]
+        for heading, members in groups:
+            if len(options) > 1:
+                options.append(Option(" ", disabled=True))
+            options.append(Option(heading, disabled=True))
+            options += [Option(self._prompt(pr), id=str(pr.ref)) for pr in members]
+        return options
 
     def _working(self, key: str) -> bool:
         state = self.purr_app.sessions.get(key)
@@ -689,29 +719,17 @@ class RepoView(PurrView):
 
     @work(group="keys")
     async def action_review(self) -> None:
+        """Review the marked PRs, or else the selected one."""
         targets = [self._prs[ref] for ref in self._marked if ref in self._prs]
         if not targets and (pr := self.selected_pr()):
             targets = [pr]
         taken = [pr for pr in targets if pr.others_on_it]
-        if taken and not await self.app.push_screen_wait(
-            ConfirmScreen(
-                "Someone's already on "
-                + ", ".join(f"#{pr.number} ({', '.join(pr.assignees)})" for pr in taken)
-                + ". Review anyway?",
-                "You'd be added as an assignee too.",
-            )
-        ):
+        if taken and not await self.app.push_screen_wait(_review_anyway(taken)):
             return
         self._marked.clear()
         if not targets:
             return
-        for pr in targets:
-            if not pr.assigned_to_me:
-                # Taking it from the pool: assign yourself, so teammates see it's taken.
-                try:
-                    await self.purr_app.bus.request(AssignMe(pr=pr.ref))
-                except PurrError as e:
-                    self.notify(str(e), severity="warning")
+        await self._take(targets)
         plural = "s" if len(targets) != 1 else ""
         self.notify(f"Planning {len(targets)} review{plural}")
         # The lead plans them together (a few seconds), then they start.
@@ -723,6 +741,16 @@ class RepoView(PurrView):
             return
         for error in errors.values():
             self.notify(error, severity="warning")
+
+    async def _take(self, prs: list[PR]) -> None:
+        """Taking PRs from the pool: assign yourself, so teammates see they're taken."""
+        for pr in prs:
+            if pr.assigned_to_me:
+                continue
+            try:
+                await self.purr_app.bus.request(AssignMe(pr=pr.ref))
+            except PurrError as e:
+                self.notify(str(e), severity="warning")
 
     def _asking(self) -> SessionState | None:
         """The shown PR's session, if its agent is waiting on a permission answer."""

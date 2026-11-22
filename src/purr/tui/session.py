@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -36,6 +36,7 @@ from purr.models import (
     PRState,
     Reply,
     Review,
+    ReviewPlan,
     ReviewStatus,
 )
 from purr.review.agent import INSTEAD, thought_headline
@@ -167,6 +168,14 @@ def outcome_mark(outcome: Outcome) -> Text:
     return Text("●", style="bold red") if outcome.found else Text("✓", style="bold green")
 
 
+@dataclass(frozen=True)
+class _RenderOptions:
+    """What the renderers are told besides the entry."""
+
+    signature: str  # the small print Purr adds to what it posts
+    full_thinking: bool  # thoughts in full, rather than a line each
+
+
 def render_entry(
     entry: dict, signature: str = "", *, full_thinking: bool = False
 ) -> RenderableType | None:
@@ -178,80 +187,240 @@ def render_entry(
     """
     if entry.get("agent"):
         return None
-    kind = entry.get("kind")
-    if kind == "text":
-        return _bullet(Markdown(entry["text"], code_theme=CODE_THEME))
-    if kind == "thinking":
-        # Like Claude Code: the reasoning, dimmed, ahead of what it leads to. In
-        # full it's ten times what the agent says, so a line each unless you ask (t).
-        text = entry["text"].strip() if full_thinking else thought_headline(entry["text"])
-        return _bullet(Text(text, style="dim italic"), style="dim")
-    if kind == "user":
-        return Text(f"> {entry['text'].replace(chr(10), chr(10) + '  ')}", style="bold")
-    if kind == "set_aside":  # you wrote instead of approving it
-        return Text(f"  ◼ Proposal set aside: {_short(entry.get('text', ''))}", style="dim")
-    if kind == "tool_use":
-        name, tool_input = entry.get("name", ""), entry.get("input") or {}
-        if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
-            lines = [Text(tool_input.get("summary", ""), style="bold")]
-            for i, finding in enumerate(tool_input.get("findings") or [], start=1):
-                severity = finding.get("severity", "suggestion")
-                where = finding.get("file") or ""
-                if where and finding.get("line"):
-                    where += f":{finding['line']}"
-                line = Text(f"{i}. ")
-                line.append(severity, style=_SEVERITY_STYLE.get(severity, ""))
-                if where:
-                    line.append(f"  {where}", style="cyan")
-                line.append(f"  {finding.get('text', '')}")
-                lines.append(line)
-            return _bullet(Group(*lines), style="bold green")
-        if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
-            return _bullet(render_proposal(tool_input, signature), style="magenta")
-        target = (
-            tool_input.get("command")
-            or tool_input.get("file_path")
-            or tool_input.get("pattern")
-            or tool_input.get("path")
-            or tool_input.get("url")
-            or tool_input.get("description")  # a subagent's task
-            or ""
+    render = _RENDERERS.get(entry.get("kind"))
+    return render(entry, _RenderOptions(signature, full_thinking)) if render else None
+
+
+def _render_text(entry: dict, options: _RenderOptions) -> RenderableType:
+    return _bullet(Markdown(entry["text"], code_theme=CODE_THEME))
+
+
+def _render_thinking(entry: dict, options: _RenderOptions) -> RenderableType:
+    # Like Claude Code: the reasoning, dimmed, ahead of what it leads to. In
+    # full it's ten times what the agent says, so a line each unless you ask (t).
+    text = entry["text"].strip() if options.full_thinking else thought_headline(entry["text"])
+    return _bullet(Text(text, style="dim italic"), style="dim")
+
+
+def _render_user(entry: dict, options: _RenderOptions) -> RenderableType:
+    return _you_wrote(entry["text"])
+
+
+def _you_wrote(text: str) -> Text:
+    """What you wrote, under its ``>``."""
+    indented = text.replace("\n", "\n  ")
+    return Text(f"> {indented}", style="bold")
+
+
+def _render_set_aside(entry: dict, options: _RenderOptions) -> RenderableType:
+    """A proposal you wrote instead of approving."""
+    return Text(f"  ◼ Proposal set aside: {_short(entry.get('text', ''))}", style="dim")
+
+
+# What a tool call is about: the first of these its input has (a description is
+# a subagent's task).
+_TOOL_TARGETS = ("command", "file_path", "pattern", "path", "url", "description")
+
+
+def _render_tool_use(entry: dict, options: _RenderOptions) -> RenderableType:
+    name, tool_input = entry.get("name", ""), entry.get("input") or {}
+    if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
+        return _bullet(_render_submitted_review(tool_input), style="bold green")
+    if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
+        return _bullet(render_proposal(tool_input, options.signature), style="magenta")
+    line = Text(name.removeprefix(PURR_TOOL_PREFIX), style="bold")
+    target = next((tool_input[key] for key in _TOOL_TARGETS if tool_input.get(key)), "")
+    if target:
+        line.append(f"({_short(str(target))})", style="dim")
+    return _bullet(line, style="green")
+
+
+def _render_submitted_review(review: dict) -> Group:
+    """The review's summary, then its findings, numbered."""
+    findings = enumerate(review.get("findings") or [], start=1)
+    lines = [Text(review.get("summary", ""), style="bold")]
+    lines += [_render_finding(number, finding) for number, finding in findings]
+    return Group(*lines)
+
+
+def _render_finding(number: int, finding: dict) -> Text:
+    """``2. issue  src/bus.py:40  The lock is never released.``"""
+    severity = finding.get("severity", "suggestion")
+    where = finding.get("file") or ""
+    if where and finding.get("line"):
+        where += f":{finding['line']}"
+    line = Text(f"{number}. ")
+    line.append(severity, style=_SEVERITY_STYLE.get(severity, ""))
+    if where:
+        line.append(f"  {where}", style="cyan")
+    line.append(f"  {finding.get('text', '')}")
+    return line
+
+
+def _render_tool_result(entry: dict, options: _RenderOptions) -> RenderableType | None:
+    text = entry.get("text") or ""
+    if text.startswith(("Review recorded", "Proposed (action")):
+        return None  # Purr's own tools; their calls already say it all
+    if text.startswith(INSTEAD):  # you wrote instead of allowing it
+        said = text.removeprefix(INSTEAD).strip()
+        return Group(
+            Text("  ⎿ Not allowed: you wrote instead", style="dim"), Text(""), _you_wrote(said)
         )
-        line = Text(name.removeprefix(PURR_TOOL_PREFIX), style="bold")
-        if target:
-            line.append(f"({_short(str(target))})", style="dim")
-        return _bullet(line, style="green")
-    if kind == "tool_result":
-        text = entry.get("text") or ""
-        if text.startswith(("Review recorded", "Proposed (action")):
-            return None  # Purr's own tools; their calls already say it all
-        if text.startswith(INSTEAD):  # you wrote instead of allowing it
-            said = text.removeprefix(INSTEAD).strip()
-            return Group(
-                Text("  ⎿ Not allowed: you wrote instead", style="dim"),
-                Text(""),
-                render_entry({"kind": "user", "text": said}),
-            )
-        lines = text.strip().splitlines() or [""]
-        more = f" … +{len(lines) - 1} lines" if len(lines) > 1 else ""
-        style = "red" if entry.get("is_error") else "dim"
-        return Text(f"  ⎿ {_short(lines[0], 90)}{more}", style=style)
-    if kind == "result":
-        turns, cost = entry.get("turns") or 0, entry.get("cost_usd")
-        details = [f"{turns} turn{'s' if turns != 1 else ''}"] if turns else []
-        details += [f"${cost:.2f}"] if cost else []
-        return Text("  ✓ done" + "".join(f" · {d}" for d in details), style="dim")
-    if kind == "error":
-        return Text(f"✗ {entry.get('text', '')}", style="red")
-    if kind == "task":  # a background agent (or command) starting or reporting back
-        # Stopped isn't failed: the agent stops what it no longer needs.
-        mark, verb, style = _TASK_EVENTS.get(entry.get("event"), ("✗", "failed", "dim red"))
-        return Text(
-            f"  {mark} background {verb}: {_short(entry.get('text', ''), 100)}", style=style
-        )
-    if kind == "permission_auto":
-        return Text(f"  ✓ allowed by your permission {entry.get('rule', '')}", style="dim green")
-    return None
+    lines = text.strip().splitlines() or [""]
+    more = f" … +{len(lines) - 1} lines" if len(lines) > 1 else ""
+    style = "red" if entry.get("is_error") else "dim"
+    return Text(f"  ⎿ {_short(lines[0], 90)}{more}", style=style)
+
+
+def _render_result(entry: dict, options: _RenderOptions) -> RenderableType:
+    """The end of a turn: ``✓ done · 3 turns · $0.12``."""
+    turns, cost = entry.get("turns") or 0, entry.get("cost_usd")
+    details = [f"{turns} turn{'s' if turns != 1 else ''}"] if turns else []
+    details += [f"${cost:.2f}"] if cost else []
+    return Text("  ✓ done" + "".join(f" · {d}" for d in details), style="dim")
+
+
+def _render_error(entry: dict, options: _RenderOptions) -> RenderableType:
+    return Text(f"✗ {entry.get('text', '')}", style="red")
+
+
+def _render_task(entry: dict, options: _RenderOptions) -> RenderableType:
+    """A background agent (or command) starting or reporting back."""
+    # Stopped isn't failed: the agent stops what it no longer needs.
+    mark, verb, style = _TASK_EVENTS.get(entry.get("event"), ("✗", "failed", "dim red"))
+    return Text(f"  {mark} background {verb}: {_short(entry.get('text', ''), 100)}", style=style)
+
+
+def _render_permission_auto(entry: dict, options: _RenderOptions) -> RenderableType:
+    return Text(f"  ✓ allowed by your permission {entry.get('rule', '')}", style="dim green")
+
+
+# How each kind of entry shows. A new kind: its renderer, and a line here.
+_RENDERERS: dict[str, Callable[[dict, _RenderOptions], RenderableType | None]] = {
+    "text": _render_text,
+    "thinking": _render_thinking,
+    "user": _render_user,
+    "set_aside": _render_set_aside,
+    "tool_use": _render_tool_use,
+    "tool_result": _render_tool_result,
+    "result": _render_result,
+    "error": _render_error,
+    "task": _render_task,
+    "permission_auto": _render_permission_auto,
+}
+
+
+def _review_status(
+    pr: PR,
+    review: Review | None,
+    outcome: Outcome,
+    actions: list[PendingAction],
+    state: SessionState,
+) -> Text:
+    """The header's line on the review: waiting on you, at work, how it went, or not done."""
+    if state.ask:
+        return Text("⚠ Waiting for you to allow something", style="bold yellow")
+    if pr.state == PRState.REVIEWING:
+        progress = f" · {_short(state.progress, 80)}" if state.progress else ""
+        return Text.assemble(("⟳ Reviewing", "bold cyan"), (progress, "dim"))
+    if state.progress:  # the lead is planning its review
+        return Text(f"⟳ {_short(state.progress, 80)}", style="bold cyan")
+    if review is None:
+        return _not_reviewed(pr)
+    if review.status == ReviewStatus.FAILED:
+        return Text(f"✗ Review failed: {review.error}", style="bold red")
+    if review.status == ReviewStatus.FINISHED:
+        mark = outcome_mark(outcome)
+        pending = f" · {len(actions)} pending action" if actions else ""
+        return Text.assemble(mark, (f" Review: {outcome.text()}", mark.style), (pending, "yellow"))
+    return Text()
+
+
+def _not_reviewed(pr: PR) -> Text:
+    """Nobody's review yet, or only others': and how to start yours."""
+    text = Text()
+    text.append("◌ Not reviewed by you" if pr.others_on_it else "○ Not reviewed", style="bold")
+    if pr.requested_from_me:
+        text.append(" · asks for your review", style="magenta")
+    if pr.others_on_it:
+        hint = " · r to review it too"
+    else:
+        hint = " · r to review it" + ("" if pr.assigned_to_me else " and take it")
+    text.append(f"{hint} · d diff", style="dim")
+    return text
+
+
+def _worktree_note(worktree_path: str) -> str:
+    """Where the review's worktree is, and what ! does there."""
+    path = Path(worktree_path)
+    home = str(Path.home())
+    shown = "~" + str(path)[len(home) :] if str(path).startswith(home) else str(path)
+    where = "! opens a shell there" if path.exists() else "removed; ! makes it again"
+    return f"Worktree {shown} · {where}"
+
+
+def _plan_note(plan: ReviewPlan) -> str:
+    """What the lead planned, and why."""
+    line = f"{plan.depth.value.capitalize()} review · {plan.priority.value} priority"
+    return line + (f" · {plan.why}" if plan.why else "")
+
+
+def _decision(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """What waits on you, above the prompt: the first of the questions that has something."""
+    asked = (question(pr, state, actions) for question in _QUESTIONS)
+    return next((text for text in asked if text is not None), None)
+
+
+def _permission_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """The agent wants to do something Claude Code asks about first."""
+    if not (ask := state.ask):
+        return None
+    always = "   [A] always…" if ask.rule else ""
+    return Text.assemble(
+        ("The agent wants to: ", "bold"),
+        (_short(ask.description, 120), "yellow"),
+        ("\n", ""),
+        (ask.reason or "Claude Code asks before this.", "dim"),
+        (f"\n[a] allow once{always}   [x] deny", "bold"),
+        ("   or write what to do instead", "dim"),
+    )
+
+
+def _proposal_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """The agent proposes posting something (the oldest proposal first)."""
+    if not actions:
+        return None
+    action = actions[0]
+    comments = len(action.payload.get("comments") or [])
+    plural = "s" if comments != 1 else ""
+    detail = f" · {comments} inline comment{plural}" if comments else ""
+    return Text.assemble(
+        (f"{action.description}?", "bold"),
+        (detail, "dim"),
+        ("\n[a] approve   [x] dismiss", "bold"),
+        ("   or write to change it", "dim"),
+    )
+
+
+def _replies_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """Others replied to you on GitHub: answer, or say no reply's needed."""
+    return render_replies(pr.replies) if pr.replies else None
+
+
+# What the decision box can ask, most pressing first; each says None when it has
+# nothing to ask. A new question: its function, and a line here.
+_QUESTIONS: list[Callable[[PR, SessionState, list[PendingAction]], Text | None]] = [
+    _permission_question,
+    _proposal_question,
+    _replies_question,
+]
+
+
+def _suggestion(command: Command) -> Text:
+    """A / suggestion: ``/review [quick|full]  Start over…``."""
+    return Text.assemble(
+        (f"/{command.name}", "bold"), (f"  {command.args}", ""), (f"  {command.help}", "dim")
+    )
 
 
 class PRSession(Vertical):
@@ -328,16 +497,7 @@ class PRSession(Vertical):
         self._suggested = suggestions(self.query_one(PromptArea).text, self._skills())
         box.display = bool(self._suggested)
         if self._suggested:
-            box.set_options(
-                [
-                    Option(
-                        Text.assemble(
-                            (f"/{c.name}", "bold"), (f"  {c.args}", ""), (f"  {c.help}", "dim")
-                        )
-                    )
-                    for c in self._suggested
-                ]
-            )
+            box.set_options([Option(_suggestion(command)) for command in self._suggested])
             box.highlighted = 0
 
     def active(self) -> bool:
@@ -364,40 +524,65 @@ class PRSession(Vertical):
     async def _command(self, name: str, args: str) -> None:
         """Run one of Purr's commands; its output goes in the transcript, just for you."""
         assert self.pr
-        log, ref = self.query_one(RichLog), self.pr.ref
-        log.write(Text(f"\n> /{name} {args}".rstrip(), style="bold"))
-        if name == "help":
-            log.write(render_help(await self._load_skills(ref.repo)))
-        elif name in ("review", "clear"):
-            if args not in ("", "quick", "full"):
-                log.write(Text("Say /review, /review quick or /review full.", style="yellow"))
-                return
-            depth = Depth(args) if args else None
-            errors = (await self.purr_app.bus.request(PlanReviews(prs=[ref], depth=depth))).errors
-            for error in errors.values():
-                log.write(Text(error, style="yellow"))
-            if not errors:
-                log.write(Text("Starting over with a fresh review.", style="dim"))
-        elif name == "model":
-            if args:
-                model = None if args in ("default", "auto") else args
-                await self.purr_app.bus.request(SetModel(pr=ref, model=model))
-                self.pr = await self.purr_app.purr.store.get_pr(ref) or self.pr
-            chosen = self.pr.model
-            config = self.purr_app.purr.config
-            text = (
-                f"This PR's conversation uses {chosen}."
-                if chosen
-                else f"Purr's choice: {config.review_model or 'Claude Code’s default'}, and "
-                f"{config.quick_model or 'the same'} for quick reviews. /model <name> to choose."
-            )
-            log.write(Text(text, style="dim"))
-        elif name == "cost":
-            log.write(render_cost(await self.purr_app.purr.store.runs(ref)))
-        elif name == "shell":
-            await self.purr_app.main.repo.action_shell()
-        elif name == "claude":
-            await self.purr_app.main.repo.action_open_claude()
+        self.query_one(RichLog).write(Text(f"\n> /{name} {args}".rstrip(), style="bold"))
+        if run := self._COMMAND_HANDLERS.get(name):
+            await run(self, self.pr.ref, args)
+
+    async def _help(self, ref: PRRef, args: str) -> None:
+        """/help: what you can type here, the repo's skills included."""
+        self.query_one(RichLog).write(render_help(await self._load_skills(ref.repo)))
+
+    async def _review_again(self, ref: PRRef, args: str) -> None:
+        """/review and /clear: start over with a fresh review, quick or full if you say."""
+        log = self.query_one(RichLog)
+        if args not in ("", "quick", "full"):
+            log.write(Text("Say /review, /review quick or /review full.", style="yellow"))
+            return
+        depth = Depth(args) if args else None
+        errors = (await self.purr_app.bus.request(PlanReviews(prs=[ref], depth=depth))).errors
+        for error in errors.values():
+            log.write(Text(error, style="yellow"))
+        if not errors:
+            log.write(Text("Starting over with a fresh review.", style="dim"))
+
+    async def _model(self, ref: PRRef, args: str) -> None:
+        """/model: choose the model for this PR's conversation, then say which it uses."""
+        assert self.pr
+        if args:
+            model = None if args in ("default", "auto") else args
+            await self.purr_app.bus.request(SetModel(pr=ref, model=model))
+            self.pr = await self.purr_app.purr.store.get_pr(ref) or self.pr
+        chosen = self.pr.model
+        config = self.purr_app.purr.config
+        text = (
+            f"This PR's conversation uses {chosen}."
+            if chosen
+            else f"Purr's choice: {config.review_model or 'Claude Code’s default'}, and "
+            f"{config.quick_model or 'the same'} for quick reviews. /model <name> to choose."
+        )
+        self.query_one(RichLog).write(Text(text, style="dim"))
+
+    async def _cost(self, ref: PRRef, args: str) -> None:
+        """/cost: what the PR's runs cost, and how long they took."""
+        self.query_one(RichLog).write(render_cost(await self.purr_app.purr.store.runs(ref)))
+
+    async def _shell(self, ref: PRRef, args: str) -> None:
+        await self.purr_app.main.repo.action_shell()
+
+    async def _claude(self, ref: PRRef, args: str) -> None:
+        await self.purr_app.main.repo.action_open_claude()
+
+    # What runs each of Purr's commands (listed, with their help, in purr.tui.commands).
+    # A new command: its method here, and a line in this table.
+    _COMMAND_HANDLERS = {
+        "help": _help,
+        "review": _review_again,
+        "clear": _review_again,
+        "model": _model,
+        "cost": _cost,
+        "shell": _shell,
+        "claude": _claude,
+    }
 
     def state(self, pr: PR | None = None) -> SessionState:
         pr = pr or self.pr
@@ -457,8 +642,6 @@ class PRSession(Vertical):
         review = await self.purr_app.purr.store.latest_review(pr.ref)
         if not review or not review.session_id or not review.worktree_path:
             return []
-        from pathlib import Path
-
         agent = self.purr_app.purr.agent
         try:
             return await asyncio.to_thread(
@@ -505,45 +688,19 @@ class PRSession(Vertical):
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details)
         )
+        self._show_working(state)
+        box = self.query_one("#pr-decision", Static)
+        if (decision := _decision(pr, state, actions)) is not None:
+            box.update(decision)
+        box.display = decision is not None
+
+    def _show_working(self, state: SessionState) -> None:
         working = self.query_one(Working)
-        if state.working:
-            assert state.since is not None
-            working.start(state.since, state.background)
-        else:
+        if not state.working:
             working.stop()
-        decision = self.query_one("#pr-decision", Static)
-        if state.ask:
-            always = "   [A] always…" if state.ask.rule else ""
-            decision.update(
-                Text.assemble(
-                    ("The agent wants to: ", "bold"),
-                    (_short(state.ask.description, 120), "yellow"),
-                    ("\n", ""),
-                    (state.ask.reason or "Claude Code asks before this.", "dim"),
-                    (f"\n[a] allow once{always}   [x] deny", "bold"),
-                    ("   or write what to do instead", "dim"),
-                )
-            )
-            decision.display = True
-        elif actions:
-            action = actions[0]
-            comments = len(action.payload.get("comments") or [])
-            plural = "s" if comments != 1 else ""
-            detail = f" · {comments} inline comment{plural}" if comments else ""
-            decision.update(
-                Text.assemble(
-                    (f"{action.description}?", "bold"),
-                    (detail, "dim"),
-                    ("\n[a] approve   [x] dismiss", "bold"),
-                    ("   or write to change it", "dim"),
-                )
-            )
-            decision.display = True
-        elif pr.replies:
-            decision.update(render_replies(pr.replies))
-            decision.display = True
-        else:
-            decision.display = False
+            return
+        assert state.since is not None
+        working.start(state.since, state.background)
 
     @staticmethod
     def _header(
@@ -559,46 +716,13 @@ class PRSession(Vertical):
         text.append(f"  {pr.title}\n", style="bold")
         text.append(details_line(pr, details))
         text.append("\n")
-        if state.ask:
-            text.append("⚠ Waiting for you to allow something", style="bold yellow")
-        elif pr.state == PRState.REVIEWING:
-            text.append("⟳ Reviewing", style="bold cyan")
-            if state.progress:
-                text.append(f" · {_short(state.progress, 80)}", style="dim")
-        elif state.progress:  # the lead is planning its review
-            text.append(f"⟳ {_short(state.progress, 80)}", style="bold cyan")
-        elif review and review.status == ReviewStatus.FAILED:
-            text.append(f"✗ Review failed: {review.error}", style="bold red")
-        elif review and review.status == ReviewStatus.FINISHED:
-            mark = outcome_mark(outcome)
-            text.append(mark)
-            text.append(f" Review: {outcome.text()}", style=mark.style)
-            if actions:
-                text.append(f" · {len(actions)} pending action", style="yellow")
-        elif review is None and pr.others_on_it:
-            text.append("◌ Not reviewed by you", style="bold")
-            if pr.requested_from_me:
-                text.append(" · asks for your review", style="magenta")
-            text.append(" · r to review it too · d diff", style="dim")
-        elif review is None:
-            text.append("○ Not reviewed", style="bold")
-            if pr.requested_from_me:
-                text.append(" · asks for your review", style="magenta")
-            hint = " · r to review it" + ("" if pr.assigned_to_me else " and take it")
-            text.append(f"{hint} · d diff", style="dim")
+        text.append(_review_status(pr, review, outcome, actions, state))
         if pr.replies and review is not None:
             text.append(f" · {replied(pr.replies)}", style="yellow")
         if review and review.worktree_path:
-            path = Path(review.worktree_path)
-            home = str(Path.home())
-            shown = "~" + str(path)[len(home) :] if str(path).startswith(home) else str(path)
-            where = "! opens a shell there" if path.exists() else "removed; ! makes it again"
-            text.append(f"\nWorktree {shown} · {where}", style="dim")
+            text.append(f"\n{_worktree_note(review.worktree_path)}", style="dim")
         if review and review.plan and pr.state != PRState.NOT_REVIEWED:
-            # What the lead planned, and why.
-            plan = review.plan
-            line = f"{plan.depth.value.capitalize()} review · {plan.priority.value} priority"
-            text.append(f"\n{line}" + (f" · {plan.why}" if plan.why else ""), style="dim")
+            text.append(f"\n{_plan_note(review.plan)}", style="dim")
         return text
 
     def focus_prompt(self) -> None:

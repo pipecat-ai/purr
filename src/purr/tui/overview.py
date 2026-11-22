@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatch
+from itertools import pairwise
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
@@ -171,37 +172,48 @@ def render_diff(diff: str, details: PRDetails | None = None) -> RenderableType:
     """A unified diff the way ``git diff`` colors it, a rule per file."""
     parts: list[RenderableType] = []
     lines = diff.splitlines()
-    hunk: Text | None = None
-    collapsed = False
-    for line in lines[:DIFF_LINES]:
-        if line.startswith("diff --git "):
-            path = line.rpartition(" b/")[2]
-            parts.append(_file_rule(path, details))
-            collapsed = any(fnmatch(path.rpartition("/")[2], pattern) for pattern in COLLAPSED)
-            hunk = Text()
-            if collapsed:
-                hunk.append("generated, not shown\n", style="dim")
-            parts.append(hunk)
-            continue
-        if hunk is None or collapsed or line.startswith(_SKIPPED):
-            continue
-        note = next((n for prefix, n in _FILE_NOTES.items() if line.startswith(prefix)), None)
-        if note:
-            rest = line.removeprefix("rename from ") if note == "renamed from" else ""
-            hunk.append(f"{note} {rest}".rstrip() + "\n", style="dim italic")
-        elif line.startswith("@@"):
-            hunk.append(line + "\n", style="cyan")
-        elif line.startswith("+"):
-            hunk.append(line + "\n", style="green")
-        elif line.startswith("-"):
-            hunk.append(line + "\n", style="red")
-        elif line.startswith("\\"):
-            hunk.append(line + "\n", style="dim")
-        else:
-            hunk.append(line + "\n")
+    for path, file_lines in _files(lines[:DIFF_LINES]):
+        parts += [_file_rule(path, details), _file_changes(path, file_lines)]
     if (more := len(lines) - DIFF_LINES) > 0:
         parts.append(Text(f"… {more} more lines. d opens the whole diff.", style="dim"))
     return Group(*parts)
+
+
+def _files(lines: list[str]) -> list[tuple[str, list[str]]]:
+    """Each file's path and its lines, after the ``diff --git`` line that starts it."""
+    starts = [i for i, line in enumerate(lines) if line.startswith("diff --git ")]
+    return [
+        (lines[start].rpartition(" b/")[2], lines[start + 1 : end])
+        for start, end in pairwise([*starts, len(lines)])
+    ]
+
+
+def _file_changes(path: str, lines: list[str]) -> Text:
+    """A file's diff, colored; a generated file's only says it's not shown."""
+    changes = Text()
+    if any(fnmatch(path.rpartition("/")[2], pattern) for pattern in COLLAPSED):
+        changes.append("generated, not shown\n", style="dim")
+        return changes
+    for line in lines:
+        if line.startswith(_SKIPPED):
+            continue
+        text, style = _colored(line)
+        changes.append(text, style=style)
+    return changes
+
+
+# How git colors a diff's lines, by how they start.
+_LINE_STYLES = (("@@", "cyan"), ("+", "green"), ("-", "red"), ("\\", "dim"))
+
+
+def _colored(line: str) -> tuple[str, str]:
+    """A diff line, and its style; what git says about a file (new, renamed...) as a note."""
+    note = next((n for prefix, n in _FILE_NOTES.items() if line.startswith(prefix)), None)
+    if note:
+        rest = line.removeprefix("rename from ") if note == "renamed from" else ""
+        return f"{note} {rest}".rstrip() + "\n", "dim italic"
+    style = next((style for prefix, style in _LINE_STYLES if line.startswith(prefix)), "")
+    return line + "\n", style
 
 
 def render_overview(
@@ -229,11 +241,15 @@ def render_overview(
             ("  d opens it in your pager", "dim"),
         ),
     ]
-    if diff is not None:
-        parts.append(render_diff(diff, details))
-    elif diff_error:
-        parts.append(Text(f"Couldn't load the diff: {diff_error}", style="red"))
-    else:
-        parts.append(Text("Loading the diff…", style="dim"))
-    parts.append(Text(""))
+    parts += [_diff_or_why_not(diff, diff_error, details), Text("")]
     return Group(*parts)
+
+
+def _diff_or_why_not(
+    diff: str | None, error: str | None, details: PRDetails | None
+) -> RenderableType:
+    if diff is not None:
+        return render_diff(diff, details)
+    if error:
+        return Text(f"Couldn't load the diff: {error}", style="red")
+    return Text("Loading the diff…", style="dim")
