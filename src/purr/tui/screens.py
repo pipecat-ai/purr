@@ -436,6 +436,7 @@ class RepoView(PurrView):
         if repo != self.repo:
             self.repo = repo
             self._set_search(self._searches.get(repo, ""))
+            self.session.clear()  # not the last repo's PR while this one's loads
         await self.refresh_if_stale()
 
     async def reload(self) -> None:
@@ -979,9 +980,9 @@ class MainScreen(Screen):
         app = cast("PurrApp", self.app)
         number = f"{app.repo_names.index(name) + 1} " if name in app.repo_names[:9] else ""
         self.query_one("#crumb", Static).update(f"Purr › {number}{name}")
+        await self.repo.show(name)  # before it shows: never the last repo's list
         self.query_one(ContentSwitcher).current = "repo"
         self.repo.focus_main()
-        await self.repo.show(name)
 
 
 class AddRepoScreen(ModalScreen[str | None]):

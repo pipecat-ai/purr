@@ -344,6 +344,14 @@ async def test_alerts_and_the_switcher(tmp_path):
         await until(pilot, lambda: home(app))
         assert str(alert.render()) == ""
 
+        # Into another repo: its PRs show, never the last one's, even for a moment.
+        session = app.main.repo.session
+        await until(pilot, lambda: session.pr is not None)
+        await app.open_repo("daily-co/daily-x")
+        assert [pr.number for pr in app.main.repo._prs.values()] == [7]
+        assert session.pr is None or session.pr.number == 7
+        await until(pilot, lambda: getattr(session.pr, "number", None) == 7)
+
 
 async def test_news_survives_a_restart_and_shows_in_bold(tmp_path):
     from purr.models import PRRef

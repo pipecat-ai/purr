@@ -654,6 +654,15 @@ class PRSession(Vertical):
             asked = await self.purr_app.purr.store.prompts(pr.ref)
             self.query_one(PromptArea).set_history([text for _, text in reversed(asked)])
 
+    def clear(self) -> None:
+        """Show nothing, until the next PR is shown (another repo's is on its way)."""
+        self.pr, self._drawn = None, None
+        self.query_one("#pr-header", Static).update("")
+        self.query_one(RichLog).clear()
+        self.query_one("#pr-decision").display = False
+        self.query_one(Working).stop()
+        self.query_one(PromptArea).suggest("")
+
     def redraw(self, *, keep_place: bool = False) -> None:
         """Rewrite the transcript: the overview, then the session.
 
