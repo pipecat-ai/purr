@@ -17,6 +17,7 @@ from typing import Protocol
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
+from purr.claude import log_stderr
 from purr.models import PR, Outcome, PRDetails, Priority, PRRef, Review, ReviewPlan
 from purr.review.skills import RepoSkill
 
@@ -229,6 +230,7 @@ class ClaudeLead:
             setting_sources=[],
             output_format={"type": "json_schema", "schema": PLAN_SCHEMA},
             model=self._model,
+            stderr=log_stderr,
         )
         result = None
         async for message in query(prompt=notes, options=options):

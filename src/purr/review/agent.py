@@ -33,6 +33,7 @@ from claude_agent_sdk import (
     tool,
 )
 
+from purr.claude import log_stderr
 from purr.models import PR, ActionKind, Finding, ReviewPlan, Severity
 from purr.review.instructions import ReviewInstructions
 from purr.review.plan import plan_section
@@ -536,6 +537,7 @@ class ClaudeReviewAgent:
             # Claude Code does (the default, "omitted", returns them empty).
             thinking={"type": "adaptive", "display": "summarized"},
             model=model or self._model,
+            stderr=log_stderr,
             max_budget_usd=self._max_budget_usd,
             resume=session_id if resume else None,
             session_id=None if resume else session_id,

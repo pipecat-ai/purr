@@ -5,6 +5,7 @@ from typing import Protocol
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
+from purr.claude import log_stderr
 from purr.models import PR, Activity, PendingAction, PRRef, PRState
 
 # Activity worth a recap. Pool PRs leaving (taken by someone, closed unreviewed)
@@ -169,6 +170,7 @@ class ClaudeRecapAgent:
             setting_sources=[],
             output_format={"type": "json_schema", "schema": RECAP_SCHEMA},
             model=self._model,
+            stderr=log_stderr,
         )
         result = None
         async for message in query(prompt=notes, options=options):

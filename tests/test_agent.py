@@ -113,3 +113,42 @@ def test_subagent_entries_say_which_agent():
     assert describe_tool_use("Agent", {"description": "Bug scan", "prompt": "…"}) == (
         "Agent Bug scan"
     )
+
+
+async def test_claude_codes_stderr_never_reaches_your_terminal(monkeypatch, tmp_path):
+    """Left to the SDK, it goes to the terminal under Purr's screen (and shows the cursor)."""
+    import pytest
+
+    import purr.lead
+    import purr.recap
+    import purr.review.agent
+    from purr.claude import log_stderr
+    from purr.models import PR
+
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def query(prompt, options):
+        seen.append(options.stderr)
+        raise Stop
+
+    class Client:
+        def __init__(self, options):
+            seen.append(options.stderr)
+            raise Stop
+
+    monkeypatch.setattr(purr.lead, "query", query)
+    monkeypatch.setattr(purr.recap, "query", query)
+    monkeypatch.setattr(purr.review.agent, "ClaudeSDKClient", Client)
+    pr = PR(repo="a/b", number=1, title="t", author="x", url="u", head_sha="h", updated_at="")
+    with pytest.raises(Stop):
+        await purr.lead.ClaudeLead().plan("notes")
+    with pytest.raises(Stop):
+        await purr.recap.ClaudeRecapAgent().summarize("notes")
+    with pytest.raises(Stop):
+        await purr.review.agent.ClaudeReviewAgent().run(
+            pr=pr, worktree=tmp_path, session_id="s", resume=False, prompt="p", callbacks=None
+        )
+    assert seen == [log_stderr, log_stderr, log_stderr]

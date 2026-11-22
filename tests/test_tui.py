@@ -720,7 +720,6 @@ async def test_quitting_asks_first(tmp_path):
 
 
 async def test_home_says_what_watching_means(tmp_path):
-    from textual.geometry import Offset
     from textual.widgets import Static
 
     app, github = make_app(tmp_path)
@@ -746,8 +745,6 @@ async def test_home_says_what_watching_means(tmp_path):
         assert headings[1].startswith("○ NOT WATCHED (1)")
         assert "only the PRs assigned to you" in headings[1]
         app.main.repos.select_repo("daily-co/daily-x")
-        # Not typing: the terminal's cursor is parked out of the way.
-        assert app.cursor_position == Offset(app.size.width - 1, app.size.height - 1)
 
         # + on it: ready to watch.
         await pilot.press("plus")
