@@ -628,6 +628,8 @@ class ReviewWorker(BaseWorker):
             )
             if entry["kind"] == "tool_use":
                 await self._progress(ref, describe_tool_use(entry["name"], entry["input"]))
+            elif entry["kind"] == "task" and entry.get("event") == "started":
+                await self._progress(ref, f"Working in the background: {entry['text']}")
             elif entry["kind"] == "thinking":
                 first_line = entry["text"].strip().splitlines()[0]
                 await self._progress(ref, f"Thinking: {first_line}")

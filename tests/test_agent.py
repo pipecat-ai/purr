@@ -152,3 +152,81 @@ async def test_claude_codes_stderr_never_reaches_your_terminal(monkeypatch, tmp_
             pr=pr, worktree=tmp_path, session_id="s", resume=False, prompt="p", callbacks=None
         )
     assert seen == [log_stderr, log_stderr, log_stderr]
+
+
+async def test_a_run_waits_for_its_background_agents(monkeypatch, tmp_path):
+    """ "I've started four agents, I'll get back to you": the run ends when they've reported."""
+    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+    from claude_agent_sdk.types import TaskNotificationMessage, TaskStartedMessage
+
+    import purr.review.agent
+    from purr.models import PR
+
+    def result(text: str, cost: float) -> ResultMessage:
+        return ResultMessage(
+            subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+            session_id="s", total_cost_usd=cost, usage={}, result=text,
+        )  # fmt: skip
+
+    stream = [
+        TaskStartedMessage(
+            subtype="task_started",
+            data={},
+            task_id="a1",
+            description="Bug scan",
+            uuid="u",
+            session_id="s",
+        ),  # fmt: skip
+        AssistantMessage(
+            content=[TextBlock("Four agents are on it; I'll get back to you.")], model="m"
+        ),
+        result("Four agents are on it.", 0.10),
+        TaskNotificationMessage(
+            subtype="task_notification",
+            data={},
+            task_id="a1",
+            status="completed",
+            output_file="",
+            summary="Found a race",
+            uuid="u",
+            session_id="s",
+        ),  # fmt: skip
+        AssistantMessage(content=[TextBlock("Review submitted.")], model="m"),
+        result("Review submitted.", 0.40),
+        AssistantMessage(content=[TextBlock("never read")], model="m"),
+    ]
+
+    class Client:
+        def __init__(self, options):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def query(self, prompt):
+            pass
+
+        async def receive_messages(self):
+            for message in stream:
+                yield message
+
+    monkeypatch.setattr(purr.review.agent, "ClaudeSDKClient", Client)
+    entries = []
+
+    async def on_message(entry):
+        entries.append(entry)
+
+    callbacks = purr.review.agent.ReviewCallbacks(
+        on_message=on_message, on_submit=None, on_propose=None, on_ask=None, on_threads=None
+    )
+    pr = PR(repo="a/b", number=1, title="t", author="x", url="u", head_sha="h", updated_at="")
+    got = await purr.review.agent.ClaudeReviewAgent().run(
+        pr=pr, worktree=tmp_path, session_id="s", resume=False, prompt="p", callbacks=callbacks
+    )
+    assert (got.text, got.cost_usd) == ("Review submitted.", 0.40)  # the last: running totals
+    kinds = [(e["kind"], e.get("event")) for e in entries if e["kind"] in ("task", "text")]
+    assert kinds == [("task", "started"), ("text", None), ("task", "completed"), ("text", None)]
+    assert all(e.get("text") != "never read" for e in entries)

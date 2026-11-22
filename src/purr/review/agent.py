@@ -32,6 +32,12 @@ from claude_agent_sdk import (
     get_session_messages,
     tool,
 )
+from claude_agent_sdk.types import (
+    TERMINAL_TASK_STATUSES,
+    TaskNotificationMessage,
+    TaskStartedMessage,
+    TaskUpdatedMessage,
+)
 
 from purr.claude import log_stderr
 from purr.models import PR, ActionKind, Finding, ReviewPlan, Severity
@@ -249,7 +255,23 @@ def transcript_entries(message: Any) -> list[dict]:
     return entries
 
 
+def track_tasks(message: Any, running: set[str]) -> None:
+    """Keep ``running`` up to date with the session's background tasks."""
+    if isinstance(message, TaskStartedMessage):
+        running.add(message.task_id)
+    elif isinstance(message, TaskNotificationMessage):
+        running.discard(message.task_id)
+    elif isinstance(message, TaskUpdatedMessage):
+        status = (getattr(message, "patch", None) or {}).get("status")
+        if status in TERMINAL_TASK_STATUSES:
+            running.discard(message.task_id)
+
+
 def _entries(message: Any) -> list[dict]:
+    if isinstance(message, TaskStartedMessage):
+        return [{"kind": "task", "event": "started", "text": message.description}]
+    if isinstance(message, TaskNotificationMessage):
+        return [{"kind": "task", "event": message.status, "text": message.summary}]
     if isinstance(message, AssistantMessage):
         entries = []
         for block in message.content:
@@ -544,12 +566,15 @@ class ClaudeReviewAgent:
         )
 
         result = AgentResult()
+        running: set[str] = set()  # background tasks (agents, shells) still at work
         async with ClaudeSDKClient(options) as client:
             await client.query(prompt)
-            async for message in client.receive_response():
+            async for message in client.receive_messages():
+                track_tasks(message, running)
                 for entry in transcript_entries(message):
                     await callbacks.on_message(entry)
                 if isinstance(message, ResultMessage):
+                    # Figures are running totals: the last result has the whole run's.
                     result = AgentResult(
                         text=message.result,
                         is_error=message.is_error,
@@ -564,6 +589,11 @@ class ClaudeReviewAgent:
                         model=_models(message),
                         usage=message.usage or {},
                     )
+                    # A turn can end with agents still working in the background
+                    # ("I'll get back to you"): Claude Code carries on when they
+                    # report, so the run isn't over until none are left.
+                    if not running:
+                        break
         return result
 
 

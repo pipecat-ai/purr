@@ -177,6 +177,15 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
         return Text(f"  ✓ done · {details}", style="dim")
     if kind == "error":
         return Text(f"✗ {entry.get('text', '')}", style="red")
+    if kind == "task":  # a background agent (or command) starting or reporting back
+        event = entry.get("event")
+        mark, style = {"started": ("◷", "dim"), "completed": ("✓", "dim green")}.get(
+            event, ("✗", "dim red")
+        )
+        verb = "started" if event == "started" else f"{event}" if event != "completed" else "done"
+        return Text(
+            f"  {mark} background {verb}: {_short(entry.get('text', ''), 100)}", style=style
+        )
     if kind == "permission_auto":
         return Text(f"  ✓ allowed by your permission {entry.get('rule', '')}", style="dim green")
     return None
