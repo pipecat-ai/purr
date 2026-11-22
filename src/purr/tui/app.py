@@ -6,14 +6,17 @@ import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 
-from textual import events
+from textual import events, work
 from textual.app import App
 from textual.binding import Binding
+from textual.geometry import Offset
 from textual.screen import ModalScreen
+from textual.widgets import Input, TextArea
 
 from purr.app import Purr
 from purr.checkout import github_repos
 from purr.messages import (
+    REVIEW_WORKER,
     ActionPending,
     ActionResolved,
     PermissionRequest,
@@ -30,6 +33,7 @@ from purr.messages import (
 )
 from purr.models import Outcome, PRChange, PRRef
 from purr.review.instructions import Kind
+from purr.review.rules import CLAUDE_SETTINGS
 from purr.tui.bridge import BusEvent, RequestError, UIWorker
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
@@ -39,6 +43,14 @@ from purr.tui.switcher import PurrSwitcher, short_name
 from purr.workers.recap import LAST_ACTIVE
 
 _NOWHERE = object()
+
+
+def _claude_settings() -> Path:
+    """Your Claude Code settings file, made (empty) if you don't have one yet."""
+    if not CLAUDE_SETTINGS.exists():
+        CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        CLAUDE_SETTINGS.write_text("{}\n")
+    return CLAUDE_SETTINGS
 
 
 class PurrApp(App):
@@ -67,6 +79,7 @@ class PurrApp(App):
         Binding("ctrl+n", "next_alert", "Next alert", show=False, priority=True),
         Binding("w", "recap", "Recap", show=False),
         Binding("i", "instructions", "Review style"),
+        Binding("q", "request_quit", "Quit"),
         Binding("0", "home", "Repos", show=False),
         *[Binding(str(n), f"jump({n})", show=False) for n in range(1, 10)],
     ]
@@ -159,7 +172,9 @@ class PurrApp(App):
             if kind == "skill" and repo:
                 await self._choose_review_skill(repo)
             elif kind == "permissions":
-                await self._edit(self.purr.grants.ensure())
+                # In a repo, the rules you allowed for its reviews; at home, your
+                # Claude Code settings, which every review uses.
+                await self._edit(self.purr.rules.ensure(repo) if repo else _claude_settings())
             elif isinstance(kind, Kind):
                 await self._edit(self.purr.instructions.ensure(kind, repo))
 
@@ -378,9 +393,33 @@ class PurrApp(App):
 
     # -- Shutdown -------------------------------------------------------------------
 
+    @work(group="quit")
+    async def action_request_quit(self) -> None:
+        """q: quit, once you say so."""
+        if self._modal_open():
+            return
+        running = len(getattr(self.purr.runner.get_worker(REVIEW_WORKER), "running", ()))
+        detail = (
+            f"{running} review{'s are' if running != 1 else ' is'} running; "
+            "they pick up where they left off next time."
+            if running
+            else ""
+        )
+        if await self.push_screen_wait(ConfirmScreen("Quit Purr?", detail)):
+            await self.action_quit()
+
     async def action_quit(self) -> None:
         await self._stop_purr()
         self.exit()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        """Keep the terminal's cursor out of the way unless you're typing.
+
+        Textual hides it, but leaves it where the last text field put it, or in
+        the top-left corner; terminals that show it anyway would blink it there.
+        """
+        if not isinstance(event.widget, (Input, TextArea)):
+            self.cursor_position = Offset(max(self.size.width - 1, 0), max(self.size.height - 1, 0))
 
     async def on_unmount(self) -> None:
         await self._stop_purr()

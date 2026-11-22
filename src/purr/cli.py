@@ -44,6 +44,16 @@ def main(argv: list[str] | None = None) -> None:
         metavar="N",
         help="reviews running at once; the rest wait in line (default: 3)",
     )
+    parser.add_argument(
+        "--permission-mode",
+        metavar="MODE",
+        help="Claude Code's permission mode for reviews: auto (default), acceptEdits, default",
+    )
+    parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="run review agents' commands in Claude Code's sandbox (see the README)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging on stderr")
     parser.add_argument("--version", action="version", version=f"purr {__version__}")
     args = parser.parse_args(argv)
@@ -53,6 +63,10 @@ def main(argv: list[str] | None = None) -> None:
         config = dataclasses.replace(config, auto_review=False)
     if args.max_reviews:
         config = dataclasses.replace(config, max_reviews=max(1, args.max_reviews))
+    if args.permission_mode:
+        config = dataclasses.replace(config, permission_mode=args.permission_mode)
+    if args.sandbox:
+        config = dataclasses.replace(config, sandbox=True)
     # With the UI up, stderr belongs to the terminal UI: log to the file only.
     _setup_logging(config, verbose=args.verbose, stderr=args.headless)
 

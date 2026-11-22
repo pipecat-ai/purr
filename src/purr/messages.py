@@ -71,8 +71,8 @@ REPO_SKILLS = "repo.skills"
 # payload: {"pr": "owner/repo#123"} -> {"started": bool}
 REVIEW_REREVIEW = "review.rereview"
 REVIEW_MESSAGE = "review.message"  # payload: {"pr": "owner/repo#123", "text": "..."}
-# Answer an agent's permission request; "remember" ("repo" or "all") also allows the
-# request's rule from now on, in the PR's repo or everywhere (see purr.review.grants):
+# Answer an agent's permission request; "remember" ("repo" or "all") also keeps Claude
+# Code's suggested rule, for the PR's repo or everywhere (see purr.review.rules):
 # {"request_id": "...", "allow": bool, "remember": None | "repo" | "all"}
 #   -> {"ok": true, "rule": "Bash(uv run pytest:*)" | None}
 PERMISSION_ANSWER = "session.answer"
@@ -158,8 +158,8 @@ class SessionMessage(PurrEvent):
 class PermissionRequest(PurrEvent):
     """A PR's agent wants to do something that isn't pre-approved, and waits for you.
 
-    ``rule`` is what "always allow" would remember ("" if nothing safe can be);
-    ``trusted`` says whether such rules apply to this PR's author at all.
+    ``rule`` is Claude Code's suggested rule, what "always allow" would keep
+    ("" if it suggested none).
     """
 
     kind: ClassVar[str] = "session.permission_request"
@@ -169,7 +169,6 @@ class PermissionRequest(PurrEvent):
     description: str
     reason: str = ""
     rule: str = ""
-    trusted: bool = True
 
 
 @dataclass(kw_only=True)

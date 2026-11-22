@@ -23,6 +23,7 @@ from purr.models import (
     Outcome,
     PendingAction,
     PRDetails,
+    PRRef,
     PRState,
     Review,
     ReviewStatus,
@@ -217,6 +218,7 @@ class PRSession(Vertical):
         self.query_one("#suggestions").display = False
         self.query_one(PromptArea).completer = self
         self._suggested: list[Command] = []
+        self._drawn: PRRef | None = None  # the PR whose transcript is on screen
 
     # -- Slash commands (see purr.tui.commands) ----------------------------------------
 
@@ -314,15 +316,19 @@ class PRSession(Vertical):
         return self.purr_app.sessions.setdefault(str(pr.ref), SessionState())
 
     async def show(self, pr: PR) -> None:
-        """Show a PR (or refresh the one shown)."""
-        switching = self.pr is None or self.pr.ref != pr.ref
+        """Show a PR (or refresh the one shown).
+
+        Redraws when the transcript shows anything else: going by what was last
+        drawn rather than what was last asked for, a show cut short (moving on
+        quickly, switching repos) can't leave another PR's transcript behind.
+        """
         self.pr = pr
         await self.refresh_status()
         state = self.state()
-        if state.entries is None:
+        loaded = state.entries is None
+        if loaded:
             state.entries = await self._load_history(pr)
-            switching = True
-        if switching:
+        if loaded or self._drawn != pr.ref:
             self.redraw()
             asked = await self.purr_app.purr.store.prompts(pr.ref)
             self.query_one(PromptArea).set_history([text for _, text in reversed(asked)])
@@ -341,6 +347,7 @@ class PRSession(Vertical):
             self._write(entry)
         if not state.entries:
             log.scroll_home(animate=False)
+        self._drawn = self.pr.ref
 
     async def details_changed(self) -> None:
         """The shown PR's details arrived (or failed to)."""
@@ -367,7 +374,7 @@ class PRSession(Vertical):
         if state.entries is None:
             return  # not loaded yet; it'll come with the history
         state.entries.append(entry)
-        if self.pr and str(self.pr.ref) == pr_key:
+        if self._drawn and str(self._drawn) == pr_key:
             self._write(entry)
 
     def _write(self, entry: dict) -> None:
@@ -392,18 +399,12 @@ class PRSession(Vertical):
         decision = self.query_one("#pr-decision", Static)
         if state.ask:
             always = "   [A] always…" if state.ask.rule else ""
-            outside = (
-                ""
-                if state.ask.trusted
-                else "\nFrom an outside contributor: your standing permissions don't apply."
-            )
             decision.update(
                 Text.assemble(
                     ("The agent wants to: ", "bold"),
                     (_short(state.ask.description, 120), "yellow"),
                     ("\n", ""),
-                    (state.ask.reason or "It isn't pre-approved.", "dim"),
-                    (outside, "dim yellow"),
+                    (state.ask.reason or "Claude Code asks before this.", "dim"),
                     (f"\n[a] allow once{always}   [x] deny", "bold"),
                 )
             )

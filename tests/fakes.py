@@ -124,8 +124,9 @@ class FakeAgent:
         self.sessions: set[str] = set()
         self.gate = None
         self.fail_with: str | None = None
-        self.ask: tuple[str, dict, str] | None = None
-        self.answers: list[bool] = []
+        self.ask: tuple | None = None  # (tool, input, reason[, suggested rules])
+        self.answers: list[bool | None] = []
+        self.remembered: list[str | None] = []
         self.entries: dict[str, list[dict]] = {}
         self.findings: dict = {}  # PRRef -> what its review finds (default: one race)
 
@@ -172,7 +173,9 @@ class FakeAgent:
         if self.fail_with:
             raise RuntimeError(self.fail_with)
         if self.ask:
-            self.answers.append(await callbacks.on_ask(*self.ask))
+            answer = await callbacks.on_ask(*self.ask)
+            self.answers.append(answer.allowed)
+            self.remembered.append(answer.remember)
         self.threads = await callbacks.on_threads()
         entry = {"kind": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "gh pr diff"}}
         self.entries.setdefault(session_id, []).append(entry)

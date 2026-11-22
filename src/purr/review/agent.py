@@ -10,7 +10,7 @@ from the TUI, or in Claude Code itself (``claude --resume``).
 import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -36,7 +36,8 @@ from claude_agent_sdk import (
 from purr.models import PR, ActionKind, Finding, ReviewPlan, Severity
 from purr.review.instructions import ReviewInstructions
 from purr.review.plan import plan_section
-from purr.review.policy import Policy
+from purr.review.policy import GITHUB_DENY_RULES, github_write
+from purr.review.rules import RepoRules, rule_texts
 from purr.review.skills import skill_prompt, skill_section
 from purr.review.tools import (
     GET_REVIEW_THREADS,
@@ -133,7 +134,7 @@ class ReviewCallbacks:
         on_submit: The agent's summary and findings.
         on_propose: A proposed GitHub action ``(kind, description, payload)``;
             returns the pending action's ID.
-        on_ask: The agent wants a tool that isn't pre-approved ``(tool, input,
+        on_ask: Claude Code wants to ask about a tool call ``(tool, input,
             reason)``; returns whether the user allows it, or None if nobody
             answered in time.
         on_threads: The PR's review threads, for ``get_review_threads``.
@@ -142,8 +143,46 @@ class ReviewCallbacks:
     on_message: Callable[[dict], Awaitable[None]]
     on_submit: Callable[[str, list[Finding]], Awaitable[None]]
     on_propose: Callable[[ActionKind, str, dict], Awaitable[str]]
-    on_ask: Callable[[str, dict, str], Awaitable[bool | None]]
+    on_ask: Callable[[str, dict, str, list[str]], Awaitable["PermissionAnswer"]]
     on_threads: Callable[[], Awaitable[list[dict]]]
+
+
+@dataclass
+class PermissionAnswer:
+    """Your answer when Claude Code asks about a tool call.
+
+    Parameters:
+        allowed: Yes or no; None if nobody answered in time.
+        remember: Keep Claude Code's suggested rule: ``repo`` (this repo's
+            reviews) or ``all`` (your Claude Code settings: everywhere).
+    """
+
+    allowed: bool | None
+    remember: str | None = None
+
+
+def permission_result(
+    answer: PermissionAnswer, suggestions: list, repo: str, rules: RepoRules | None
+) -> PermissionResultAllow | PermissionResultDeny:
+    """What Claude Code gets back for an answer, with the rule to keep, if any."""
+    if answer.allowed is None:
+        return PermissionResultDeny(
+            message="The user didn't answer; they may be away. Carry on without it, and at "
+            "the end say what you wanted to run and why, so they can allow it later."
+        )
+    if not answer.allowed:
+        return PermissionResultDeny(
+            message="The user said no. Carry on without it, and say in your findings what "
+            "you couldn't check."
+        )
+    updates = []
+    if answer.remember == "all":  # your Claude Code settings: everywhere
+        updates = [replace(update, destination="userSettings") for update in suggestions]
+    elif answer.remember == "repo":
+        if rules:
+            rules.add(rule_texts(suggestions), repo)  # this repo's next reviews
+        updates = [replace(update, destination="session") for update in suggestions]
+    return PermissionResultAllow(updated_permissions=updates or None)
 
 
 @dataclass
@@ -352,9 +391,18 @@ def _ok(text: str) -> dict:
 class ClaudeReviewAgent:
     """Runs reviews as Claude Agent SDK sessions.
 
+    Permissions are Claude Code's own (see :mod:`purr.review.policy`): its
+    ``permission_mode``, your Claude Code settings, the rules you allowed for
+    the repo, and its sandbox if ``sandbox``. Purr only adds: nothing that
+    changes GitHub.
+
     Args:
         model: Model to use; None uses Claude Code's configured default.
         max_budget_usd: Optional spending cap per run.
+        instructions: Your review and code style.
+        rules: The rules you allowed per repo ("always" at a permission prompt).
+        permission_mode: Claude Code's permission mode for reviews.
+        sandbox: Run the agents' commands in Claude Code's sandbox.
     """
 
     def __init__(
@@ -363,10 +411,16 @@ class ClaudeReviewAgent:
         model: str | None = None,
         max_budget_usd: float | None = None,
         instructions: ReviewInstructions | None = None,
+        rules: RepoRules | None = None,
+        permission_mode: str = "auto",
+        sandbox: bool = False,
     ):
         self._model = model
         self._max_budget_usd = max_budget_usd
         self._instructions = instructions
+        self._rules = rules
+        self._permission_mode = permission_mode
+        self._sandbox = sandbox
 
     def session_exists(self, session_id: str, worktree: Path) -> bool:
         return get_session_info(session_id, directory=str(worktree)) is not None
@@ -389,7 +443,6 @@ class ClaudeReviewAgent:
         plan: ReviewPlan | None = None,
         model: str | None = None,
     ) -> AgentResult:
-        policy = Policy(worktree, readable=[plugin] if plugin else [])
 
         @tool(
             SUBMIT_REVIEW,
@@ -430,31 +483,23 @@ class ClaudeReviewAgent:
             return _ok(json.dumps(await callbacks.on_threads(), indent=1))
 
         async def pre_tool_use(hook_input: Any, tool_use_id: str | None, context: Any) -> dict:
-            verdict = policy.check(hook_input["tool_name"], hook_input.get("tool_input") or {})
-            output: dict[str, Any] = {
+            # Purr's one rule. Everything else is up to Claude Code's permissions.
+            reason = github_write(hook_input["tool_name"], hook_input.get("tool_input") or {})
+            if not reason:
+                return {}
+            decision = {
                 "hookEventName": "PreToolUse",
-                "permissionDecision": verdict.decision.value,
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
             }
-            if verdict.reason:
-                output["permissionDecisionReason"] = verdict.reason
-            return {"hookSpecificOutput": output}
+            return {"hookSpecificOutput": decision}
 
         async def can_use_tool(name: str, tool_input: dict, context: Any) -> Any:
-            # Reached for calls the policy says need the user ("ask").
-            reason = policy.check(name, tool_input).reason
-            answer = await callbacks.on_ask(name, tool_input, reason)
-            if answer:
-                return PermissionResultAllow()
-            if answer is None:
-                return PermissionResultDeny(
-                    message="The user didn't answer; they may be away. Carry on without "
-                    "it, and at the end say what you wanted to run and why, so they can "
-                    "allow it later."
-                )
-            return PermissionResultDeny(
-                message="The user said no. Carry on without it, and say in your findings "
-                "what you couldn't check."
-            )
+            # Claude Code wants to ask: the question goes to Purr's UI.
+            suggestions = list(getattr(context, "suggestions", None) or [])
+            reason = getattr(context, "decision_reason", None) or getattr(context, "title", None)
+            answer = await callbacks.on_ask(name, tool_input, reason or "", rule_texts(suggestions))
+            return permission_result(answer, suggestions, pr.repo, self._rules)
 
         options = ClaudeAgentOptions(
             cwd=str(worktree),
@@ -476,7 +521,14 @@ class ClaudeReviewAgent:
             plugins=[{"type": "local", "path": str(plugin)}] if plugin else [],
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]},
             can_use_tool=can_use_tool,
-            permission_mode="default",
+            permission_mode=self._permission_mode,  # type: ignore[arg-type]
+            # The rules you allowed for the repo, Purr's GitHub rule, the sandbox.
+            settings=(
+                self._rules.settings(pr.repo, sandbox=self._sandbox)
+                if self._rules
+                else json.dumps({"permissions": {"deny": GITHUB_DENY_RULES}})
+            ),
+            disallowed_tools=list(GITHUB_DENY_RULES),
             # Only the user's own settings: a PR's .claude/settings.json could define
             # hooks, and those run commands. The repo's skills come in as a plugin.
             setting_sources=["user"],
@@ -521,20 +573,8 @@ CLAUDE_CODE_NOTE = (
     "GitHub or push; Purr's submit_review and propose_action tools aren't available "
     "here, so describe any recommendation and the user will act on it in Purr."
 )
-CLAUDE_CODE_DISALLOWED = [
-    "Bash(git push:*)",
-    "Bash(gh pr review:*)",
-    "Bash(gh pr comment:*)",
-    "Bash(gh pr merge:*)",
-    "Bash(gh pr close:*)",
-    "Bash(gh pr edit:*)",
-    "Bash(gh pr ready:*)",
-    "Bash(gh issue comment:*)",
-    "Bash(gh issue close:*)",
-    "Bash(gh issue edit:*)",
-    "Bash(gh api:*)",
-    "Bash(gh auth token:*)",
-]
+# In Claude Code itself Purr's check doesn't run, so `gh api` goes entirely.
+CLAUDE_CODE_DISALLOWED = [*GITHUB_DENY_RULES, "Bash(gh api:*)"]
 
 
 def claude_code_command(session_id: str, pr: str, claude: str = "claude") -> list[str]:

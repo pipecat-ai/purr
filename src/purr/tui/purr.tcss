@@ -14,13 +14,28 @@
     color: $warning;
 }
 
-#views, #repos, #repo, #repo-table {
+#views, #repos, #repo {
     height: 1fr;
 }
 
+/* The list as tall as its repos, so the hint below it sits right under them. */
+#repo-table {
+    height: auto;
+    max-height: 1fr;
+}
+
 #empty {
+    height: auto;
     padding: 1 2;
     color: $text-muted;
+}
+
+/* No repos at all: the message alone, in the middle. */
+#empty.alone {
+    height: 1fr;
+    width: 1fr;
+    content-align: center middle;
+    text-align: center;
 }
 
 #legend {

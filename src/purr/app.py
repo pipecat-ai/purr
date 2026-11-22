@@ -13,8 +13,8 @@ from purr.github import GitHub
 from purr.lead import ClaudeLead, LeadAgent
 from purr.recap import ClaudeRecapAgent, RecapAgent
 from purr.review.agent import ClaudeReviewAgent, ReviewAgent
-from purr.review.grants import Grants
 from purr.review.instructions import ReviewInstructions
+from purr.review.rules import RepoRules
 from purr.store import Store
 from purr.workers import (
     ActivityWorker,
@@ -62,11 +62,14 @@ class Purr:
         self._config = config
         self._github = github or GitHub()
         self._instructions = ReviewInstructions(config.config_dir)
-        self._grants = Grants(config.config_dir)
+        self._rules = RepoRules(config.config_dir)
         self._agent = agent or ClaudeReviewAgent(
             model=config.review_model,
             max_budget_usd=config.review_budget_usd,
             instructions=self._instructions,
+            rules=self._rules,
+            permission_mode=config.permission_mode,
+            sandbox=config.sandbox,
         )
         self._repos = repos or GitRepos(config.data_dir)
         self._writer = writer
@@ -92,8 +95,8 @@ class Purr:
         return self._instructions
 
     @property
-    def grants(self) -> Grants:
-        return self._grants
+    def rules(self) -> RepoRules:
+        return self._rules
 
     @property
     def agent(self) -> ReviewAgent:
@@ -154,7 +157,6 @@ class Purr:
                 permission_wait=self._config.permission_wait,
                 max_reviews=self._config.max_reviews,
                 quick_model=self._config.quick_model,
-                grants=self._grants,
             ),
             LeadWorker(
                 store=store,

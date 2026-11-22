@@ -43,6 +43,11 @@ class Config:
         permission_wait: Seconds an agent waits for you to allow something before
             carrying on without it. Claude Code gives up on its own after about
             ten minutes, so keep this below that.
+        permission_mode: Claude Code's permission mode for reviews: ``auto`` (safe
+            things run, risky ones ask), ``acceptEdits``, ``default``, ...
+        sandbox: Run review agents' commands in Claude Code's sandbox (the
+            operating system confines them to the PR's checkout and a few
+            domains). Needs bubblewrap on Linux; see the README.
         signature: Small print at the end of what Purr posts (a review's text,
             each reply in a thread), so readers know it came from Purr; empty
             for none.
@@ -62,6 +67,8 @@ class Config:
     permission_wait: float = 5 * 60
     max_reviews: int = 3
     signature: str = "Sent from Purr."
+    permission_mode: str = "auto"
+    sandbox: bool = False
     config_dir: Path = field(default_factory=_default_config_dir)
 
     @classmethod

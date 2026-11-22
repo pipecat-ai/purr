@@ -219,11 +219,12 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: agent.answers == [True])
         agent.ask = None
 
-        # enter (or o) opens the PR's pane, enter again goes to its prompt, and a
-        # follow-up continues the session. esc goes back a step at a time.
+        # o opens the PR's pane to read it; enter there (or right away on the list)
+        # goes to its prompt, and a follow-up continues the session. esc goes back
+        # a step at a time.
         await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
         session = app.main.repo.session
-        await pilot.press("enter")
+        await pilot.press("o")
         assert focused(app) == "transcript" and session.has_focus_within
         await pilot.press("enter")
         assert focused(app) == "prompt"
@@ -574,10 +575,8 @@ async def test_always_allowing_from_the_keyboard(tmp_path):
 
     app, github = make_app(tmp_path)
     agent = app.purr.agent
-    agent.ask = ("Bash", {"command": "uv run pytest -x"}, "not pre-approved")
-    github.open["pipecat-ai/pipecat"] = [
-        remote(1, title="Message bus", author_association="MEMBER")
-    ]
+    agent.ask = ("Bash", {"command": "uv run pytest -x"}, "", ["Bash(uv run pytest:*)"])
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
 
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
@@ -588,19 +587,13 @@ async def test_always_allowing_from_the_keyboard(tmp_path):
         await pilot.press("r")
         await until(pilot, lambda: "[A] always" in decision(app))
 
-        # A, then r: this repo, from now on.
+        # A shows Claude Code's suggested rule; r keeps it for this repo.
         await pilot.press("A")
         await until(pilot, lambda: isinstance(app.screen, AlwaysScreen))
+        assert "Bash(uv run pytest:*)" in str(app.screen.query("Label")[1].render())
         await pilot.press("r")
         await until(pilot, lambda: agent.answers == [True])
-        assert app.purr.grants.rules("pipecat-ai/pipecat") == ["Bash(uv run pytest:*)"]
-
-        # The next review's same request isn't asked about.
-        await until(pilot, lambda: not decision(app) or "[a] approve" in decision(app))
-        await pilot.press("r")
-        await until(pilot, lambda: len(agent.answers) == 2)
-        assert agent.answers == [True, True]
-        assert "allowed by your permission Bash(uv run pytest:*)" in transcript(app)
+        assert agent.remembered == ["repo"]
 
 
 async def test_a_shell_in_the_worktree_and_claude_code(tmp_path):
@@ -702,3 +695,81 @@ async def test_slash_commands(tmp_path):
         await pilot.press(*"/review quick", "enter")
         await until(pilot, lambda: len(agent.runs) == 3)
         assert agent.runs[2]["plan"].depth == "quick" and agent.runs[2]["resume"] is False
+
+
+async def test_quitting_asks_first(tmp_path):
+    app, _ = make_app(tmp_path)
+    quits = []
+
+    async def quit_() -> None:
+        quits.append(True)
+
+    app.action_quit = quit_
+    async with app.run_test(size=(140, 45)) as pilot:
+        await until(pilot, lambda: home(app))
+        await pilot.press("q")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("n")
+        await until(pilot, lambda: home(app))
+        assert quits == []
+        await pilot.press("q")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
+        await until(pilot, lambda: quits == [True])
+
+
+async def test_home_says_what_watching_means(tmp_path):
+    from textual.geometry import Offset
+    from textual.widgets import Static
+
+    app, github = make_app(tmp_path)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await until(pilot, lambda: home(app))
+        hint = app.main.repos.query_one("#empty", Static)
+        # Nothing at all: the message alone, in the middle.
+        await pilot.pause(0.2)
+        assert hint.display and hint.has_class("alone")
+        assert "No repos yet" in str(hint.render())
+
+        # A PR assigned to you, in a repo you don't watch: the hint under the list.
+        github.assigned = [remote(7, repo="daily-co/daily-x", assignees=("me",))]
+        await app.purr.runner.get_worker("github").poll()
+        await until(pilot, lambda: app.repo_names == ["daily-co/daily-x"])
+        await until(pilot, lambda: not hint.has_class("alone"))
+        assert "only show the PRs assigned to you" in str(hint.render())
+        # Not typing: the terminal's cursor is parked out of the way.
+        assert app.cursor_position == Offset(app.size.width - 1, app.size.height - 1)
+
+        # + on it: ready to watch.
+        await pilot.press("plus")
+        await until(pilot, lambda: isinstance(app.screen, AddRepoScreen))
+        assert app.screen.query_one(Input).value == "daily-co/daily-x"
+
+
+async def test_the_pr_pane_never_keeps_another_prs_transcript(tmp_path):
+    from purr.models import PRDetails
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2, title="Docs")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        session = app.main.repo.session
+        one, two = (await app.purr.store.list_prs(repo="pipecat-ai/pipecat"))[::-1]
+        app.details.put(one, PRDetails(body="All about the message bus"))
+        app.details.put(two, PRDetails(body="All about the docs"))
+        await session.show(one)
+        assert "All about the message bus" in transcript(app)
+
+        # A show cut short after switching PRs, before drawing: the next one draws.
+        session.pr = two
+        await session.show(two)
+        assert "All about the docs" in transcript(app)
+        assert "message bus" not in transcript(app)
+
+        # enter on a PR in the list: straight to its prompt.
+        app.main.repo.focus_main()
+        await pilot.press("enter")
+        assert focused(app) == "prompt"

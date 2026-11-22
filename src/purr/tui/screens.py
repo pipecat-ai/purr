@@ -162,7 +162,7 @@ class ReposView(PurrView):
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="repo-table", cursor_type="row")
-        yield Static("No repos yet. Press [b]+[/b] to watch one.", id="empty")
+        yield Static(id="empty")
         yield Static("[yellow]●[/] something new you haven't looked at", id="legend")
 
     def on_mount(self) -> None:
@@ -191,7 +191,19 @@ class ReposView(PurrView):
             table.add_row(*self._cells(i, summary, summary.name in alerted), key=summary.name)
         if selected:
             self.select_repo(selected)
-        self.query_one("#empty").display = not self._watched
+        empty = self.query_one("#empty", Static)
+        empty.display = not summaries or any(not s.watched for s in summaries)
+        empty.set_class(not summaries, "alone")
+        table.display = bool(summaries)
+        # Hidden while there were no repos, it couldn't keep focus: give it back.
+        if summaries and self.purr_app.location is None and self.app.focused is None:
+            table.focus()
+        empty.update(
+            "Repos marked [dim](assigned to you)[/] only show the PRs assigned to you. "
+            "Select one and press [b]+[/b] to watch it and see all its open PRs."
+            if summaries
+            else "No repos yet. Press [b]+[/b] to watch one and see its open PRs."
+        )
         self.query_one("#legend").display = bool(alerted)
 
     @staticmethod
@@ -236,7 +248,10 @@ class ReposView(PurrView):
                 await self.reload()
                 self.select_repo(name)
 
-        self.app.push_screen(AddRepoScreen(), added)
+        # On a repo that's only listed for your PRs: that one, ready to watch.
+        selected = self.selected_repo()
+        suggested = selected if selected and selected not in self._watched else ""
+        self.app.push_screen(AddRepoScreen(suggested), added)
 
     def action_remove(self) -> None:
         repo = self.selected_repo()
@@ -466,11 +481,16 @@ class RepoView(PurrView):
             return not self.session.query_one("#prompt").has_focus
         return True
 
-    @on(OptionList.OptionSelected)
     def action_open(self) -> None:
-        """Into the selected PR's pane."""
+        """Into the selected PR's pane, to read it (o)."""
         if self.selected_pr():
             self.session.focus_transcript()
+
+    @on(OptionList.OptionSelected)
+    def _ask(self) -> None:
+        """enter on a PR: straight to its prompt, to ask the agent about it."""
+        if self.selected_pr():
+            self.session.focus_prompt()
 
     def action_switch_pane(self) -> None:
         """From the list (or its search) to the PR's pane, and back."""
@@ -615,7 +635,7 @@ class RepoView(PurrView):
             return
         ask = state.ask
         repo = PRRef.parse(ask.pr).repo
-        scope = await self.app.push_screen_wait(AlwaysScreen(ask.rule, repo, trusted=ask.trusted))
+        scope = await self.app.push_screen_wait(AlwaysScreen(ask.rule, repo))
         if not scope:
             return
         try:
@@ -753,10 +773,14 @@ class AddRepoScreen(ModalScreen[str | None]):
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
+    def __init__(self, repo: str = ""):
+        super().__init__()
+        self._repo = repo  # filled in, ready to watch
+
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield Label("[b]Watch a repo[/b]")
-            yield Input(placeholder="owner/name or GitHub URL")
+            yield Input(value=self._repo, placeholder="owner/name or GitHub URL")
             yield Static(id="error")
             yield Label("enter add · esc cancel", classes="hint")
 
@@ -813,26 +837,19 @@ class AlwaysScreen(ModalScreen[str | None]):
         Binding("escape", "pick('')", "Cancel", show=False),
     ]
 
-    def __init__(self, rule: str, repo: str, *, trusted: bool = True):
+    def __init__(self, rule: str, repo: str):
         super().__init__()
-        self._rule, self._repo, self._trusted = rule, repo, trusted
+        self._rule, self._repo = rule, repo
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield Label("Always allow")
             yield Label(Text(self._rule, style="bold yellow"))
-            yield Label(Text.from_markup(f"[b]r[/b]  in {self._repo}"))
-            yield Label(Text.from_markup("[b]e[/b]  everywhere"))
-            note = (
-                "Only for PRs by the repo's owners, members and collaborators. "
-                "Change them with i, then p."
+            yield Label(Text.from_markup(f"[b]r[/b]  in {self._repo}'s reviews"))
+            yield Label(
+                Text.from_markup("[b]e[/b]  everywhere: your Claude Code settings, Claude Code too")
             )
-            if not self._trusted:
-                note = (
-                    "This PR is from an outside contributor: it's allowed this once, and the "
-                    "rule applies to PRs by the repo's members. " + note.split(". ", 1)[1]
-                )
-            yield Label(note, classes="hint")
+            yield Label("It's Claude Code's own rule. Change them with i, then p.", classes="hint")
 
     def action_pick(self, scope: str) -> None:
         self.dismiss(scope or None)
