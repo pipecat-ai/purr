@@ -84,6 +84,10 @@ uv run purr --no-auto-review
 4. **When the review is done**, read the findings and the review it proposes. `a` posts it,
    `x` dismisses it. To change it, just write ("drop the second comment"): writing sets the
    proposal aside, and the agent proposes again.
+   **Once you've approved it**, `m` shows whether it can be merged: its checks (passed,
+   failed, running), whether the other assignees approved, anything GitHub says is in the
+   way. `m` again merges it anyway, your way (merge, squash or rebase, as GitHub picks for
+   you), at the commit you approved. New commits since you approved, or conflicts, stop it.
 5. **If the agent asks for permission**: `a` allows it once, `A` always allows it (in this
    repo or everywhere), `x` says no. Or write what to do instead ("only run the bus tests"):
    that's a no, with directions, and the agent carries on. Claude Code decides what to ask
@@ -112,6 +116,7 @@ uv run purr --no-auto-review
 | | `/` | Search PRs |
 | | `r` | Review the PR (`space` marks several first) |
 | | `a` / `x` | Approve / dismiss what's proposed (or allow / deny what's asked); `x` also says replies need no answer |
+| | `m` | Merge a PR you approved: once to see where it stands, again to merge |
 | | `A` | Always allow what's asked |
 | | `d` | The full diff, in your pager |
 | | `t` | The agent's reasoning in full (it's a line per thought otherwise) |

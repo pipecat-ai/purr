@@ -29,11 +29,13 @@ from purr.messages import (
     AnswerPermission,
     ApproveAction,
     AssignMe,
+    CheckMerge,
     DismissAction,
     DismissReplies,
     FetchDetails,
     GetDiff,
     GetWorktree,
+    MergePR,
     PlanReviews,
     UnwatchRepo,
     WatchRepo,
@@ -389,6 +391,7 @@ class RepoView(PurrView):
         Binding("a", "approve", "Approve"),
         Binding("A", "always", "Always allow", show=False),
         Binding("x", "dismiss", "Dismiss"),
+        Binding("m", "merge", "Merge"),
         Binding("d", "diff", "Diff"),
         Binding("t", "thinking", "Thinking", show=False),
         Binding("z", "zoom", "Zoom"),
@@ -566,6 +569,7 @@ class RepoView(PurrView):
     def _show_highlighted(self) -> None:
         pr = self.selected_pr()
         if pr and self.repo:
+            self._leave_merge(self._selected.get(self.repo), str(pr.ref))
             self._selected[self.repo] = str(pr.ref)
             self.purr_app.seen(str(pr.ref))
             # A callable, not a coroutine: when moving fast, a run cancelled before
@@ -793,6 +797,39 @@ class RepoView(PurrView):
                 await self.purr_app.bus.request(DismissReplies(pr=pr.ref))  # no reply needed
         except PurrError as e:
             self.notify(str(e), severity="warning")
+
+    def _leave_merge(self, left: str | None, shown: str) -> None:
+        """Moving on from a PR drops where it stood for merging: m asks again next time."""
+        if left and left != shown and (state := self.purr_app.sessions.get(left)):
+            state.merge = None
+
+    @work(group="keys")
+    async def action_merge(self) -> None:
+        """m: where the PR stands for merging; m again, with nothing blocking it: merge."""
+        pr = self.selected_pr()
+        if pr is None:
+            return
+        state = self.session.state(pr)
+        try:
+            if state.merge is None or state.merge.blockers:
+                state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
+            else:
+                await self._merge(pr, state)
+        except PurrError as e:
+            state.merge = None
+            self.notify(str(e), severity="warning")
+        await self.session.refresh_status()
+
+    async def _merge(self, pr: PR, state: SessionState) -> None:
+        """Merge past what you saw, unless something new came up: then you see it again."""
+        assert state.merge is not None
+        request = MergePR(pr=pr.ref, seen=state.merge.concerns)
+        merged = await self.purr_app.bus.request(request)
+        state.merge = merged.readiness
+        if merged.merged:
+            self.notify(f"Merged #{pr.number} into {pr.base or 'its base'}")
+        else:
+            self.notify("Something changed since you looked: see it again", severity="warning")
 
     @work(group="keys")
     async def action_always(self) -> None:

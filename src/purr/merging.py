@@ -57,7 +57,7 @@ _SAID = {"CHANGES_REQUESTED": "requested changes"}
 
 
 _RULES = {
-    "BLOCKED": "GitHub says a branch rule isn't met (a required review or check): it may refuse",
+    "BLOCKED": "A branch rule isn't met: GitHub may refuse",
     "BEHIND": "It's behind {base}: GitHub may want its branch updated first",
     "UNKNOWN": "GitHub is still working out whether it can be merged",
 }

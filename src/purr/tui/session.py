@@ -21,6 +21,7 @@ from textual.widgets.option_list import Option
 from purr.jobs import PurrError
 from purr.messages import (
     ListRepoSkills,
+    MergeReadiness,
     PermissionRequest,
     PlanReviews,
     SendMessage,
@@ -28,7 +29,9 @@ from purr.messages import (
 )
 from purr.models import (
     PR,
+    CheckState,
     Depth,
+    GHState,
     Outcome,
     PendingAction,
     PRDetails,
@@ -84,6 +87,8 @@ class SessionState:
     ask: PermissionRequest | None = None
     details_error: str | None = None  # why the description couldn't be loaded
     diff_error: str | None = None  # why the diff couldn't be
+    approved: str | None = None  # the commit you approved it at, through Purr
+    merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
 
     @property
     def working(self) -> bool:
@@ -407,13 +412,55 @@ def _replies_question(pr: PR, state: SessionState, actions: list[PendingAction])
     return render_replies(pr.replies) if pr.replies else None
 
 
+def _merge_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """You pressed m: where it stands for merging, for your final decision."""
+    return render_merge(pr, state.merge) if state.merge else None
+
+
+def _merge_hint(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """You approved it as it is, and nothing else waits on you: it can be merged."""
+    if pr.gh_state != GHState.OPEN or not state.approved or state.approved != pr.head_sha:
+        return None
+    return Text.assemble(
+        ("You approved it.", "bold"),
+        ("\n[m] merge…", "bold"),
+        ("   shows its checks and reviews first", "dim"),
+    )
+
+
 # What the decision box can ask, most pressing first; each says None when it has
 # nothing to ask. A new question: its function, and a line here.
 _QUESTIONS: list[Callable[[PR, SessionState, list[PendingAction]], Text | None]] = [
     _permission_question,
+    _merge_question,
     _proposal_question,
     _replies_question,
+    _merge_hint,
 ]
+
+# GitHub's names for its merge buttons, by merge method.
+_MERGE_VERBS = {"merge": "Merge", "squash": "Squash and merge", "rebase": "Rebase and merge"}
+
+
+def render_merge(pr: PR, readiness: MergeReadiness) -> Text:
+    """Where the PR stands for merging: what blocks it, or what you'd be merging past."""
+    if readiness.blockers:
+        text = Text(f"Can't merge #{pr.number} yet:", style="bold")
+        for blocker in readiness.blockers:
+            text.append(f"\n  ✗ {blocker}", style="red")
+        text.append("\n[m] check again", style="bold")
+        return text
+    check = readiness.check
+    verb = _MERGE_VERBS.get(check.method, "Merge")
+    text = Text(f"{verb} #{pr.number} into {check.base}?", style="bold")
+    text.append(f"\n  ✓ you approved it at {check.head_sha[:7]}", style="green")
+    if passed := sum(run.state == CheckState.PASSED for run in check.checks):
+        text.append(f"\n  ✓ {passed} check{'s' if passed != 1 else ''} passed", style="green")
+    for concern in readiness.concerns:
+        text.append(f"\n  ⚠ {concern}", style="yellow")
+    text.append("\n[m] merge anyway" if readiness.concerns else "\n[m] merge", style="bold")
+    text.append("   or move on to leave it", style="dim")
+    return text
 
 
 def _suggestion(command: Command) -> Text:
@@ -684,6 +731,7 @@ class PRSession(Vertical):
         outcome = Outcome.of(await store.findings(review.id)) if review else Outcome()
         actions = await store.pending_actions(pr.ref)
         state = self.state()
+        state.approved = await store.approved_head(pr.ref)
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details)

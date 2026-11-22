@@ -53,7 +53,7 @@ def test_what_you_decide_past():
         "Lint is still running",
         "alice hasn't approved",
         "bob requested changes",
-        "GitHub says a branch rule isn't met (a required review or check): it may refuse",
+        "A branch rule isn't met: GitHub may refuse",
     ]
 
 

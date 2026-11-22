@@ -1079,3 +1079,47 @@ async def until_async(check, timeout: float = 5) -> None:
             await asyncio.sleep(0.02)
 
     await asyncio.wait_for(wait(), timeout)
+
+
+async def test_merging_with_m_after_approving(tmp_path):
+    from purr.messages import ApproveAction
+    from purr.models import ActionKind, Check, CheckState, MergeCheck, PRRef, PRState
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    github.merge_checks[ref] = MergeCheck(
+        head_sha="abc",
+        base="main",
+        method="squash",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        checks=(
+            Check("Unit Tests", CheckState.PASSED),
+            Check("docs/readthedocs", CheckState.FAILED),
+        ),
+        assignees=("me", "alice"),
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        store = app.purr.store
+        await store.set_pr_state(ref, PRState.NEEDS_YOU)
+        approval = await store.add_pending_action(ref, kind=ActionKind.APPROVE, description="LGTM")
+        await app.bus.request(ApproveAction(action_id=approval.id))
+        await app.main.repo.session.refresh_status()
+        await until(pilot, lambda: "You approved it." in decision(app))
+
+        # m: where it stands. The docs build failed and alice hasn't approved: your call.
+        await pilot.press("m")
+        await until(pilot, lambda: "Squash and merge #7 into main?" in decision(app))
+        shown = decision(app)
+        assert "✓ 1 check passed" in shown
+        assert "⚠ docs/readthedocs failed" in shown and "⚠ alice hasn't approved" in shown
+        assert "[m] merge anyway" in shown
+
+        # m again: merged, at the commit you approved.
+        await pilot.press("m")
+        await until(pilot, lambda: app.purr._writer.merges == [(ref, "squash", "abc")])

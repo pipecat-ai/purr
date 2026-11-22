@@ -195,6 +195,17 @@ Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that 
 - **Background tasks** (agents, long commands) get a line when they start and one when they end, named by what they are (`✓ background done: Bug scan`), not by what they reported: an agent's report is often a note to the main agent ("delivered to you as a message from …"). `◼ stopped` is neutral, since the agent stops what it no longer needs; only `✗ failed` is red.
 - **Open in Claude Code** (`c`): Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools`. When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
 
+## Merging: your final decision
+
+Approving and merging are apart on purpose: two people may be reviewing a PR (two assignees), and you may want the other one to approve as well. Once you've approved a PR through Purr, its pane says so (`You approved it. [m] merge…`).
+
+- **The first `m`** reads where the PR stands, fresh from GitHub (`CheckMerge`, one GraphQL request): each check on its head (GitHub Actions runs and statuses like readthedocs; passed, failed or still running, and whether the base branch's rules require it), the assignees' latest reviews, and GitHub's own merge state. `purr.merging` splits that into:
+  - **blockers**, which stop it outright: you haven't approved it through Purr, it has commits since you did (approve again: you'd be merging what you haven't reviewed), it has conflicts, it's a draft;
+  - **concerns**, which are your call: a check that failed (a docs build failing needn't hold up a fix), one still running, an assignee who hasn't approved (or requested changes), a branch rule GitHub says isn't met (it may refuse, and says why).
+- The pane shows it: `Squash and merge #6902 into main?`, how many checks passed, then each concern. **`m` again merges anyway** (`MergePR`), with your default merge method in the repo (what GitHub's own page picks for you: merge, squash or rebase), and only at the commit you approved: GitHub refuses if the PR moved on meanwhile.
+- It's checked again just before merging. If something new came up since you looked (a check that was running failed), it doesn't merge; the pane shows how it stands now, and `m` again decides on that. Things that only got better (the check passed) don't count. Moving to another PR drops what the pane showed: `m` asks GitHub again next time.
+- The PR shows merged at once (and its worktree goes); the next poll would only find it out. The commit an approval was of is kept when it's posted (`pending_actions.posted_head`).
+
 ## Permissions: Claude Code's own
 
 Reviews use Claude Code's permission system, not one of Purr's own (`review/agent.py`, `review/rules.py`):
@@ -267,6 +278,7 @@ Jobs:
 - `GetDiff {pr}` (git worker): the PR's unified diff, from Purr's clone, or from GitHub if the clone doesn't have the PR's head yet.
 - `GetWorktree {pr}` (git worker): the PR's worktree, made again if it was removed (for `c`).
 - `DismissReplies {pr}` (GitHub worker): the PR's replies to you need no answer (`x`).
+- `CheckMerge {pr}` / `MergePR {pr, seen}` (GitHub worker): where a PR stands for merging, and merging it past the concerns you saw (see Merging).
 - `ApproveAction {action_id}` / `DismissAction {action_id}` (GitHub worker). Approving claims the action atomically (so keys and voice can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. **What Purr posts says so:** the review's text and each reply in a thread end with `<sub>Sent from Purr.</sub>` (the `signature` setting; empty turns it off). Inline comments don't: they belong to the review, whose text already says it, and one under every comment would be noise. An approval with nothing to say is just the signature. The proposal in the PR's conversation shows it too, so `a` still posts exactly what you read.
 
 Events (broadcast, everyone listens):
@@ -448,7 +460,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 2. GitHub poller: watched repos table, the pool (unassigned open PRs) plus PRs assigned to you in any repo, PR list in SQLite, activity log. (Done.)
 3. TUI shell: repo list (add/remove repos), repo screen with the PR list, navigation keys, live updates from bus events. Comes early because repos are only added from the UI, and it makes the poller visible. (Done. Measured with pipecat's 331 PRs: UI up with data in 0.5 s, opening the repo 35 ms, back home 16 ms, reopening 7 ms.)
 4. Review worker: Purr-managed clone and worktree, Agent SDK session with the GitHub guardrails, store session ID, summary, findings, pending actions, stream `session.message` events. (Done, except interactive permission prompts, which come with the PR session UI.)
-5. Pending action execution (post comments / review verdict / merge) gated on approval. (Done for reviews: approve / request changes / comment. Merging isn't proposed yet. Tested against a fake GitHub; not yet run against a real PR.)
+5. Pending action execution (post comments / review verdict / merge) gated on approval. (Done for reviews: approve / request changes / comment. Merging is yours, not proposed: `m` (see Merging). Tested against a fake GitHub; not yet run against a real PR.)
 6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher. (Done. Transcripts come from the SDK's session file plus live `session.message` events. Alerts survive restarts: `prs.seen_at` plus the activity log.)
 7. "Start from app" also assigns you on GitHub. (Done: `r` on a pool PR starts the review and assigns you.)
 8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`MakeRecap {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
