@@ -230,13 +230,13 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("enter")
         assert focused(app) == "prompt"
         await pilot.press(*"is it safe?", "enter")
-        await until(pilot, lambda: agent.runs[-1]["prompt"] == "is it safe?")
+        await until(pilot, lambda: agent.runs[-1]["prompt"].endswith("is it safe?"))
         assert "> is it safe?" in transcript(app)
 
         # The prompt keeps a history: up and down, like a shell...
         await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
         await pilot.press(*"tests?", "enter")
-        await until(pilot, lambda: agent.runs[-1]["prompt"] == "tests?")
+        await until(pilot, lambda: agent.runs[-1]["prompt"].endswith("tests?"))
         prompt = app.main.repo.session.query_one("#prompt")
         await pilot.press(*"draft")
         await pilot.press("up")
@@ -262,7 +262,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         # Several lines: ctrl+j, or a backslash at the end, starts a new one.
         await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
         await pilot.press("ctrl+u", *"first", "ctrl+j", *"second\\", "enter", *"third", "enter")
-        await until(pilot, lambda: agent.runs[-1]["prompt"] == "first\nsecond\nthird")
+        await until(pilot, lambda: agent.runs[-1]["prompt"].endswith("first\nsecond\nthird"))
         assert prompt.text == ""
         # ↑ on the first line goes back in history; on a later line, up a line.
         await pilot.press("up")

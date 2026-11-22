@@ -244,12 +244,29 @@ async def test_follow_up_continues_the_session(make):
     await s.client.request(REVIEW_START, {"pr": str(REF)})
     await eventually(lambda: s.client.of(ReviewFinished))
 
+    [proposal] = await s.store.pending_actions(REF)
+    s.agent.gate = asyncio.Event()
     response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "Is the race real?"})
     assert response == {"ok": True}
     await eventually(lambda: len(s.agent.runs) == 2)
     followup = s.agent.runs[1]
-    assert followup["resume"] is True and followup["prompt"] == "Is the race real?"
-    assert followup["session_id"] == s.agent.runs[0]["session_id"]
+    assert followup["resume"] is True and followup["session_id"] == s.agent.runs[0]["session_id"]
+    # Writing instead of approving sets the proposal aside, and the agent's told so.
+    assert followup["prompt"].endswith("\n\nIs the race real?")
+    assert "set aside" in followup["prompt"] and proposal.description in followup["prompt"]
+    assert not await s.store.pending_actions(REF)
+    assert s.client.of(ActionResolved)[-1].action_id == proposal.id
+    # It proposes again (the fake always does), and the PR needs you again.
+    s.agent.gate.set()
+    await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
+    assert len(await s.store.pending_actions(REF)) == 1
+    assert await s.state() == PRState.NEEDS_YOU
+
+    # A slash command isn't a reply: the proposal stays.
+    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
+    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "/compact"})
+    await eventually(lambda: len(s.agent.runs) == 3)
+    assert s.agent.runs[2]["prompt"] == "/compact"
 
 
 async def test_interrupted_reviews_resume_on_startup(make):
@@ -295,6 +312,47 @@ async def test_the_agent_waits_for_permission(make):
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.answers == [True]
     assert "error" in await s.client.request(PERMISSION_ANSWER, answer)  # already answered
+
+
+async def test_writing_when_asked_for_permission_says_no_and_what_to_do(make):
+    """As in Claude Code: "No, and tell Claude what to do differently"."""
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    s.agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(PermissionRequest))
+
+    text = "Only run tests/test_bus.py"
+    assert await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": text}) == {"ok": True}
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert (s.agent.answers, s.agent.insteads) == ([False], [text])
+    assert len(s.agent.runs) == 1  # the same run carries on: no follow-up
+
+
+def test_a_no_with_what_to_do_instead_reaches_the_agent_and_the_transcript():
+    from types import SimpleNamespace
+
+    from purr.review.agent import (
+        PermissionAnswer,
+        history_entries,
+        permission_result,
+        set_aside_note,
+    )
+
+    result = permission_result(PermissionAnswer(False, instead="Only bus tests"), [], "a/b", None)
+    assert result.message.endswith("Only bus tests") and not result.interrupt
+
+    def stored(type_, content):
+        return SimpleNamespace(type=type_, message={"role": type_, "content": content})
+
+    denied = {"type": "tool_result", "tool_use_id": "t1", "content": result.message}
+    asked = set_aside_note(["Approve"]) + "Is the race real?"
+    entries = history_entries([stored("user", [denied]), stored("user", asked)])
+    # As you wrote them, without what Purr told the agent.
+    assert entries == [
+        {"kind": "user", "text": "Only bus tests"},
+        {"kind": "user", "text": "Is the race real?"},
+    ]
 
 
 async def test_new_commits_get_a_rereview_in_the_same_session(make):
@@ -399,7 +457,7 @@ async def test_reviews_wait_in_line_but_your_messages_dont(make):
 
     # Your message doesn't wait behind them.
     await s.client.request(REVIEW_MESSAGE, {"pr": str(chat), "text": "and the tests?"})
-    await eventually(lambda: s.agent.runs[-1]["prompt"] == "and the tests?")
+    await eventually(lambda: s.agent.runs[-1]["prompt"].endswith("and the tests?"))
     assert second not in [r["pr"] for r in s.agent.runs]
 
     # When the first is done, the second goes.
@@ -422,7 +480,7 @@ async def test_conversations_are_recorded_with_times(make):
     await eventually(lambda: s.client.of(ReviewFinished))
     s.agent.ask = None
     await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "is it safe?"})
-    await eventually(lambda: s.agent.runs[-1]["prompt"] == "is it safe?")
+    await eventually(lambda: s.agent.runs[-1]["prompt"].endswith("is it safe?"))
 
     async def two_runs_done():
         runs = await s.store.runs(REF)

@@ -3,7 +3,7 @@
 import asyncio
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from loguru import logger
@@ -59,6 +59,7 @@ from purr.review.agent import (
     describe_tool_use,
     rereview_prompt,
     review_prompt,
+    set_aside_note,
     thought_headline,
 )
 from purr.review.skills import repo_skills, review_skills
@@ -149,6 +150,7 @@ class ReviewWorker(BaseWorker):
         self._start_lock = asyncio.Lock()
         self._startup_task: asyncio.Task | None = None
         self._asks: dict[str, asyncio.Future[PermissionAnswer]] = {}
+        self._ask_prs: dict[str, PRRef] = {}  # request id -> the PR whose agent is asking
         self._ask_rules: dict[str, str] = {}  # request id -> the rule "always" would keep
         self._slots = Slots(max_reviews)
         # Per repo (lowercase): its review skill question, and until when reviews wait for it.
@@ -367,20 +369,44 @@ class ReviewWorker(BaseWorker):
         return review
 
     async def send_followup(self, ref: PRRef, text: str) -> None:
-        """Continue a PR's session with a message from the user."""
+        """Continue a PR's session with a message from the user.
+
+        Writing when the agent waits on you to decide something is deciding it,
+        as in Claude Code: to a permission request, it's a no, and what to do
+        instead; a proposal is set aside, and the agent proposes again if it
+        still stands. A slash command (``/compact``) decides nothing.
+        """
         if not text.strip():
             raise ReviewError("Nothing to send")
+        command = text.lstrip().startswith("/")  # /compact, a skill: not a reply
         async with self._start_lock:
             if ref in self._running:
+                if not command and self._answer_instead(ref, text):
+                    return
                 raise ReviewError(f"The agent is still working on {ref}")
             review = await self._store.latest_review(ref)
             pr = await self._store.get_pr(ref)
             if review is None or pr is None or not review.session_id:
                 raise ReviewError(f"{ref} hasn't been reviewed yet")
+            if not command and (proposals := await self._store.pending_actions(ref)):
+                await self._dismiss_pending(ref)
+                if pr.state == PRState.NEEDS_YOU:  # nothing left to decide, as with x
+                    await self._store.set_pr_state(ref, PRState.DONE)
+                    pr = replace(pr, state=PRState.DONE)
+                text = set_aside_note([p.description for p in proposals]) + text
             # You're waiting on this one: it doesn't queue behind reviews.
             self._launch(
                 pr, review, prompt=text, resume=True, followup=True, queued=False, kind="message"
             )
+
+    def _answer_instead(self, ref: PRRef, text: str) -> bool:
+        """No to what the PR's agent asks to do, with what to do instead; whether it asked."""
+        for request_id, asking in self._ask_prs.items():
+            future = self._asks.get(request_id)
+            if asking == ref and future is not None and not future.done():
+                future.set_result(PermissionAnswer(allowed=False, instead=text))
+                return True
+        return False
 
     def _launch(
         self,
@@ -667,6 +693,7 @@ class ReviewWorker(BaseWorker):
             request_id = uuid.uuid4().hex
             future: asyncio.Future[PermissionAnswer] = asyncio.get_running_loop().create_future()
             self._asks[request_id] = future
+            self._ask_prs[request_id] = ref
             if rules:
                 self._ask_rules[request_id] = ", ".join(rules)
             await self._store.set_pr_state(ref, PRState.NEEDS_YOU)
@@ -697,6 +724,7 @@ class ReviewWorker(BaseWorker):
                 answer = PermissionAnswer(allowed=None)
             finally:
                 self._asks.pop(request_id, None)
+                self._ask_prs.pop(request_id, None)
                 self._ask_rules.pop(request_id, None)
             answered = answer.allowed is not None
             await self._store.set_pr_state(ref, PRState.REVIEWING)
@@ -708,6 +736,7 @@ class ReviewWorker(BaseWorker):
                     "allowed": bool(answer.allowed),
                     "answered": answered,
                     "remember": answer.remember,
+                    **({"instead": answer.instead} if answer.instead else {}),
                 },
                 author="you" if answered else "purr",
             )

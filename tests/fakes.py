@@ -126,6 +126,7 @@ class FakeAgent:
         self.fail_with: str | None = None
         self.ask: tuple | None = None  # (tool, input, reason[, suggested rules])
         self.answers: list[bool | None] = []
+        self.insteads: list[str | None] = []  # what you wrote instead of answering
         self.remembered: list[str | None] = []
         self.entries: dict[str, list[dict]] = {}
         self.findings: dict = {}  # PRRef -> what its review finds (default: one race)
@@ -175,6 +176,7 @@ class FakeAgent:
         if self.ask:
             answer = await callbacks.on_ask(*self.ask)
             self.answers.append(answer.allowed)
+            self.insteads.append(answer.instead)
             self.remembered.append(answer.remember)
         self.threads = await callbacks.on_threads()
         entry = {"kind": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "gh pr diff"}}

@@ -92,6 +92,19 @@ your recommendation changes.
 """
 
 
+def set_aside_note(proposals: list[str]) -> str:
+    """For the agent, ahead of your message: you wrote instead of approving its proposal."""
+    what = "; ".join(f"“{p}”" for p in proposals)
+    return (
+        f"<purr-note>The user wrote instead of approving your proposal ({what}), so it was "
+        "set aside. Answer them; then, if you still recommend posting something, call "
+        "propose_action again, changed or as it was.</purr-note>\n\n"
+    )
+
+
+_NOTE = re.compile(r"\A\s*<purr-note>.*?</purr-note>\s*", re.DOTALL)
+
+
 RESUME_PROMPT = (
     "Purr was restarted while you were reviewing. Continue where you left off, "
     "and finish by calling submit_review and propose_action."
@@ -162,10 +175,18 @@ class PermissionAnswer:
         allowed: Yes or no; None if nobody answered in time.
         remember: Keep Claude Code's suggested rule: ``repo`` (this repo's
             reviews) or ``all`` (your Claude Code settings: everywhere).
+        instead: What you wrote instead of answering: a no, and what to do
+            (Claude Code's "No, and tell Claude what to do differently").
     """
 
     allowed: bool | None
     remember: str | None = None
+    instead: str | None = None
+
+
+# How a no with what to do instead starts, for the agent; the transcript shows
+# what follows as your message.
+INSTEAD = "The user didn't allow this, and wrote instead:"
 
 
 def permission_result(
@@ -177,6 +198,8 @@ def permission_result(
             message="The user didn't answer; they may be away. Carry on without it, and at "
             "the end say what you wanted to run and why, so they can allow it later."
         )
+    if not answer.allowed and answer.instead:
+        return PermissionResultDeny(message=f"{INSTEAD}\n\n{answer.instead}")
     if not answer.allowed:
         return PermissionResultDeny(
             message="The user said no. Carry on without it, and say in your findings what "
@@ -353,7 +376,13 @@ def history_entries(session_messages: list[Any]) -> list[dict]:
                 entries.append({"kind": "user", "text": _as_typed(content)})
             elif isinstance(content, list):
                 for block in content:
-                    if block.get("type") == "tool_result":
+                    if block.get("type") == "tool_result" and _text(
+                        block.get("content")
+                    ).startswith(INSTEAD):
+                        # A no with what to do instead: your message, as you wrote it.
+                        instead = _text(block.get("content")).removeprefix(INSTEAD).strip()
+                        entries.append({"kind": "user", "text": instead})
+                    elif block.get("type") == "tool_result":
                         entries.append(
                             {
                                 "kind": "tool_result",
@@ -375,7 +404,9 @@ _COMMAND = re.compile(
 
 
 def _as_typed(text: str) -> str:
-    """A slash command as it was typed, rather than as the session stores it."""
+    """A message as it was typed, rather than as the session stores it: a slash command
+    as typed, and without Purr's notes to the agent."""
+    text = _NOTE.sub("", text)
     if match := _COMMAND.match(text):
         return " ".join(part.strip() for part in match.groups() if part and part.strip())
     return text

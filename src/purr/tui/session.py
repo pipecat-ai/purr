@@ -28,7 +28,7 @@ from purr.models import (
     Review,
     ReviewStatus,
 )
-from purr.review.agent import thought_headline
+from purr.review.agent import INSTEAD, thought_headline
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.bridge import RequestError
 from purr.tui.commands import (
@@ -190,6 +190,8 @@ def render_entry(
         text = entry.get("text") or ""
         if text.startswith(("Review recorded", "Proposed (action")):
             return None  # Purr's own tools; their calls already say it all
+        if text.startswith(INSTEAD):
+            return None  # you wrote instead of allowing it: your message shows as such
         lines = text.strip().splitlines() or [""]
         more = f" … +{len(lines) - 1} lines" if len(lines) > 1 else ""
         style = "red" if entry.get("is_error") else "dim"
@@ -477,6 +479,7 @@ class PRSession(Vertical):
                     ("\n", ""),
                     (state.ask.reason or "Claude Code asks before this.", "dim"),
                     (f"\n[a] allow once{always}   [x] deny", "bold"),
+                    ("   or write what to do instead", "dim"),
                 )
             )
             decision.display = True
@@ -490,6 +493,7 @@ class PRSession(Vertical):
                     (f"{action.description}?", "bold"),
                     (detail, "dim"),
                     ("\n[a] approve   [x] dismiss", "bold"),
+                    ("   or write to change it", "dim"),
                 )
             )
             decision.display = True
