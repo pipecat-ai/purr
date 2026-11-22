@@ -923,7 +923,7 @@ async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
 
 async def test_selecting_text_in_the_pr_pane_copies_it(tmp_path, monkeypatch):
     """Drag over the PR's description or conversation: it's selected, and copied, as
-    terminals do; ctrl+c then copies rather than quits."""
+    terminals do. ctrl+c copies too, and never quits."""
     import purr.tui.app
 
     monkeypatch.setattr(purr.tui.app, "copy_command", lambda: None)  # never your clipboard
@@ -952,6 +952,11 @@ async def test_selecting_text_in_the_pr_pane_copies_it(tmp_path, monkeypatch):
         app.copy_to_clipboard("")  # what ctrl+c copies, now
         await pilot.press("ctrl+c")
         assert app.is_running and app.clipboard == "stop()"
+
+        app.screen.clear_selection()
+        await pilot.press("ctrl+c")  # nothing to copy: still nothing quits
+        await pilot.pause()
+        assert app.is_running
 
 
 async def test_the_colors_are_solarized(tmp_path):

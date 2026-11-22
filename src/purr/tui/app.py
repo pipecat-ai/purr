@@ -75,7 +75,6 @@ class PurrApp(App):
     COMMANDS = {PurrSwitcher}
     ansi_theme_dark, ansi_theme_light = ansi_themes()
     BINDINGS = [
-        Binding("ctrl+c", "copy_or_quit", "Quit", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
         Binding("ctrl+n", "next_alert", "Next alert", show=False, priority=True),
@@ -437,13 +436,6 @@ class PurrApp(App):
             return
         lines = text.count("\n") + 1
         self.notify(f"Copied {lines} line{'s' if lines != 1 else ''}", timeout=2)
-
-    async def action_copy_or_quit(self) -> None:
-        """ctrl+c copies what's selected, if anything is; otherwise it quits."""
-        if text := self.screen.get_selected_text():
-            self.copy_to_clipboard(text)
-        else:
-            await self.action_quit()
 
     async def action_quit(self) -> None:
         await self._stop_purr()
