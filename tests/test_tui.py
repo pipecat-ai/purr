@@ -782,3 +782,33 @@ async def test_the_pr_pane_never_keeps_another_prs_transcript(tmp_path):
         app.main.repo.focus_main()
         await pilot.press("enter")
         assert focused(app) == "prompt"
+
+
+async def test_each_step_in_the_transcript_stands_apart(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        session = app.main.repo.session
+        await until(pilot, lambda: session.pr is not None and session._drawn is not None)
+        ref = str(session.pr.ref)
+        for entry in [
+            {"kind": "user", "text": "is the race real?"},
+            {"kind": "thinking", "text": "Look at shutdown first."},
+            {"kind": "tool_use", "name": "Read", "input": {"file_path": "src/bus.py"}},
+            {"kind": "tool_result", "tool_use_id": "t", "is_error": False, "text": "class Bus:"},
+            {"kind": "text", "text": "Yes: stop() doesn't wait."},
+        ]:
+            session.append(ref, entry)
+        await pilot.pause(0.1)
+        lines = [line.rstrip() for line in transcript(app).splitlines()]
+        start = next(i for i, line in enumerate(lines) if line.startswith("> is the race real?"))
+        steps = lines[start:]
+        assert steps[1] == ""  # a blank line between steps...
+        assert "Look at shutdown first." in steps[2] and steps[3] == ""
+        assert "Read(src/bus.py)" in steps[4]
+        assert "⎿ class Bus:" in steps[5]  # ...but a tool's result stays with its call
+        assert steps[6] == "" and "Yes: stop() doesn't wait." in steps[7]

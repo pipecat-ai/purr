@@ -131,7 +131,7 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
         # Like Claude Code: the reasoning, dimmed, ahead of what it leads to.
         return _bullet(Text(entry["text"].strip(), style="dim italic"), style="dim")
     if kind == "user":
-        return Text(f"\n> {entry['text'].replace(chr(10), chr(10) + '  ')}\n", style="bold")
+        return Text(f"> {entry['text'].replace(chr(10), chr(10) + '  ')}", style="bold")
     if kind == "tool_use":
         name, tool_input = entry.get("name", ""), entry.get("input") or {}
         if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
@@ -174,7 +174,7 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
     if kind == "result":
         cost = entry.get("cost_usd")
         details = f"{entry.get('turns', 0)} turns" + (f" · ${cost:.2f}" if cost else "")
-        return Text(f"  ✓ done · {details}\n", style="dim")
+        return Text(f"  ✓ done · {details}", style="dim")
     if kind == "error":
         return Text(f"✗ {entry.get('text', '')}", style="red")
     if kind == "permission_auto":
@@ -225,6 +225,7 @@ class PRSession(Vertical):
         self.query_one(PromptArea).completer = self
         self._suggested: list[Command] = []
         self._drawn: PRRef | None = None  # the PR whose transcript is on screen
+        self._wrote = False  # anything in the transcript yet (for the blank lines)
 
     # -- Slash commands (see purr.tui.commands) ----------------------------------------
 
@@ -349,6 +350,7 @@ class PRSession(Vertical):
         diff = self.purr_app.details.diff(self.pr)
         overview = render_overview(details, state.details_error, diff, state.diff_error)
         log.write(overview, scroll_end=False)
+        self._wrote = True
         for entry in state.entries or []:
             self._write(entry)
         if not state.entries:
@@ -384,9 +386,18 @@ class PRSession(Vertical):
             self._write(entry)
 
     def _write(self, entry: dict) -> None:
+        """One transcript entry, a blank line apart from the one before it.
+
+        Like Claude Code, a tool call and its result are one step: no line between.
+        """
         signature = self.purr_app.purr.config.signature
-        if (renderable := render_entry(entry, signature)) is not None:
-            self.query_one(RichLog).write(renderable)
+        if (renderable := render_entry(entry, signature)) is None:
+            return
+        log = self.query_one(RichLog)
+        if self._wrote and entry.get("kind") != "tool_result":
+            log.write(Text(""))
+        log.write(renderable)
+        self._wrote = True
 
     async def refresh_status(self) -> None:
         if not self.pr:
