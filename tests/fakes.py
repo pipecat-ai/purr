@@ -129,6 +129,7 @@ class FakeAgent:
         self.insteads: list[str | None] = []  # what you wrote instead of answering
         self.read: list[str] = []  # what you wrote while it worked, as it read it
         self.reads_inbox = True  # False: like a Claude Code that can't take it mid-run
+        self.first: list[dict] = []  # entries each run sends before its own
         self.remembered: list[str | None] = []
         self.entries: dict[str, list[dict]] = {}
         self.findings: dict = {}  # PRRef -> what its review finds (default: one race)
@@ -183,6 +184,8 @@ class FakeAgent:
             self.answers.append(answer.allowed)
             self.insteads.append(answer.instead)
             self.remembered.append(answer.remember)
+        for entry in self.first:  # what the scripted run says before its own steps
+            await callbacks.on_message(entry)
         self.threads = await callbacks.on_threads()
         entry = {"kind": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "gh pr diff"}}
         self.entries.setdefault(session_id, []).append(entry)

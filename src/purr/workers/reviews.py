@@ -56,6 +56,7 @@ from purr.review.agent import (
     PermissionAnswer,
     ReviewAgent,
     ReviewCallbacks,
+    describe_background,
     describe_tool_use,
     rereview_prompt,
     review_prompt,
@@ -694,14 +695,18 @@ class ReviewWorker(BaseWorker):
         self, ref: PRRef, submitted: dict, run_id: int, worktree: Path
     ) -> ReviewCallbacks:
         async def on_message(entry: dict) -> None:
-            await self._store.add_message(run_id, ref, entry)
+            if entry["kind"] == "task_progress":  # what a background task's up to: status
+                await self._progress(ref, describe_background(entry))
+                return
+            if entry["kind"] != "background":  # how many are out: status too
+                await self._store.add_message(run_id, ref, entry)
             await self.send_bus_message(
                 SessionMessage(source=self.name, pr=str(ref), message=entry)
             )
             if entry["kind"] == "tool_use":
                 await self._progress(ref, describe_tool_use(entry["name"], entry["input"]))
             elif entry["kind"] == "task" and entry.get("event") == "started":
-                await self._progress(ref, f"Working in the background: {entry['text']}")
+                await self._progress(ref, describe_background(entry))
             elif entry["kind"] == "thinking":
                 await self._progress(ref, f"Thinking: {thought_headline(entry['text'])}")
 

@@ -497,6 +497,17 @@ def thought_headline(text: str) -> str:
     return first
 
 
+def describe_background(entry: dict) -> str:
+    """A background task, starting or at work (``task_progress``), in a line:
+    ``In the background: Bug scan · Grep · 14 tool uses``."""
+    parts = [f"In the background: {entry.get('text') or 'a task'}"]
+    if entry.get("tool"):
+        parts.append(str(entry["tool"]))
+    if uses := entry.get("tools"):
+        parts.append(f"{uses} tool use{'s' if uses != 1 else ''}")
+    return " · ".join(parts)
+
+
 def describe_tool_use(name: str, tool_input: dict) -> str:
     """A one-line description of a tool call, for progress lines."""
     if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:

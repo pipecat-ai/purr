@@ -407,3 +407,18 @@ def test_what_the_agent_took_mid_turn_is_there_when_reloaded(monkeypatch, tmp_pa
         ("user", "The bus?"),
         ("text", "The bus, then."),
     ]
+
+
+def test_a_background_tasks_progress_becomes_an_entry():
+    from claude_agent_sdk.types import TaskProgressMessage
+
+    from purr.review.agent import transcript_entries
+
+    message = TaskProgressMessage(
+        subtype="task_progress", data={}, task_id="a1", description="Bug scan",
+        usage={"total_tokens": 900, "tool_uses": 14, "duration_ms": 30000},
+        uuid="u", session_id="s", last_tool_name="Grep",
+    )  # fmt: skip
+    assert transcript_entries(message) == [
+        {"kind": "task_progress", "id": "a1", "text": "Bug scan", "tool": "Grep", "tools": 14}
+    ]

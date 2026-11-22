@@ -884,3 +884,26 @@ async def test_a_review_of_the_depth_you_ask_for_and_your_model(make, tmp_path):
         "description": "Automated code review for pull requests",
     }
     assert skills == {"skills": [review_skill]}
+
+
+async def test_what_background_agents_are_up_to_shows_but_isnt_kept(make):
+    from purr.review.agent import describe_background
+
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    s.agent.first = [
+        {"kind": "task", "event": "started", "text": "Bug scan", "id": "a1"},
+        {"kind": "background", "running": 1},
+        {"kind": "task_progress", "id": "a1", "text": "Bug scan", "tool": "Grep", "tools": 14},
+    ]
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    progress = [p.text for p in s.client.of(ReviewProgress)]
+    assert "In the background: Bug scan" in progress
+    assert "In the background: Bug scan · Grep · 14 tool uses" in progress
+    # Status, not the conversation: neither is kept with the run's messages.
+    kept = {m["kind"] for m in await s.store.messages(REF)}
+    assert "task" in kept and not kept & {"task_progress", "background"}
+    assert describe_background({"text": "Lint", "tools": 1}) == (
+        "In the background: Lint · 1 tool use"
+    )
