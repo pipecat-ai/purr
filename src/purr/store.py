@@ -15,6 +15,7 @@ from purr.models import (
     ActionKind,
     ActionStatus,
     Activity,
+    DraftComment,
     Finding,
     GHState,
     Outcome,
@@ -242,6 +243,20 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE pending_actions ADD COLUMN posted_head TEXT;
     """,
+    # Inline comments you wrote in Purr, until they're posted with your review.
+    """
+    CREATE TABLE draft_comments (
+        id          INTEGER PRIMARY KEY,
+        pr_id       INTEGER NOT NULL REFERENCES prs (id) ON DELETE CASCADE,
+        path        TEXT NOT NULL,
+        line        INTEGER NOT NULL,
+        side        TEXT NOT NULL CHECK (side IN ('LEFT', 'RIGHT')),
+        body        TEXT NOT NULL,
+        head_sha    TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    );
+    CREATE INDEX draft_comments_pr ON draft_comments (pr_id);
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -253,6 +268,12 @@ _STATE_ORDER = """
         ELSE 3
     END
 """
+
+
+def _draft(row: aiosqlite.Row) -> DraftComment:
+    return DraftComment(
+        row["id"], row["path"], row["line"], row["side"], row["body"], row["head_sha"]
+    )
 
 
 def _now() -> str:
@@ -1035,6 +1056,40 @@ class Store:
         return {ref: Outcome.of(found) for ref, found in counts.items()}
 
     # -- Pending actions -------------------------------------------------------
+
+    # -- Your inline comments, until they're posted ----------------------------------
+
+    async def save_comment(
+        self, ref: PRRef, *, path: str, line: int, side: str, body: str, head_sha: str
+    ) -> DraftComment:
+        """A new inline comment of yours, on ``line`` of ``path`` at ``head_sha``."""
+        cursor = await self._db.execute(
+            "INSERT INTO draft_comments (pr_id, path, line, side, body, head_sha, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (await self._pr_id(ref), path, line, side, body, head_sha, _now()),
+        )
+        await self._db.commit()
+        return DraftComment(cursor.lastrowid or 0, path, line, side, body, head_sha)
+
+    async def edit_comment(self, comment_id: int, body: str) -> None:
+        sql = "UPDATE draft_comments SET body = ? WHERE id = ?"
+        await self._db.execute(sql, (body, comment_id))
+        await self._db.commit()
+
+    async def remove_comments(self, ids: Iterable[int]) -> None:
+        await self._db.executemany("DELETE FROM draft_comments WHERE id = ?", [(i,) for i in ids])
+        await self._db.commit()
+
+    async def draft_comments(self, ref: PRRef) -> list[DraftComment]:
+        """Your inline comments on the PR not posted yet, in the order you wrote them."""
+        rows = await self._fetchall(
+            """
+            SELECT draft_comments.* FROM draft_comments JOIN prs ON prs.id = draft_comments.pr_id
+            WHERE prs.repo = ? AND prs.number = ? ORDER BY draft_comments.id
+            """,
+            (ref.repo, ref.number),
+        )
+        return [_draft(row) for row in rows]
 
     _ACTION_SELECT = """
         SELECT pending_actions.*, prs.repo, prs.number

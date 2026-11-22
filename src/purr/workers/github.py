@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.actions import ActionError, GhWriter, GitHubWriter, execute
+from purr.actions import ActionError, GhWriter, GitHubWriter, execute, post_comments
 from purr.github import GitHub, GitHubError, RemotePR, Snapshot
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, handles
 from purr.merging import blockers, concerns, new_concerns
@@ -19,6 +19,7 @@ from purr.messages import (
     ApproveAction,
     AssignMe,
     CheckMerge,
+    CommentsChanged,
     DismissAction,
     DismissReplies,
     FetchDetails,
@@ -27,9 +28,12 @@ from purr.messages import (
     Merged,
     MergePR,
     MergeReadiness,
+    PostComments,
     Posted,
     PRChanged,
     PRListUpdated,
+    RemoveComment,
+    SaveComment,
     Synced,
     UnwatchRepo,
     Watching,
@@ -38,6 +42,7 @@ from purr.messages import (
 from purr.models import (
     PR,
     ActionStatus,
+    DraftComment,
     GHState,
     PRChange,
     PRRef,
@@ -376,9 +381,11 @@ class GitHubWorker(BaseWorker):
             raise NotFound("That action was already decided, or doesn't exist")
         pr = await self._store.get_pr(action.pr)
         head_sha = pr.head_sha if pr else ""
+        mine = await self._store.draft_comments(action.pr)
+        here = [comment for comment in mine if comment.head_sha == head_sha]
         try:
             posted = await execute(
-                self._writer, action, head_sha=head_sha, signature=self._signature
+                self._writer, action, head_sha=head_sha, signature=self._signature, mine=here
             )
         except ActionError as e:
             # Back to pending, so it can be retried.
@@ -392,9 +399,73 @@ class GitHubWorker(BaseWorker):
             new=ActionStatus.EXECUTED,
             posted_head=head_sha or None,  # an approval is of this commit
         )
+        await self._store.remove_comments(comment.id for comment in here)
+        # Yours on earlier commits: a review of their own each, on the commit they're on.
+        warnings = [*posted.warnings, *await self._post_older(action.pr, mine, head_sha)]
         await self._store.dismiss_replies(action.pr)  # you've had your say
         await self._resolved(action.pr, action_id, approved=True)
-        return Posted(url=posted.url, warnings=list(posted.warnings))
+        return Posted(url=posted.url, warnings=warnings)
+
+    async def _post_older(self, ref: PRRef, mine: list[DraftComment], head_sha: str) -> list[str]:
+        """Post your comments on commits other than ``head_sha``; what didn't go through."""
+        try:
+            await self._post_mine(ref, [c for c in mine if c.head_sha != head_sha])
+        except ActionError as e:
+            return [f"Your comments on an earlier commit didn't go through: {e}"]
+        return []
+
+    async def _post_mine(self, ref: PRRef, mine: list[DraftComment]) -> str:
+        """Your comments, a review per commit they're on, each forgotten once posted."""
+        url = ""
+        for head in dict.fromkeys(comment.head_sha for comment in mine):
+            on_it = [comment for comment in mine if comment.head_sha == head]
+            url = await post_comments(self._writer, ref, on_it, signature=self._signature) or url
+            await self._store.remove_comments(comment.id for comment in on_it)
+        if mine:
+            await self.send_bus_message(CommentsChanged(source=self.name, pr=str(ref)))
+        return url
+
+    # -- Your inline comments -------------------------------------------------------
+
+    @handles(SaveComment)
+    async def save_comment(self, request: SaveComment) -> Done:
+        if not request.body.strip():
+            raise Invalid("A comment needs some words")
+        if request.comment_id is not None:
+            await self._store.edit_comment(request.comment_id, request.body)
+        else:
+            await self._store.save_comment(
+                request.pr,
+                path=request.path,
+                line=request.line,
+                side=request.side,
+                body=request.body,
+                head_sha=request.head_sha,
+            )
+        await self.send_bus_message(CommentsChanged(source=self.name, pr=str(request.pr)))
+        return Done()
+
+    @handles(RemoveComment)
+    async def remove_comment(self, request: RemoveComment) -> Done:
+        await self._store.remove_comments([request.comment_id])
+        await self.send_bus_message(CommentsChanged(source=self.name, pr=str(request.pr)))
+        return Done()
+
+    @handles(PostComments)
+    async def post_your_comments(self, request: PostComments) -> Posted:
+        """Your comments on their own: then the PR's done, as after approving a proposal."""
+        mine = await self._store.draft_comments(request.pr)
+        if not mine:
+            raise NotFound("You have no comments on it to post")
+        try:
+            url = await self._post_mine(request.pr, mine)
+        except ActionError as e:
+            raise Failed(f"GitHub didn't take them: {e}") from e
+        await self._store.dismiss_replies(request.pr)  # you've had your say
+        if pr := await self._store.get_pr(request.pr):
+            await self._settle(pr, done=True)
+        await self.send_bus_message(PRListUpdated(source=self.name))
+        return Posted(url=url)
 
     @handles(DismissAction)
     async def dismiss_action(self, request: DismissAction) -> Done:

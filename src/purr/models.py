@@ -404,6 +404,26 @@ class Review:
     plan: ReviewPlan | None = None  # what the lead decided it needs
 
 
+@dataclass(frozen=True)
+class DraftComment:
+    """An inline comment you wrote in Purr, posted with your next review of the PR.
+
+    ``side`` is GitHub's: ``RIGHT`` for a line in the PR's version, ``LEFT`` for one
+    it deletes (``line`` is then its number in the base). ``head_sha``: the commit
+    whose diff you wrote it on.
+    """
+
+    id: int
+    path: str
+    line: int
+    side: str
+    body: str
+    head_sha: str
+
+    def for_github(self) -> dict:
+        return {"path": self.path, "line": self.line, "side": self.side, "body": self.body}
+
+
 @dataclass
 class PendingAction:
     id: str

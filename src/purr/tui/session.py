@@ -3,7 +3,7 @@
 import asyncio
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -18,6 +18,7 @@ from textual.containers import Vertical
 from textual.widgets import OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
+from purr.diff import parse as parse_diff
 from purr.jobs import PurrError
 from purr.messages import (
     ListRepoSkills,
@@ -32,6 +33,7 @@ from purr.models import (
     PR,
     CheckState,
     Depth,
+    DraftComment,
     GHState,
     Outcome,
     PendingAction,
@@ -55,7 +57,7 @@ from purr.tui.commands import (
     suggestions,
 )
 from purr.tui.keys import pane_keys
-from purr.tui.overview import details_line, render_overview
+from purr.tui.overview import details_line, file_path, opens_short, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
 from purr.tui.theme import BLUE, CODE_THEME
 from purr.tui.transcript import Transcript
@@ -91,6 +93,8 @@ class SessionState:
     diff_error: str | None = None  # why the diff couldn't be
     approved: str | None = None  # the commit you approved it at, through Purr
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
+    opened: set[str] | None = None  # the diff's files shown opened; None: not decided yet
+    mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
     suggestion: str = ""  # what you might ask next (purr.suggest)
     suggested_at: int | None = None  # how far the transcript was when it was asked for
 
@@ -410,8 +414,24 @@ def _proposal_question(pr: PR, state: SessionState, actions: list[PendingAction]
     return Text.assemble(
         (f"{action.description}?", "bold"),
         (detail, "dim"),
+        (f" · and {_yours(state.mine)}" if state.mine else "", "yellow"),
         ("\n[a] approve   [x] dismiss", "bold"),
         ("   or write to change it", "dim"),
+    )
+
+
+def _yours(mine: list[DraftComment]) -> str:
+    return f"your {len(mine)} comment{'s' if len(mine) != 1 else ''}"
+
+
+def _comments_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """You wrote comments on the diff, and there's no proposal for them to go with."""
+    if not state.mine or actions:
+        return None
+    return Text.assemble(
+        (f"Post {_yours(state.mine)}?", "bold"),
+        ("\n[a] post them", "bold"),
+        ("   as a review comment · d shows them in the diff", "dim"),
     )
 
 
@@ -442,6 +462,7 @@ _QUESTIONS: list[Callable[[PR, SessionState, list[PendingAction]], Text | None]]
     _permission_question,
     _merge_question,
     _proposal_question,
+    _comments_question,
     _replies_question,
     _merge_hint,
 ]
@@ -497,8 +518,8 @@ class PRSession(Vertical):
         Binding("escape", "leave_prompt", "Back"),
         # The repo's keys, for reading and deciding (they work from the list too).
         *pane_keys(
-            ["approve", "dismiss", "merge", "move(1)", "move(-1)", "diff", "thinking"]
-            + ["open_claude", "shell", "zoom", "switch_pane"],
+            ["approve", "dismiss", "merge", "move(1)", "move(-1)", "diff", "expand"]
+            + ["thinking", "open_claude", "shell", "zoom", "switch_pane"],
             switch_pane="List",
         ),
     ]
@@ -669,6 +690,26 @@ class PRSession(Vertical):
             asked = await self.purr_app.purr.store.prompts(pr.ref)
             self.query_one(PromptArea).set_history([text for _, text in reversed(asked)])
 
+    # -- The diff's files, opened or not --------------------------------------------------
+
+    @on(Transcript.Clicked)
+    def _clicked(self, event: Transcript.Clicked) -> None:
+        if (path := file_path(event.text)) and path in self._paths():
+            self._open((self.state().opened or set()) ^ {path})
+
+    def toggle_files(self) -> None:
+        """All the diff's files opened, or (if they are) none (e)."""
+        paths = self._paths()
+        self._open(set() if paths <= (self.state().opened or set()) else paths)
+
+    def _paths(self) -> set[str]:
+        diff = self.purr_app.details.diff(self.pr) if self.pr else None
+        return {file.path for file in parse_diff(diff)} if diff else set()
+
+    def _open(self, opened: set[str]) -> None:
+        self.state().opened = opened
+        self.redraw(stay=True)
+
     def clear(self) -> None:
         """Show nothing, until the next PR is shown (another repo's is on its way)."""
         self.pr, self._drawn = None, None
@@ -678,24 +719,32 @@ class PRSession(Vertical):
         self.query_one(Working).stop()
         self.query_one(PromptArea).suggest("")
 
-    def redraw(self, *, keep_place: bool = False) -> None:
+    def redraw(self, *, keep_place: bool = False, stay: bool = False) -> None:
         """Rewrite the transcript: the overview, then the session.
 
-        ``keep_place``: stay about as far down it as you were, rather than at its end.
+        ``keep_place``: stay about as far down it as you were, rather than at its end;
+        ``stay``: exactly where you were (what's above didn't change).
         """
         assert self.pr is not None
         state = self.state()
         log = self.query_one(RichLog)
-        place = log.scroll_y / log.max_scroll_y if log.max_scroll_y else 1.0
+        y = log.scroll_y
+        place = y / log.max_scroll_y if log.max_scroll_y else 1.0
         log.clear()
         details = self.purr_app.details.get(self.pr)
         diff = self.purr_app.details.diff(self.pr)
-        overview = render_overview(details, state.details_error, diff, state.diff_error)
+        if state.opened is None and diff is not None:
+            state.opened = opens_short(diff)
+        overview = render_overview(
+            details, state.details_error, diff, state.diff_error, state.opened or ()
+        )
         log.write(overview, scroll_end=False)
         self._wrote = True
         for entry in state.entries or []:
             self._write(entry)
-        if not state.entries:
+        if stay:
+            log.call_after_refresh(lambda: log.scroll_to(y=y, animate=False))
+        elif not state.entries:
             log.scroll_home(animate=False)
         elif keep_place and place < 1:
             # After the writes' own scrolling to the end.
@@ -756,6 +805,7 @@ class PRSession(Vertical):
         actions = await store.pending_actions(pr.ref)
         state = self.state()
         state.approved = await store.approved_head(pr.ref)
+        state.mine = await store.draft_comments(pr.ref)
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details)

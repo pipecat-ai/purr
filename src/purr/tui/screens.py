@@ -38,12 +38,14 @@ from purr.messages import (
     GetWorktree,
     MergePR,
     PlanReviews,
+    PostComments,
     UnwatchRepo,
     WatchRepo,
 )
 from purr.models import PR, PRRef, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.review.skills import Skill
+from purr.tui.diffview import DiffScreen
 from purr.tui.keys import REPO_KEYS, pane_keys
 from purr.tui.overview import short_age
 from purr.tui.session import NUMBER_STYLE, PRSession, SessionState, outcome_mark
@@ -761,17 +763,23 @@ class RepoView(PurrView):
             await self._answer(state, True)
             return
         pr = self.selected_pr()
-        actions = await self.purr_app.purr.store.pending_actions(pr.ref) if pr else []
-        if not actions:
+        if not pr or not (job := await self._to_post(pr)):
             return
         try:
-            posted = await self.purr_app.bus.request(ApproveAction(action_id=actions[0].id))
+            posted = await self.purr_app.bus.request(job)
         except PurrError as e:
             self.notify(str(e), severity="error")
             return
         self.notify(f"Posted: {posted.url}" if posted.url else "Posted")
         for warning in posted.warnings:
             self.notify(warning, severity="warning")
+
+    async def _to_post(self, pr: PR) -> ApproveAction | PostComments | None:
+        """What a: the agent's proposal (with your comments), or your comments on their own."""
+        store = self.purr_app.purr.store
+        if actions := await store.pending_actions(pr.ref):
+            return ApproveAction(action_id=actions[0].id)
+        return PostComments(pr=pr.ref) if await store.draft_comments(pr.ref) else None
 
     @work(group="keys")
     async def action_dismiss(self) -> None:
@@ -900,7 +908,24 @@ class RepoView(PurrView):
         self.purr_app.data_version += 1  # its header says whether it has a worktree now
         await self.session.refresh_status()
 
+    def action_expand(self) -> None:
+        """The diff's files in the PR's pane: all opened, or none."""
+        if self.session.pr is not None:
+            self.session.toggle_files()
+
     async def action_diff(self) -> None:
+        """The PR's diff, to read line by line and comment on (D: in your pager)."""
+        pr = self.selected_pr()
+        if not pr:
+            return
+        if self.purr_app.details.diff(pr) is None:
+            await self._fetch_diff(pr)
+        if (diff := self.purr_app.details.diff(pr)) is None:
+            self.notify("Couldn't get the diff; D opens it in your pager.", severity="warning")
+            return
+        self.app.push_screen(DiffScreen(pr, diff))
+
+    async def action_pager(self) -> None:
         """The PR's full diff in your pager (gh's pager settings, or less)."""
         pr = self.selected_pr()
         if not pr:

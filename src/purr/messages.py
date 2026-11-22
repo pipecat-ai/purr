@@ -114,8 +114,39 @@ class Posted:
 
 
 @dataclass(kw_only=True)
+class SaveComment(Request[Done]):
+    """An inline comment of yours on a line of the PR's diff at ``head_sha`` (see
+    DraftComment), or, with ``comment_id``, new words for one. It's posted with your
+    next review of the PR: what you approve, or PostComments."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    path: str
+    line: int
+    side: str
+    body: str
+    head_sha: str
+    comment_id: int | None = None
+
+
+@dataclass(kw_only=True)
+class RemoveComment(Request[Done]):
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    comment_id: int
+
+
+@dataclass(kw_only=True)
+class PostComments(Request[Posted]):
+    """Post your inline comments on the PR, as a review of their own (a comment)."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class ApproveAction(Request[Posted]):
-    """Post what the agent proposed, as you."""
+    """Post what the agent proposed, as you, with your inline comments."""
 
     worker: ClassVar[str] = GITHUB_WORKER
     action_id: str
@@ -505,6 +536,15 @@ class ActionResolved(PurrEvent):
     pr: str
     action_id: str
     approved: bool
+
+
+@dataclass(kw_only=True)
+class CommentsChanged(PurrEvent):
+    """Your inline comments on the PR changed: written, edited, removed or posted."""
+
+    kind: ClassVar[str] = "comments.changed"
+    recorded: ClassVar[bool] = False
+    pr: str
 
 
 @dataclass(kw_only=True)

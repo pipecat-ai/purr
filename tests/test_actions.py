@@ -9,8 +9,18 @@ from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
 from purr.actions import ActionError, execute
-from purr.jobs import Busy, Done, Failed, NotFound, request
-from purr.messages import ApproveAction, AssignMe, CheckMerge, DismissAction, Merged, MergePR
+from purr.jobs import Busy, Done, Failed, Invalid, NotFound, request
+from purr.messages import (
+    ApproveAction,
+    AssignMe,
+    CheckMerge,
+    DismissAction,
+    Merged,
+    MergePR,
+    PostComments,
+    RemoveComment,
+    SaveComment,
+)
 from purr.models import (
     PR,
     ActionKind,
@@ -139,6 +149,54 @@ async def test_approving_posts_once_and_the_pr_is_done(setup):
     with pytest.raises(NotFound, match="already decided"):
         await request(client, ApproveAction(action_id=pending.id), timeout=5)
     assert len(writer.reviews) == 1
+
+
+def mine(line: int, body: str, *, side="RIGHT", head="abc", comment_id=None) -> SaveComment:
+    return SaveComment(
+        pr=REF, path="src/bus.py", line=line, side=side, body=body, head_sha=head,
+        comment_id=comment_id,
+    )  # fmt: skip
+
+
+async def test_your_comments_go_with_the_review_you_approve(setup):
+    store, writer, client, pending = setup
+    await request(client, mine(10, "Why a lock here?"), timeout=5)
+    await request(client, mine(7, "Keep this check", side="LEFT"), timeout=5)
+    await request(client, mine(3, "Fixed since", head="old"), timeout=5)  # an earlier commit
+    with pytest.raises(Invalid):
+        await request(client, mine(4, "  "), timeout=5)
+    first, second, older = await store.draft_comments(REF)
+    await request(client, mine(10, "Why a lock?", comment_id=first.id), timeout=5)  # edited
+    await request(client, RemoveComment(pr=REF, comment_id=second.id), timeout=5)
+    await request(client, mine(7, "Keep this check", side="LEFT"), timeout=5)
+
+    await request(client, ApproveAction(action_id=pending.id), timeout=5)
+    review, earlier = writer.reviews
+    assert review["commit_id"] == "abc" and review["comments"] == [
+        {"path": "bus.py", "line": 42, "side": "RIGHT", "body": "Race here"},  # the agent's
+        {"path": "src/bus.py", "line": 10, "side": "RIGHT", "body": "Why a lock?"},
+        {"path": "src/bus.py", "line": 7, "side": "LEFT", "body": "Keep this check"},
+    ]
+    # Those on an earlier commit go on that commit, in a review of their own.
+    assert earlier["commit_id"] == "old" and earlier["event"] == "COMMENT"
+    assert [c["body"] for c in earlier["comments"]] == ["Fixed since"]
+    assert await store.draft_comments(REF) == []
+
+
+async def test_your_comments_on_their_own(setup):
+    store, writer, client, pending = setup
+    with pytest.raises(NotFound):
+        await request(client, PostComments(pr=REF), timeout=5)
+    await request(client, mine(10, "Why a lock here?"), timeout=5)
+    writer.fail_with = ["Bad credentials"]
+    with pytest.raises(Failed, match="Bad credentials"):
+        await request(client, PostComments(pr=REF), timeout=5)
+    assert len(await store.draft_comments(REF)) == 1  # kept, to try again
+
+    posted = await request(client, PostComments(pr=REF), timeout=5)
+    assert posted.url and writer.reviews[0]["event"] == "COMMENT"
+    assert writer.reviews[0]["comments"][0]["body"] == "Why a lock here?"
+    assert await store.draft_comments(REF) == []
 
 
 async def test_a_failed_post_can_be_retried(setup):

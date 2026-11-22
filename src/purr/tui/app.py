@@ -22,6 +22,7 @@ from purr.messages import (
     ActionPending,
     ActionResolved,
     ChooseReviewSkill,
+    CommentsChanged,
     ListReviewSkills,
     MarkSeen,
     PermissionRequest,
@@ -444,8 +445,9 @@ class PurrApp(App):
         self._session_state(event.pr).ask = None
         self._session_changed(event.pr)
 
-    def _action_changed(self, event: ActionPending | ActionResolved) -> None:
-        """A proposal waits for you, or was settled: the decision box changes."""
+    def _action_changed(self, event: ActionPending | ActionResolved | CommentsChanged) -> None:
+        """A proposal waits for you, or was settled, or your comments changed: the decision
+        box changes."""
         self._session_changed(event.pr)
 
     def _session_state(self, pr: str) -> SessionState:
@@ -476,6 +478,7 @@ class PurrApp(App):
         PermissionResolved: _permission_answered,
         ActionPending: _action_changed,
         ActionResolved: _action_changed,
+        CommentsChanged: _action_changed,
     }
 
     def _schedule_reload(self) -> None:

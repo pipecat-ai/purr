@@ -6,27 +6,26 @@ so the UI keeps them in a :class:`DetailsCache` and fetches ahead of the cursor.
 
 import re
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from fnmatch import fnmatch
-from itertools import pairwise
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
-from rich.rule import Rule
 from rich.text import Text
 
+from purr.diff import File, parse
 from purr.models import PR, PRDetails
 from purr.tui.theme import CODE_THEME
 
 # CI moves on without the PR's updated_at changing, so details also expire.
 STALE_AFTER = 120
-# Lines of diff shown; `d` opens all of it in a pager.
+# Lines of diff shown at most, files opened; `d` opens all of it.
 DIFF_LINES = 3000
+# A diff this short shows opened; a longer one starts as its list of files.
+SHORT_DIFF = 60
 # Diffs kept in memory (they only change with the PR's head).
 DIFFS_KEPT = 50
-# Generated files whose diff is noise: just their name and size.
-COLLAPSED = ("*.lock", "package-lock.json", "pnpm-lock.yaml", "go.sum", "*.min.js", "*.svg")
 
 _HTML_COMMENTS = re.compile(r"<!--.*?-->", re.DOTALL)  # PR templates are full of them
 
@@ -150,70 +149,56 @@ def details_line(pr: PR, details: PRDetails | None) -> Text:
     return text
 
 
-_FILE_NOTES = {
-    "new file mode": "new file",
-    "deleted file mode": "deleted",
-    "rename from": "renamed from",
-    "Binary files": "binary",
-}
-_SKIPPED = ("index ", "--- ", "+++ ", "old mode", "new mode", "similarity index", "rename to")
+def opens_short(diff: str | None) -> set[str]:
+    """The files that start opened: all of a short diff's, none of a longer one's."""
+    if diff is None or len(diff.splitlines()) > SHORT_DIFF:
+        return set()
+    return {file.path for file in parse(diff)}
 
 
-def _file_rule(path: str, details: PRDetails | None) -> Rule:
-    title = Text(path, style="bold")
-    change = next((f for f in details.files if f.path == path), None) if details else None
-    if change:
-        title.append(f"  +{change.additions}", style="green")
-        title.append(f" −{change.deletions}", style="red")
-    return Rule(title, align="left", style="dim")
+def file_line(file: File, opened: bool) -> Text:
+    """``▸ src/bus.py  +22 −4``: a file in the diff, opened or not (click to switch)."""
+    return Text.assemble(
+        ("▾ " if opened else "▸ ", "dim"),
+        (file.path, "bold"),
+        (f"  +{file.additions}", "green"),
+        (f" −{file.deletions}", "red"),
+        (f"  {file.note}" if file.note else "", "dim italic"),
+    )
 
 
-def render_diff(diff: str, details: PRDetails | None = None) -> RenderableType:
-    """A unified diff the way ``git diff`` colors it, a rule per file."""
-    parts: list[RenderableType] = []
-    lines = diff.splitlines()
-    for path, file_lines in _files(lines[:DIFF_LINES]):
-        parts += [_file_rule(path, details), _file_changes(path, file_lines)]
-    if (more := len(lines) - DIFF_LINES) > 0:
-        parts.append(Text(f"… {more} more lines. d opens the whole diff.", style="dim"))
-    return Group(*parts)
-
-
-def _files(lines: list[str]) -> list[tuple[str, list[str]]]:
-    """Each file's path and its lines, after the ``diff --git`` line that starts it."""
-    starts = [i for i, line in enumerate(lines) if line.startswith("diff --git ")]
-    return [
-        (lines[start].rpartition(" b/")[2], lines[start + 1 : end])
-        for start, end in pairwise([*starts, len(lines)])
-    ]
-
-
-def _file_changes(path: str, lines: list[str]) -> Text:
-    """A file's diff, colored; a generated file's only says it's not shown."""
-    changes = Text()
-    if any(fnmatch(path.rpartition("/")[2], pattern) for pattern in COLLAPSED):
-        changes.append("generated, not shown\n", style="dim")
-        return changes
-    for line in lines:
-        if line.startswith(_SKIPPED):
-            continue
-        text, style = _colored(line)
-        changes.append(text, style=style)
-    return changes
+def file_path(line: str) -> str | None:
+    """The path in a file's line (``▸ src/bus.py  +22 −4``), if it is one."""
+    marker, _, rest = line.strip().partition(" ")
+    return rest.split("  ")[0] if marker in ("▸", "▾") and rest else None
 
 
 # How git colors a diff's lines, by how they start.
-_LINE_STYLES = (("@@", "cyan"), ("+", "green"), ("-", "red"), ("\\", "dim"))
+LINE_STYLES = {"@@": "cyan", "+": "green", "-": "red", "\\": "dim"}
 
 
-def _colored(line: str) -> tuple[str, str]:
-    """A diff line, and its style; what git says about a file (new, renamed...) as a note."""
-    note = next((n for prefix, n in _FILE_NOTES.items() if line.startswith(prefix)), None)
-    if note:
-        rest = line.removeprefix("rename from ") if note == "renamed from" else ""
-        return f"{note} {rest}".rstrip() + "\n", "dim italic"
-    style = next((style for prefix, style in _LINE_STYLES if line.startswith(prefix)), "")
-    return line + "\n", style
+def render_diff(diff: str, opened: Collection[str] = ()) -> RenderableType:
+    """The diff's files, a line each; those ``opened`` with their changes, colored like
+    ``git diff``, up to DIFF_LINES of them."""
+    parts: list[RenderableType] = []
+    room = DIFF_LINES
+    for file in parse(diff):
+        parts.append(file_line(file, file.path in opened))
+        if file.path in opened:
+            parts.append(_changes(file, room))
+            room -= len(file.lines)
+    return Group(*parts)
+
+
+def _changes(file: File, room: int) -> Text:
+    """A file's lines, colored; a generated or too long file's only say why not."""
+    if file.generated:
+        return Text("  generated, not shown", style="dim")
+    if len(file.lines) > room:
+        return Text("  too long to show here: d opens it", style="dim")
+    return Text("\n").join(
+        Text(line.text, style=LINE_STYLES.get(line.kind, "")) for line in file.lines
+    )
 
 
 def render_overview(
@@ -221,8 +206,9 @@ def render_overview(
     error: str | None = None,
     diff: str | None = None,
     diff_error: str | None = None,
+    opened: Collection[str] = (),
 ) -> RenderableType:
-    """The description, then the diff."""
+    """The description, then the diff: its files, those ``opened`` with their changes."""
     if details is None:
         if error:
             return Text(f"Couldn't load the description: {error}", style="red")
@@ -238,18 +224,18 @@ def render_overview(
             (files, "bold"),
             (f"  +{details.additions}", "green"),
             (f" −{details.deletions}", "red"),
-            ("  d opens it in your pager", "dim"),
+            ("  click a file to open it · e opens all · d to read and comment", "dim"),
         ),
     ]
-    parts += [_diff_or_why_not(diff, diff_error, details), Text("")]
+    parts += [_diff_or_why_not(diff, diff_error, opened), Text("")]
     return Group(*parts)
 
 
 def _diff_or_why_not(
-    diff: str | None, error: str | None, details: PRDetails | None
+    diff: str | None, error: str | None, opened: Collection[str]
 ) -> RenderableType:
     if diff is not None:
-        return render_diff(diff, details)
+        return render_diff(diff, opened)
     if error:
         return Text(f"Couldn't load the diff: {error}", style="red")
     return Text("Loading the diff…", style="dim")

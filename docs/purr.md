@@ -200,6 +200,15 @@ Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that 
 - **Background tasks** (agents, long commands) get a line when they start and one when they end, named by what they are (`✓ background done: Bug scan`), not by what they reported: an agent's report is often a note to the main agent ("delivered to you as a message from …"). `◼ stopped` is neutral, since the agent stops what it no longer needs; only `✗ failed` is red.
 - **How `c` works**: Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools` (there, all of `gh api`). When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
 
+## Commenting on lines
+
+`d` opens the PR's diff full screen (`tui/diffview.py`), with a cursor on a line: `↑`/`↓` (or `j`/`k`), `page up`/`page down`, `home`/`end`. Each line shows its numbers in the base and in the PR. Files start as a line each, except in a short diff and those with comments on them: `enter` (or a click) opens one, `e` all, `n`/`p` go to the next or previous file. `esc` goes back to the PR.
+
+- `c` writes a comment on the line under the cursor (`enter` saves, `ctrl+j` a new line), or rewrites yours under it; `x` removes it. They show under their line, yours in yellow, and the agent's proposed inline comments in magenta, so you see its review where it lands.
+- Yours are drafts until you post your review: the `draft_comments` table (path, line, side, body, and the commit they're on). They go out as normal inline review comments, with the agent's proposal when you approve it (`a`: one review, the agent's comments and yours), or on their own when nothing's proposed (the decision box asks `Post your 2 comments? [a]`, a `COMMENT` review). Either way, as you, through `gh`.
+- GitHub places a comment by line and side: a line the PR adds or keeps is on the `RIGHT` (its number in the PR), a deleted one on the `LEFT` (its number in the base). The diff view knows which from the diff, so a comment on a deleted line lands on it. Comments written on an earlier commit (the PR moved on since) go in a review of their own on that commit, where GitHub shows them as outdated, rather than on the wrong line.
+- Jobs: `SaveComment {pr, path, line, side, body, head_sha, comment_id?}`, `RemoveComment {pr, comment_id}` and `PostComments {pr}` on the GitHub worker; a `comments.changed` event refreshes the PR's pane.
+
 ## Merging: your final decision
 
 Approving and merging are apart on purpose: two people may be reviewing a PR (two assignees), and you may want the other one to approve as well. Once you've approved a PR through Purr, its pane says so (`You approved it. [m] merge…`).
@@ -290,7 +299,7 @@ Jobs:
 - `GetWorktree {pr}` (git worker): the PR's worktree, made again if it was removed (for `c` and `!`).
 - `DismissReplies {pr}` (GitHub worker): the PR's replies to you need no answer (`x`).
 - `CheckMerge {pr}` / `MergePR {pr, seen}` (GitHub worker): where a PR stands for merging, and merging it past the concerns you saw (see Merging).
-- `ApproveAction {action_id}` / `DismissAction {action_id}` (GitHub worker). Approving claims the action atomically (so two requests at once can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. **What Purr posts says so:** the review's text and each reply in a thread end with the signature in small print (`<sub>Sent from [Purr](https://github.com/pipecat-ai/purr).</sub>`, the `signature` setting; empty turns it off). Inline comments don't: they belong to the review, whose text already says it, and one under every comment would be noise. An approval with nothing to say is "LGTM", signed. The proposal in the PR's conversation shows it too, so `a` still posts exactly what you read.
+- `ApproveAction {action_id}` / `DismissAction {action_id}` (GitHub worker). Approving claims the action atomically (so two requests at once can't post it twice), posts the GitHub review with its inline comments and yours (see Commenting on lines), and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. **What Purr posts says so:** the review's text and each reply in a thread end with the signature in small print (`<sub>Sent from [Purr](https://github.com/pipecat-ai/purr).</sub>`, the `signature` setting; empty turns it off). Inline comments don't: they belong to the review, whose text already says it, and one under every comment would be noise. An approval with nothing to say is "LGTM", signed. The proposal in the PR's conversation shows it too, so `a` still posts exactly what you read.
 
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)
@@ -316,6 +325,7 @@ Events (`PurrEvent`) are `BusDataMessage` subclasses in `src/purr/messages.py`, 
 - `prs`: repo, number, title, author, author_association, url, head sha, base, state (Purr's: not_reviewed/reviewing/needs_you/done) and state_at (when it got there), gh_state (open/closed/merged), assigned_to_me, assignees, requested_from_me, involved (you took part on GitHub; it sticks), replies (to you, since your last word, JSON) and replies_done_at (`x`), created_at, updated_at, model (yours, from `/model`), seen_at (when you last looked at it; what happened before isn't news). Descriptions and files aren't stored; the UI caches them in memory.
 - `reviews`: pr, session_id, worktree path, status, summary, error, head_sha (the commit it last looked at), skill (the repo skill it followed), plan (the lead's, JSON), started_at, finished_at
 - `findings`: review, file, line, severity, text
+- `draft_comments`: id, pr, path, line, side (`LEFT`/`RIGHT`), body, head_sha, created_at. Your inline comments until they're posted (see Commenting on lines).
 - `pending_actions`: id, pr, kind (comment/request_changes/approve; the schema also allows merge, which nothing proposes), description, payload, status (pending/approved/dismissed/executed/failed), created_at, resolved_at, posted_head (the PR's head when it was posted)
 - `review_skills`: repo, skill ('' for Purr's own review), chosen_by (`purr` or `you`), chosen_at
 - `prompts`: at, repo, number, text. What you asked PR agents, for the prompt's history (`↑`/`↓`, `ctrl+r`).
@@ -404,9 +414,10 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 - **Left pane**: the repo's PRs grouped (Needs you, Reviewing, Review requested, Done, Not reviewed, Others reviewing), newest first within each group (Done: latest done first). Columns: number (in its own color), title, who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`) against the right edge.
 - **Right pane**: the selected PR, top to bottom:
   - **Header**, which stays put: its title, then `by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · labels`, then where its review stands.
-  - **What scrolls**: the PR's description, then its diff (colored like `git diff`, a rule per file with its `+/−`; lock files and other generated files collapsed; the first 3000 lines), then the session with the agent (Claude Code style, see PR session). A PR nobody has reviewed yet opens at its description, so you can decide whether to take it; a reviewed one opens at the end of the conversation.
+  - **What scrolls**: the PR's description, then its diff, then the session with the agent (Claude Code style, see PR session). A PR nobody has reviewed yet opens at its description, so you can decide whether to take it; a reviewed one opens at the end of the conversation.
   - **The working line, the decision box and the prompt**, which stay put too. The decision box asks what waits on you, the most pressing first (`_QUESTIONS` in `tui/session.py`, one function each): a permission request (`a`/`A`/`x`), where it stands for merging after `m`, a proposal (`a`/`x`), replies to you (`x`), then, once you've approved it, `[m] merge…`. The prompt takes several lines and grows with them (up to 10).
-  - `d` opens the full diff in your pager (`gh pr diff`).
+  - **The diff** is its files, a line each (`▸ src/bus.py  +22 −4`), so a big PR doesn't bury the conversation: a click on one opens it (colored like `git diff`), `e` opens them all or shuts them, and a diff of 60 lines or fewer starts opened. Lock files and other generated files stay shut; at most 3000 lines show opened. The diff is read once (`purr/diff.py`): files, numbered lines, and the side and line a comment on each goes on.
+  - `d` opens the diff view (see Commenting on lines); `D`, the whole diff in your pager (`gh pr diff`).
 - **Details are fetched ahead; diffs are local.** Selecting a PR fetches its details from GitHub (about 0.5 s), plus those of the 10 PRs below it in one request. Its diff comes from Purr's clone (`GetDiff` on the `git` worker, see Repos), in a few ms. Details are cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing; diffs are kept by head commit (the last 50).
 - **Focus**: each pane has a rounded border, and the one with the focus lights up in the accent color, with its title (`PRs`, `PR`). `o` on a PR moves the focus into its pane (`enter` into its prompt); `tab` goes back and forth.
 - **Status bar**: key hints for the focused pane.
@@ -443,7 +454,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `page up` / `page down` scroll a page, in either pane (the transcript while typing too)
 - `space` mark/unmark PR
 - `r` start review on marked PRs (or the selected one), assigning you
-- `d` the selected PR's full diff in your pager
+- `d` the diff view, to read it line by line and comment (`D`: the whole diff in your pager); `e` opens or shuts all the files in the PR's pane
 - `a` / `x` answer the decision box: approve or dismiss a pending action, allow or deny a permission request (`A`: always allow); `x` also says replies to you need no answer
 - `m` merge a PR you approved: once to see where it stands, again to merge (see Merging)
 - `t` the agent's reasoning in full, or a line per thought again

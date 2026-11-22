@@ -12,12 +12,13 @@ approval with nothing else to say is "LGTM".
 
 import asyncio
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from loguru import logger
 
-from purr.models import ActionKind, PendingAction, PRRef
+from purr.models import ActionKind, DraftComment, PendingAction, PRRef
 
 _REVIEW_EVENTS = {
     ActionKind.APPROVE: "APPROVE",
@@ -65,9 +66,15 @@ def _folded(body: str, comments: list[dict]) -> str:
 
 
 async def execute(
-    writer: GitHubWriter, action: PendingAction, *, head_sha: str, signature: str = ""
+    writer: GitHubWriter,
+    action: PendingAction,
+    *,
+    head_sha: str,
+    signature: str = "",
+    mine: Sequence[DraftComment] = (),
 ) -> Posted:
-    """Post an approved action: the review, then any replies in existing threads.
+    """Post an approved action: the review, with your inline comments (``mine``) next to
+    the agent's, then any replies in existing threads.
 
     The review's text and each reply end with ``signature`` (none: unsigned).
     Raises ActionError if the review itself can't be posted. A reply that fails
@@ -81,7 +88,7 @@ async def execute(
         r for r in action.payload.get("replies") or [] if r.get("thread_id") and r.get("body")
     ]
     url = await _review(
-        writer, action, event, head_sha, only_replies=bool(replies), signature=signature
+        writer, action, event, head_sha, mine, only_replies=bool(replies), signature=signature
     )
     warnings = []
     for reply in replies:
@@ -94,11 +101,26 @@ async def execute(
     return Posted(url=url, warnings=warnings)
 
 
+async def post_comments(
+    writer: GitHubWriter, ref: PRRef, mine: Sequence[DraftComment], *, signature: str = ""
+) -> str:
+    """Your inline comments as a review of their own (a comment), on the commit they're on
+    (all the same one). Raises ActionError if GitHub doesn't take it."""
+    return await writer.submit_review(
+        ref,
+        event="COMMENT",
+        body=signed("", signature),
+        comments=[comment.for_github() for comment in mine],
+        commit_id=mine[0].head_sha,
+    )
+
+
 async def _review(
     writer: GitHubWriter,
     action: PendingAction,
     event: str,
     head_sha: str,
+    mine: Sequence[DraftComment],
     *,
     only_replies: bool,
     signature: str,
@@ -108,7 +130,7 @@ async def _review(
         {"path": c["path"], "line": int(c["line"]), "side": "RIGHT", "body": c["body"]}
         for c in action.payload.get("comments") or []
         if c.get("path") and c.get("line") and c.get("body")
-    ]
+    ] + [comment.for_github() for comment in mine]
     if not body and not comments and event == "COMMENT" and only_replies:
         return ""  # just replies, no review to submit
     if not body and not comments:

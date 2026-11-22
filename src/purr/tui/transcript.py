@@ -1,8 +1,12 @@
 """The PR's pane (description, diff, conversation): a log you can select text in."""
 
+from dataclasses import dataclass
+
 from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
+from textual import events
+from textual.message import Message
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.widgets import RichLog
@@ -15,6 +19,18 @@ class Transcript(RichLog):
     can't tell what the mouse is over and selecting does nothing. This marks
     it, like Textual's :class:`~textual.widgets.Log` does.
     """
+
+    @dataclass
+    class Clicked(Message):
+        """A click on a line (not a drag to select): its text."""
+
+        text: str
+
+    def on_click(self, event: events.Click) -> None:
+        offset = event.get_content_offset(self)
+        index = self.scroll_offset.y + offset.y if offset else len(self.lines)
+        if index < len(self.lines) and not self.text_selection:
+            self.post_message(self.Clicked(self.lines[index].text))
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         text = "\n".join(line.text.rstrip() for line in self.lines)

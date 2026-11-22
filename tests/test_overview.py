@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 
 from rich.console import Console
 
-from purr.models import PR, FileChange, PRDetails
+from purr.models import PR, PRDetails
 from purr.tui.overview import (
     DetailsCache,
     details_line,
+    file_path,
+    opens_short,
     render_diff,
     render_overview,
     short_age,
@@ -62,7 +64,10 @@ def test_details_line_and_overview():
 
     overview = render_overview(replace(DETAILS, changed_files=45))
     texts = [str(part) for part in overview.renderables if hasattr(part, "plain")]
-    assert "45 files changed  +3 −1  d opens it in your pager" in texts
+    assert (
+        "45 files changed  +3 −1  click a file to open it · e opens all · d to read and comment"
+        in texts
+    )
     assert "Loading the diff…" in texts
     failed = render_overview(DETAILS, diff_error="too big")
     assert "Couldn't load the diff: too big" in plain(failed)
@@ -101,21 +106,34 @@ def plain(renderable) -> str:
     return capture.get()
 
 
-def test_diff_like_git_diff():
-    details = replace(DETAILS, files=(FileChange("src/bus.py", 1, 1),))
-    text = plain(render_diff(DIFF, details))
-    assert "src/bus.py  +1 −1 ──" in text
-    assert "@@ -1,3 +1,3 @@ class Bus:" in text
+def test_the_diff_is_its_files_a_line_each_until_opened():
+    closed = plain(render_diff(DIFF))
+    assert closed.splitlines() == [
+        "▸ src/bus.py  +1 −1",
+        "▸ uv.lock  +1 −1",
+        "▸ docs/new.md  +1 −0  new file",
+    ]
+    assert file_path("▸ src/bus.py  +1 −1") == "src/bus.py" and file_path("+ x") is None
+
+    text = plain(render_diff(DIFF, {"src/bus.py", "uv.lock", "docs/new.md"}))
+    assert "▾ src/bus.py  +1 −1\n@@ -1,3 +1,3 @@ class Bus:" in text
     assert "-    pass\n+    self._subscribers.append(x)" in text
     assert "index 1111111" not in text and "+++ b/src/bus.py" not in text
-    # Lock files are collapsed; new files say so.
+    # Lock files stay shut; new files say so.
     assert "uv.lock" in text and "generated, not shown" in text and "new = 2" not in text
-    assert "new file\n" in text and "+Hello" in text
+    assert "+Hello" in text
+
+
+def test_a_short_diff_starts_opened():
+    assert opens_short(DIFF) == {"src/bus.py", "uv.lock", "docs/new.md"}
+    assert opens_short(DIFF * 10) == set() and opens_short(None) == set()
 
 
 def test_long_diffs_are_cut(monkeypatch):
     monkeypatch.setattr("purr.tui.overview.DIFF_LINES", 5)
-    assert "more lines. d opens the whole diff." in plain(render_diff(DIFF))
+    text = plain(render_diff(DIFF, {"src/bus.py", "docs/new.md"}))
+    assert "+    self._subscribers" in text  # 4 lines: fits in 5
+    assert "too long to show here: d opens it" in text and "+Hello" not in text
 
 
 def test_diffs_are_cached_by_head():

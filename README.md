@@ -118,7 +118,8 @@ uv run purr --no-auto-review
 | | `a` / `x` | Approve / dismiss what's proposed (or allow / deny what's asked); `x` also says replies need no answer |
 | | `m` | Merge a PR you approved: once to see where it stands, again to merge |
 | | `A` | Always allow what's asked |
-| | `d` | The full diff, in your pager |
+| | `d` | The diff, to read line by line and comment on lines (`c`); yours go out with your review. `D`: in your pager |
+| | `e` | Open or shut all the diff's files in the PR pane (a click opens one) |
 | | `t` | The agent's reasoning in full (it's a line per thought otherwise) |
 | | `!` | A shell in the PR's checkout, to run things yourself (`exit` to come back) |
 | | `c` | Open the PR's conversation in Claude Code itself |
