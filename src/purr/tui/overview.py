@@ -16,6 +16,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from purr.models import PR, PRDetails
+from purr.tui.theme import CODE_THEME
 
 # CI moves on without the PR's updated_at changing, so details also expire.
 STALE_AFTER = 120
@@ -217,7 +218,9 @@ def render_overview(
     body = _HTML_COMMENTS.sub("", details.body).strip()
     files = f"{details.changed_files} file{'s' if details.changed_files != 1 else ''} changed"
     parts: list[RenderableType] = [
-        Markdown(body) if body else Text("No description.", style="dim italic"),
+        Markdown(body, code_theme=CODE_THEME)
+        if body
+        else Text("No description.", style="dim italic"),
         Text(""),
         Text.assemble(
             (files, "bold"),

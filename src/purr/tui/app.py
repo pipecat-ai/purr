@@ -34,11 +34,13 @@ from purr.models import Outcome, PRChange, PRRef
 from purr.review.instructions import Kind
 from purr.review.rules import CLAUDE_SETTINGS
 from purr.tui.bridge import BusEvent, RequestError, UIWorker
+from purr.tui.clipboard import copy_command, system_copy, terminal_copies
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
 from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen, ReviewSkillScreen
 from purr.tui.session import SessionState
 from purr.tui.switcher import PurrSwitcher, short_name
+from purr.tui.theme import THEME, ansi_themes
 from purr.workers.recap import LAST_ACTIVE
 
 _NOWHERE = object()
@@ -71,8 +73,9 @@ class PurrApp(App):
     CSS_PATH = "purr.tcss"
     TITLE = "Purr"
     COMMANDS = {PurrSwitcher}
+    ansi_theme_dark, ansi_theme_light = ansi_themes()
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
+        Binding("ctrl+c", "copy_or_quit", "Quit", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
         Binding("ctrl+n", "next_alert", "Next alert", show=False, priority=True),
@@ -85,6 +88,7 @@ class PurrApp(App):
 
     def __init__(self, purr: Purr, *, cwd: Path | None = None):
         super().__init__()
+        self.theme = THEME
         self.purr = purr
         self.bus = UIWorker(self)
         self.main = MainScreen()
@@ -411,6 +415,34 @@ class PurrApp(App):
             else ""
         )
         if await self.push_screen_wait(ConfirmScreen("Quit Purr?", detail)):
+            await self.action_quit()
+
+    def on_text_selected(self) -> None:
+        """Copy what you select with the mouse, as terminals do."""
+        if text := self.screen.get_selected_text():
+            self.copy_to_clipboard(text)
+
+    def copy_to_clipboard(self, text: str) -> None:
+        super().copy_to_clipboard(text)  # by asking the terminal, which works over ssh too
+        command = copy_command()
+        if command:
+            self.run_worker(system_copy(command, text))
+        elif not terminal_copies():
+            self.notify(
+                "This terminal doesn't let apps copy. Install wl-clipboard (or xclip) and "
+                "Purr will; until then, hold shift to select with the terminal itself.",
+                severity="warning",
+                timeout=8,
+            )
+            return
+        lines = text.count("\n") + 1
+        self.notify(f"Copied {lines} line{'s' if lines != 1 else ''}", timeout=2)
+
+    async def action_copy_or_quit(self) -> None:
+        """ctrl+c copies what's selected, if anything is; otherwise it quits."""
+        if text := self.screen.get_selected_text():
+            self.copy_to_clipboard(text)
+        else:
             await self.action_quit()
 
     async def action_quit(self) -> None:

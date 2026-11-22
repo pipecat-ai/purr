@@ -255,23 +255,32 @@ def transcript_entries(message: Any) -> list[dict]:
     return entries
 
 
-def track_tasks(message: Any, running: set[str]) -> None:
-    """Keep ``running`` up to date with the session's background tasks."""
+def track_tasks(message: Any, running: dict[str, str]) -> None:
+    """Keep ``running`` (task ID -> what it is) up to date with the session's background tasks."""
     if isinstance(message, TaskStartedMessage):
-        running.add(message.task_id)
+        running[message.task_id] = message.description
     elif isinstance(message, TaskNotificationMessage):
-        running.discard(message.task_id)
+        running.pop(message.task_id, None)
     elif isinstance(message, TaskUpdatedMessage):
         status = (getattr(message, "patch", None) or {}).get("status")
         if status in TERMINAL_TASK_STATUSES:
-            running.discard(message.task_id)
+            running.pop(message.task_id, None)
 
 
 def _entries(message: Any) -> list[dict]:
     if isinstance(message, TaskStartedMessage):
-        return [{"kind": "task", "event": "started", "text": message.description}]
+        return [
+            {"kind": "task", "event": "started", "text": message.description, "id": message.task_id}
+        ]
     if isinstance(message, TaskNotificationMessage):
-        return [{"kind": "task", "event": message.status, "text": message.summary}]
+        return [
+            {
+                "kind": "task",
+                "event": message.status,
+                "text": message.summary,
+                "id": message.task_id,
+            }
+        ]
     if isinstance(message, AssistantMessage):
         entries = []
         for block in message.content:
@@ -566,12 +575,18 @@ class ClaudeReviewAgent:
         )
 
         result = AgentResult()
-        running: set[str] = set()  # background tasks (agents, shells) still at work
+        running: dict[str, str] = {}  # background tasks (agents, shells) still at work
         async with ClaudeSDKClient(options) as client:
             await client.query(prompt)
             async for message in client.receive_messages():
+                entries = transcript_entries(message)
+                for entry in entries:
+                    if entry["kind"] == "task" and entry.get("id") in running:
+                        # Say which task it was: its report is often a note to the agent
+                        # ("delivered to you as a message from ...").
+                        entry["text"] = running[entry["id"]]
                 track_tasks(message, running)
-                for entry in transcript_entries(message):
+                for entry in entries:
                     if entry["kind"] == "result" and running:
                         continue  # a turn's end, not the run's: agents are still at work
                     await callbacks.on_message(entry)

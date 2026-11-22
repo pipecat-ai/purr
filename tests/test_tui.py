@@ -919,3 +919,44 @@ async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
         # ...as does one you go to (an alert, ctrl+p).
         await app.goto_pr(PRRef("pipecat-ai/pipecat", 2))
         await until(pilot, lambda: numbers() == [7, 6, 5, 4, 3, 2, 9, 8])
+
+
+async def test_selecting_text_in_the_pr_pane_copies_it(tmp_path, monkeypatch):
+    """Drag over the PR's description or conversation: it's selected, and copied, as
+    terminals do; ctrl+c then copies rather than quits."""
+    import purr.tui.app
+
+    monkeypatch.setattr(purr.tui.app, "copy_command", lambda: None)  # never your clipboard
+    monkeypatch.delenv("VTE_VERSION", raising=False)
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        session = app.main.repo.session
+        await until(pilot, lambda: session.pr is not None and session._drawn is not None)
+        session.append(str(session.pr.ref), {"kind": "text", "text": "Yes: stop() doesn't wait."})
+        await pilot.pause(0.1)
+        log = session.query_one("#transcript")
+        [index] = [i for i, line in enumerate(log.lines) if "stop() doesn't" in line.text]
+        x, y = log.lines[index].text.index("stop()"), index - log.scroll_offset.y
+        await pilot.mouse_down(log, offset=(x, y))
+        await pilot.hover(log, offset=(x + 5, y))  # over the ")": it's included
+        await pilot.mouse_up(log, offset=(x + 5, y))
+        await pilot.pause()
+        assert app.screen.get_selected_text() == "stop()"
+        assert app.clipboard == "stop()"
+
+        app.copy_to_clipboard("")  # what ctrl+c copies, now
+        await pilot.press("ctrl+c")
+        assert app.is_running and app.clipboard == "stop()"
+
+
+async def test_the_colors_are_solarized(tmp_path):
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(140, 45)):
+        assert app.theme == "solarized-dark"
+        # Purr's named colors ("green" in a transcript line) are Solarized's too.
+        assert app.ansi_theme.ansi_colors[2] == (0x85, 0x99, 0x00)

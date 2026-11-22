@@ -10,6 +10,8 @@ import time
 from rich.text import Text
 from textual.widgets import Static
 
+from purr.tui.theme import ORANGE
+
 # A star that grows and shrinks.
 FRAMES = "·✢✳✶✻✽✻✶✳✢"
 # What the agent is up to, as far as the cat is concerned. One per stretch of
@@ -35,7 +37,7 @@ VERBS = [
 VERB_SECONDS = 20  # how long a verb lasts
 FRAME_SECONDS = 0.12
 _SHINE = 3  # letters lit at once, sweeping across the verb
-COLOR, SHINE_COLOR = "#d9895b", "bold #ffc59e"
+COLOR, SHINE_COLOR = ORANGE, "bold #e19872"  # and a lighter orange, for the shine
 
 
 def elapsed_text(seconds: float) -> str:

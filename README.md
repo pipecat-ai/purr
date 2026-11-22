@@ -96,6 +96,7 @@ uv run purr --no-auto-review
 | | `w` | What happened while you were away |
 | | `i` | Your review style, code style, permissions and the repo's review skill |
 | | `q` | Quit (it asks first) |
+| | drag | Select text in the PR pane: it's copied |
 | Home | `enter` / `+` / `-` | Open / watch / stop watching a repo |
 | A repo | `enter` | Ask the agent about the PR: straight to its prompt |
 | | `o` / `tab` | Read the PR / switch between the list and the PR |
@@ -166,6 +167,9 @@ its `code-review` skill is used automatically).
 - **Where things live.** The database, log (`purr.log`) and PR checkouts are in
   `~/.local/share/purr` (or `--data-dir`). A PR's checkout is removed once you approve it or
   it closes, unless it has changes of yours in it.
+- **Copying.** Selecting text with the mouse copies it. GNOME Terminal (and other terminals
+  built on VTE) don't let apps copy, so there install `wl-clipboard` (or `xclip`) first;
+  `shift`+drag always selects with the terminal itself.
 - **Options.** `uv run purr --help` lists them: `--no-auto-review`, `--max-reviews N`,
   `--permission-mode MODE`, `--sandbox`, `--data-dir`, `--headless`, `-v`.
 

@@ -229,6 +229,20 @@ async def test_a_run_waits_for_its_background_agents(monkeypatch, tmp_path):
     assert (got.text, got.cost_usd) == ("Review submitted.", 0.40)  # the last: running totals
     kinds = [(e["kind"], e.get("event")) for e in entries if e["kind"] in ("task", "text")]
     assert kinds == [("task", "started"), ("text", None), ("task", "completed"), ("text", None)]
+    # Which agent reported back, rather than its report (a note to the agent, often).
+    assert [e["text"] for e in entries if e["kind"] == "task"] == ["Bug scan", "Bug scan"]
     assert all(e.get("text") != "never read" for e in entries)
     # "done" once, at the end: not when the first turn ended with agents still out.
     assert [e["cost_usd"] for e in entries if e["kind"] == "result"] == [0.40]
+
+
+def test_a_stopped_background_task_isnt_a_failure():
+    from purr.tui.session import render_entry
+
+    def shown(event: str) -> tuple[str, str]:
+        text = render_entry({"kind": "task", "event": event, "text": "git log -S"})
+        return text.plain.split(" background ")[0].strip(), str(text.style)
+
+    assert shown("completed") == ("✓", "dim green")
+    assert shown("stopped") == ("◼", "dim")  # the agent stopped what it no longer needed
+    assert shown("failed") == ("✗", "dim red")

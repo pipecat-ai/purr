@@ -40,13 +40,22 @@ from purr.tui.commands import (
 )
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
+from purr.tui.theme import BLUE, CODE_THEME
+from purr.tui.transcript import Transcript
 from purr.tui.working import Working
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
 _SEVERITY_STYLE = {"issue": "bold red", "suggestion": "yellow", "nit": "dim"}
-NUMBER_STYLE = "bold #79b8ff"  # PR numbers, wherever they show
+NUMBER_STYLE = f"bold {BLUE}"  # PR numbers, wherever they show
+# A background task's event: its mark, what it says, its style.
+_TASK_EVENTS = {
+    "started": ("◷", "started", "dim"),
+    "completed": ("✓", "done", "dim green"),
+    "stopped": ("◼", "stopped", "dim"),
+    "killed": ("◼", "stopped", "dim"),
+}
 # Absolute paths into a PR's worktree read better relative to it.
 _WORKTREE_PREFIX = re.compile(r"\S*/worktrees/[^/\s]+/[^/\s]+/\d+/")
 
@@ -99,7 +108,7 @@ def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
     verdict = _VERDICT.get(str(proposal.get("kind")), str(proposal.get("kind", "")))
     parts.append(Text(f"{verdict}", style="magenta"))
     if body := str(proposal.get("body") or "").strip():
-        parts.append(Markdown(body))
+        parts.append(Markdown(body, code_theme=CODE_THEME))
     elif proposal.get("kind") == "approve" and not proposal.get("comments"):
         parts.append(Text("LGTM"))  # what an approval with nothing to say posts
     signature = _MARKDOWN_LINK.sub(r"\1", signature)  # as it reads on GitHub
@@ -134,7 +143,7 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
         return None
     kind = entry.get("kind")
     if kind == "text":
-        return _bullet(Markdown(entry["text"]))
+        return _bullet(Markdown(entry["text"], code_theme=CODE_THEME))
     if kind == "thinking":
         # Like Claude Code: the reasoning, dimmed, ahead of what it leads to.
         return _bullet(Text(entry["text"].strip(), style="dim italic"), style="dim")
@@ -187,11 +196,8 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
     if kind == "error":
         return Text(f"✗ {entry.get('text', '')}", style="red")
     if kind == "task":  # a background agent (or command) starting or reporting back
-        event = entry.get("event")
-        mark, style = {"started": ("◷", "dim"), "completed": ("✓", "dim green")}.get(
-            event, ("✗", "dim red")
-        )
-        verb = "started" if event == "started" else f"{event}" if event != "completed" else "done"
+        # Stopped isn't failed: the agent stops what it no longer needs.
+        mark, verb, style = _TASK_EVENTS.get(entry.get("event"), ("✗", "failed", "dim red"))
         return Text(
             f"  {mark} background {verb}: {_short(entry.get('text', ''), 100)}", style=style
         )
@@ -226,7 +232,7 @@ class PRSession(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(id="pr-header")
-        yield RichLog(id="transcript", wrap=True, markup=False, auto_scroll=True)
+        yield Transcript(id="transcript", wrap=True, markup=False, auto_scroll=True)
         yield Working(id="working")
         yield Static(id="pr-decision")
         suggestions = OptionList(id="suggestions")
