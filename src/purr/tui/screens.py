@@ -71,7 +71,6 @@ _GROUPS = [
 DONE_SHOWN = 5
 _ICONS = {key: icon for key, icon, *_ in _GROUPS}
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
-DIFFS_AHEAD = 3  # of those, whose diffs too (one request each, and bigger)
 
 
 class PRList(OptionList):
@@ -589,11 +588,11 @@ class RepoView(PurrView):
         index = order.index(str(pr.ref)) if str(pr.ref) in order else 0
         nearby = [self._prs[ref] for ref in order[index + 1 : index + 1 + NEARBY]]
         # The PR on its own (it's the one being waited for) and the rest at once;
-        # diffs one by one, the PR's and the next few.
+        # its diff too, so d opens at once.
         cache = self.purr_app.details
         batches = [cache.claim(batch) for batch in ([pr], nearby)]
         fetches = [self._fetch_details(batch) for batch in batches if batch]
-        fetches += [self._fetch_diff(p) for p in cache.claim_diffs([pr, *nearby[:DIFFS_AHEAD]])]
+        fetches += [self._fetch_diff(p) for p in cache.claim_diffs([pr])]
         if fetches:
             # Shielded: once asked, the answers are worth keeping even if the
             # cursor has moved on.
@@ -614,17 +613,15 @@ class RepoView(PurrView):
             if changed and shown and shown.ref == pr.ref:
                 await self.session.details_changed()
 
-    async def _fetch_diff(self, pr: PR) -> None:
+    async def _fetch_diff(self, pr: PR) -> str | None:
+        """Fetch the PR's diff into the cache; why not, if it couldn't be."""
         try:
-            diff, error = (await self.purr_app.bus.request(GetDiff(pr=pr.ref))).diff, None
+            diff = (await self.purr_app.bus.request(GetDiff(pr=pr.ref))).diff
         except Exception as e:  # never let a background fetch take the UI down
-            diff, error = None, str(e) or type(e).__name__
-        state = self.purr_app.sessions.setdefault(str(pr.ref), SessionState())
-        changed = self.purr_app.details.put_diff(pr, diff) or state.diff_error != error
-        state.diff_error = error
-        shown = self.session.pr
-        if changed and shown and shown.ref == pr.ref:
-            await self.session.details_changed()
+            self.purr_app.details.put_diff(pr, None)
+            return str(e) or type(e).__name__
+        self.purr_app.details.put_diff(pr, diff)
+        return None
 
     @property
     def session(self) -> PRSession:
@@ -931,20 +928,16 @@ class RepoView(PurrView):
         self.purr_app.data_version += 1  # its header says whether it has a worktree now
         await self.session.refresh_status()
 
-    def action_expand(self) -> None:
-        """The diff's files in the PR's pane: all opened, or none."""
-        if self.session.pr is not None:
-            self.session.toggle_files()
-
     async def action_diff(self) -> None:
         """The PR's diff, to read line by line and comment on (D: in your pager)."""
         pr = self.selected_pr()
         if not pr:
             return
-        if self.purr_app.details.diff(pr) is None:
-            await self._fetch_diff(pr)
+        error = await self._fetch_diff(pr) if self.purr_app.details.diff(pr) is None else None
         if (diff := self.purr_app.details.diff(pr)) is None:
-            self.notify("Couldn't get the diff; D opens it in your pager.", severity="warning")
+            why = f" ({error})" if error else ""
+            message = f"Couldn't get the diff{why}. D opens it in your pager."
+            self.notify(message, severity="warning")
             return
         self.app.push_screen(DiffScreen(pr, diff))
 

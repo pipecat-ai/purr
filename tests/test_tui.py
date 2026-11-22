@@ -498,11 +498,12 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         app.main.repo.select("pipecat-ai/pipecat#1", repo="pipecat-ai/pipecat")
         await until(pilot, lambda: "Fixes a race in the bus." in transcript(app))
         assert "template stuff" not in transcript(app)
-        # Then its diff, after the description.
-        await until(pilot, lambda: "+    self.lock = asyncio.Lock()" in transcript(app))
-        assert transcript(app).index("Fixes a race") < transcript(app).index("src/bus.py")
+        # Then where it changes things (the diff itself is d's).
+        await until(pilot, lambda: "1 file changed: src/bus.py" in transcript(app))
+        assert "self.lock" not in transcript(app)
         header = str(app.main.repo.session.query_one("#pr-header").render())
-        assert "main ← fix-bus" in header and "✓ checks pass" in header
+        assert "main ← fix-bus" in header and "+22 −4 in 1 file" in header
+        assert "✓ checks pass" in header
         assert "by alice" in header and "r to review it and take it" in header
         # PRs below the cursor were fetched ahead, in one batch.
         await until(pilot, lambda: len(github.details_calls) >= 2)
@@ -1186,19 +1187,8 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: pr_ids(app) == [str(ref)])
 
-        # In the PR's pane, a long diff starts as its files, a line each: e opens them
-        # all (and shuts them), a click on one opens just that one.
-        await until(pilot, lambda: "▸ src/bus.py  +1 −1" in transcript(app))
-        assert "self.lock" not in transcript(app)
-        await pilot.press("e")
-        await until(pilot, lambda: "+    self.lock = asyncio.Lock()" in transcript(app))
-        await pilot.press("e")
-        await until(pilot, lambda: "self.lock" not in transcript(app))
-        log = app.main.repo.session.query_one("#transcript")
-        row = next(i for i, line in enumerate(log.lines) if "README.md" in line.text)
-        await pilot.click("#transcript", offset=(4, row - round(log.scroll_y)))
-        await until(pilot, lambda: "▾ README.md" in transcript(app) and "+new" in transcript(app))
-        assert "self.lock" not in transcript(app)
+        await until(pilot, lambda: "Fixes the bus." in transcript(app))
+        assert "self.lock" not in transcript(app)  # the PR's pane doesn't show the diff
 
         # d: the diff, to read line by line. Its files start shut too; enter opens one.
         await pilot.press("d")

@@ -28,7 +28,6 @@ REPO_KEYS = {
     "move(-1)": Binding("p", "move(-1)", "Previous", group=_NEXT),
     "diff": Binding("d", "diff", "Diff"),
     "pager": Binding("D", "pager", "Pager"),
-    "expand": Binding("e", "expand", "Files"),
     "thinking": Binding("t", "thinking", "Thinking"),
     "zoom": Binding("z", "zoom", "Zoom"),
     "open_claude": Binding("c", "open_claude", "Claude Code"),  # also /claude

@@ -29,13 +29,35 @@ from purr.diff import File, Line, parse
 from purr.jobs import PurrError
 from purr.messages import RemoveComment, SaveComment
 from purr.models import PR, DraftComment
-from purr.tui.overview import LINE_STYLES, file_line, opens_short
 from purr.tui.prompt import PromptArea
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
 _WRAP = 100  # a comment's lines, at most this wide
+SHORT_DIFF = 60  # a diff this short starts with its files opened
+
+
+def opens_short(diff: str | None) -> set[str]:
+    """The files that start opened: all of a short diff's, none of a longer one's."""
+    if diff is None or len(diff.splitlines()) > SHORT_DIFF:
+        return set()
+    return {file.path for file in parse(diff)}
+
+
+def file_line(file: File, opened: bool) -> Text:
+    """``▸ src/bus.py  +22 −4``: a file in the diff, opened or not."""
+    return Text.assemble(
+        ("▾ " if opened else "▸ ", "dim"),
+        (file.path, "bold"),
+        (f"  +{file.additions}", "green"),
+        (f" −{file.deletions}", "red"),
+        (f"  {file.note}" if file.note else "", "dim italic"),
+    )
+
+
+# How git colors a diff's lines, by how they start.
+LINE_STYLES = {"@@": "cyan", "+": "green", "-": "red", "\\": "dim"}
 
 
 @dataclass(frozen=True)
