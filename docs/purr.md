@@ -202,7 +202,7 @@ Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that 
 
 ## Commenting on lines
 
-`d` opens the PR's diff full screen (`tui/diffview.py`), with a cursor on a line: `↑`/`↓` (or `j`/`k`), `page up`/`page down`, `home`/`end`. Each line shows its numbers in the base and in the PR. Files start as a line each, except in a short diff and those with comments on them: `enter` (or a click) opens one, `e` all, `n`/`p` go to the next or previous file. `esc` goes back to the PR.
+`d` opens the PR's diff full screen (`tui/diffview.py`), with a cursor on a line: `↑`/`↓` (or `j`/`k`), `page up`/`page down`, `home`/`end`. Each line shows its numbers in the base and in the PR. Files start as a line each, except in a short diff and those with comments on them: `tab` (or `enter`, or a click) opens or shuts the one the cursor's in, `e` all, `n`/`p` go to the next or previous file. `esc` goes back to the PR.
 
 - `c` writes a comment on the line under the cursor (`enter` saves, `ctrl+j` a new line), or rewrites yours under it; `x` removes it. They show under their line, yours in yellow, and the agent's proposed inline comments in magenta, so you see its review where it lands.
 - Yours are drafts until you post your review: the `draft_comments` table (path, line, side, body, and the commit they're on). They go out as normal inline review comments, with the agent's proposal when you approve it (`a`: one review, the agent's comments and yours), or on their own when nothing's proposed (the decision box asks `Post your 2 comments? [a]`, a `COMMENT` review). Either way, as you, through `gh`.

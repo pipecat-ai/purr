@@ -1,7 +1,7 @@
 """The diff view (``d``): a PR's diff to read line by line, and comment on.
 
 Files start as a line each (all of them opened if the diff is short; those with
-comments on them, if not): ``enter`` opens or closes the one under the cursor,
+comments on them, if not): ``tab`` (or ``enter``) opens or closes the one the cursor's in,
 ``e`` all of them, ``n``/``p`` go to the next or previous file. ``c`` writes a
 comment on the line under the cursor, or rewrites yours under it, and ``x``
 removes it. Yours are posted with your next review of the PR (see
@@ -148,6 +148,8 @@ class DiffView(ScrollView, can_focus=True):
         Binding("pagedown", "page(1)", "Page down", show=False),
         Binding("home", "move(-1000000)", "Top", show=False),
         Binding("end", "move(1000000)", "Bottom", show=False),
+        # Here rather than on the screen: tab would move the focus otherwise.
+        Binding("tab,enter,space", "toggle_here", "Open/close", key_display="tab"),
     ]
 
     def __init__(self, files: Sequence[File], **kwargs):
@@ -188,6 +190,11 @@ class DiffView(ScrollView, can_focus=True):
     def toggle(self, file: int) -> None:
         self.show(self.comments, self.opened ^ {file})
         self._move_to(self._file_row(file))
+
+    def action_toggle_here(self) -> None:
+        """Open or close the file the cursor's in."""
+        if row := self.current():
+            self.toggle(row.file)
 
     def toggle_all(self) -> None:
         everything = set(range(len(self.files)))
@@ -288,7 +295,6 @@ class DiffScreen(ModalScreen[None]):
     """
     BINDINGS = [
         Binding("escape,q", "close", "Close"),
-        Binding("enter,space", "toggle", "Open/close"),
         Binding("e", "toggle_all", "All files"),
         Binding("n", "next_file(1)", "Next file"),
         Binding("p", "next_file(-1)", "Previous file"),
@@ -341,10 +347,6 @@ class DiffScreen(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
-
-    def action_toggle(self) -> None:
-        if row := self._view.current():
-            self._view.toggle(row.file)
 
     def action_toggle_all(self) -> None:
         self._view.toggle_all()

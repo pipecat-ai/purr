@@ -1205,6 +1205,10 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: isinstance(app.screen, DiffScreen))
         view = app.screen.query_one(DiffView)
         await until(pilot, lambda: len(view._rows) == 2)
+        await pilot.press("tab")  # tab (or enter) opens the file, and shuts it
+        await until(pilot, lambda: len(view._rows) > 2)
+        await pilot.press("down", "tab")
+        await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
         await pilot.press("enter")
         await until(pilot, lambda: len(view._rows) > 2)
         await pilot.press("down", "down", "down")  # @@, -    pass, +    self.lock
