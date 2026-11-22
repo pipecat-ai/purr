@@ -35,6 +35,7 @@ from purr.messages import (
 )
 from purr.models import PR, ActionStatus, PRRef, PRState, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
+from purr.review.grants import Grants
 from purr.store import Store
 from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
 from tests.fakes import FakeAgent, FakeLead, FakeRepos, make_plugin
@@ -97,6 +98,10 @@ class Setup:
         )
         self.lead = lead
 
+    @property
+    def grants(self) -> Grants:
+        return self.runner.get_worker(REVIEW_WORKER)._grants
+
     async def state(self) -> PRState:
         return (await self.store.get_pr(REF)).state
 
@@ -120,6 +125,7 @@ async def make(tmp_path):
             permission_wait=permission_wait,
             max_reviews=max_reviews,
             quick_model="quick-model",
+            grants=Grants(tmp_path / "config"),
         )
         # The lead decides what gets reviewed (assigned PRs, new commits).
         lead_worker = LeadWorker(
@@ -289,7 +295,7 @@ async def test_the_agent_waits_for_permission(make):
     assert not s.client.of(ReviewFinished)
 
     answer = {"request_id": request.request_id, "allow": True}
-    assert await s.client.request(PERMISSION_ANSWER, answer) == {"ok": True}
+    assert await s.client.request(PERMISSION_ANSWER, answer) == {"ok": True, "rule": None}
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.answers == [True]
     assert "error" in await s.client.request(PERMISSION_ANSWER, answer)  # already answered
@@ -706,3 +712,59 @@ async def test_new_commits_are_planned_too(make, tmp_path):
     assert run["plan"].why == "Small fix for the race."
     assert run["skill"] is None and run["model"] == "quick-model"  # quick: no skill, cheaper
     assert (await s.store.latest_review(REF)).plan.why == "Small fix for the race."
+
+
+# -- Standing permissions -----------------------------------------------------------
+
+PYTEST = ("Bash", {"command": "uv run pytest tests/test_bus.py"}, "not pre-approved")
+
+
+async def test_your_standing_permissions_allow_without_asking(make):
+    s = await make(permission_wait=5)
+    s.grants.add("Bash(uv run pytest:*)", repo=REF.repo)
+    s.agent.ask = PYTEST
+    await s.store.upsert_pr(make_pr(author_association="MEMBER"))
+
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.answers == [True]
+    assert not s.client.of(PermissionRequest)  # nobody was asked
+    allowed = [e.message for e in s.client.of(SessionMessage)]
+    assert {"kind": "permission_auto", "rule": "Bash(uv run pytest:*)",
+            "description": "$ uv run pytest tests/test_bus.py"} in allowed  # fmt: skip
+
+
+async def test_outside_contributors_always_ask(make):
+    s = await make(permission_wait=0.2)
+    s.grants.add("Bash(uv run pytest:*)")
+    s.agent.ask = PYTEST
+    await s.store.upsert_pr(make_pr(author_association="FIRST_TIME_CONTRIBUTOR"))
+
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await eventually(lambda: s.client.of(PermissionRequest))
+    [asked] = s.client.of(PermissionRequest)
+    assert (asked.rule, asked.trusted) == ("Bash(uv run pytest:*)", False)
+
+
+async def test_always_remembers_and_answers_what_else_it_covers(make):
+    s = await make(permission_wait=5)
+    other = PRRef(REF.repo, 7)
+    s.agent.ask = PYTEST
+    s.agent.gate = asyncio.Event()
+    await s.store.upsert_pr(make_pr(author_association="MEMBER"))
+    await s.store.upsert_pr(make_pr(number=7, author_association="COLLABORATOR"))
+    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(REVIEW_START, {"pr": str(other)})
+    s.agent.gate.set()
+    await eventually(lambda: len(s.client.of(PermissionRequest)) == 2)
+
+    first = s.client.of(PermissionRequest)[0]
+    response = await s.client.request(
+        PERMISSION_ANSWER, {"request_id": first.request_id, "allow": True, "remember": "repo"}
+    )
+    assert response == {"ok": True, "rule": "Bash(uv run pytest:*)"}
+    assert s.grants.rules(REF.repo) == ["Bash(uv run pytest:*)"]
+    assert s.grants.rules("pipecat-ai/whisker") == []
+    # The other PR's agent was waiting for the same thing: allowed too.
+    await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
+    assert s.agent.answers == [True, True]

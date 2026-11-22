@@ -567,3 +567,37 @@ async def test_choosing_the_review_skill(tmp_path):
                 break
             await pilot.pause(0.02)
         assert await app.purr.store.review_skill("pipecat-ai/pipecat") == ""
+
+
+async def test_always_allowing_from_the_keyboard(tmp_path):
+    from purr.tui.screens import AlwaysScreen
+
+    app, github = make_app(tmp_path)
+    agent = app.purr.agent
+    agent.ask = ("Bash", {"command": "uv run pytest -x"}, "not pre-approved")
+    github.open["pipecat-ai/pipecat"] = [
+        remote(1, title="Message bus", author_association="MEMBER")
+    ]
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await until(pilot, lambda: home(app))
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        await pilot.press("r")
+        await until(pilot, lambda: "[A] always" in decision(app))
+
+        # A, then r: this repo, from now on.
+        await pilot.press("A")
+        await until(pilot, lambda: isinstance(app.screen, AlwaysScreen))
+        await pilot.press("r")
+        await until(pilot, lambda: agent.answers == [True])
+        assert app.purr.grants.rules("pipecat-ai/pipecat") == ["Bash(uv run pytest:*)"]
+
+        # The next review's same request isn't asked about.
+        await until(pilot, lambda: not decision(app) or "[a] approve" in decision(app))
+        await pilot.press("r")
+        await until(pilot, lambda: len(agent.answers) == 2)
+        assert agent.answers == [True, True]
+        assert "allowed by your permission Bash(uv run pytest:*)" in transcript(app)

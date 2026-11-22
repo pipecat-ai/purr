@@ -83,6 +83,7 @@ Two things keep this cheap:
 
   Nothing new, no network (bases are refetched every 10 minutes regardless). The diff is then `git diff <base>...<head>` in the clone, the same as GitHub's, with no 300-file or 20,000-line limit. Measured on pipecat from scratch: the clone and first sync of 337 open PRs took 19 s in the background, the clone is 31 MB, and a diff over the bus takes 7 ms on average (23 ms for a 3,000-line one). A PR the clone doesn't have yet (a push since the last sync, a repo still cloning) gets its diff from GitHub instead.
 - **A worktree only once a review starts.** Diffs don't need one. Starting a review (`r`, or auto-review) makes the PR's worktree, where the agent, and you through the PR session or `c`, can run the code and change it. It's made from what the sync already brought, so there's no fetch unless the PR moved since. Measured on pipecat: the first worktree takes 3 s (the clone downloads the rest of the repo's files once, ending at 61 MB), the next ones 1.4 s and 0.2 s.
+- **Worktrees go when they're done.** A PR's worktree is removed when you approve the PR through Purr, and when it's merged or closed; after the first poll on startup, any left from before go too (`GitWorker.sweep`). Never while a review is running in it. Nothing is lost: Claude Code keeps the session under `~/.claude`, not in the worktree, and finds it by path even with the directory gone. A follow-up, a re-review or `c` (`pr.worktree`) makes it again at the same path, and the session carries on.
 
 ## PR states
 
@@ -173,10 +174,21 @@ Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that 
 - One conversation per PR. Typed and spoken messages go into the same session (`review.message` job) and queue if a turn is in flight.
 - Same guardrails as the review: anything GitHub-visible becomes a pending action.
 - **Deciding happens in the conversation, not in per-finding cards.** You keep digging with the agent until you agree on what to post; "drop the nit", "reword the race comment", "make it a comment instead" make it propose again, and the new proposal replaces the old one. The transcript shows each proposal in full (verdict, overall comment, every inline comment and thread reply), so `a` posts exactly what you've read.
-- Permission prompts: if the agent wants a tool that isn't pre-approved, the prompt shows inline as in Claude Code (`a` allow once / `x` deny, the same keys as approving or dismissing a proposal; "always for this PR" later) and the PR moves to **Needs you**. Voice can answer too. The agent waits up to `permission_wait` (5 minutes) and then carries on without it, saying at the end what it wanted to run and why; the recap mentions it. The wait has to be bounded: Claude Code gives up on an unanswered permission request after about 10 minutes, and after that its session refuses every tool call.
+- Permission prompts: if the agent wants a tool that isn't pre-approved, the prompt shows inline as in Claude Code (`a` allow once / `A` always / `x` deny, the same keys as approving or dismissing a proposal) and the PR moves to **Needs you**. See Standing permissions for `A`. Voice can answer too. The agent waits up to `permission_wait` (5 minutes) and then carries on without it, saying at the end what it wanted to run and why; the recap mentions it. The wait has to be bounded: Claude Code gives up on an unanswered permission request after about 10 minutes, and after that its session refuses every tool call.
 - The agent's reasoning shows in the transcript the way Claude Code shows it: dimmed, ahead of what it leads to. Purr asks for summarized thinking (`thinking={"type": "adaptive", "display": "summarized"}`); the SDK's default returns it empty.
 - `z` zooms the session to full screen; `esc` goes back a step: prompt → PR → list.
 - **Open in Claude Code** (`c`): Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools`. When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
+
+## Standing permissions
+
+What you've allowed review agents to do without asking, in this repo or everywhere (`review/grants.py`). `A` at a permission prompt shows the rule it would remember and asks where: `r` this repo, `e` everywhere. Rules look like Claude Code's: `Bash(uv run pytest:*)` (the command with any arguments; offered from the request's leading words, up to three), `Bash(./scripts/check.sh)` (exactly that), or a tool's name (`Edit`, `WebFetch`). They live in `~/.config/purr/permissions.json` (`{"allow": [...], "repos": {"owner/name": {"allow": [...]}}}`), which `i` then `p` opens in `$EDITOR`. When a rule allows something, the PR's conversation says which (`✓ allowed by your permission Bash(uv run pytest:*)`), and it's recorded like any answer. Saying "always" also answers other agents waiting on something the new rule covers.
+
+What keeps a rule from allowing more than you meant:
+
+- **Only PRs by the repo's owners, members and collaborators** (GitHub's `authorAssociation`, fetched with every poll). An outside contributor's PR always asks, and its prompt says why: running its tests runs its code on your machine.
+- A rule only turns "ask" into "allow": what the policy refuses (GitHub writes, pushing, reading your token) stays refused.
+- A command rule matches one plain command: no `&&`, `;`, pipes, redirections, subshells or `$(...)`, so nothing rides along after `uv run pytest`. Chains are allowed once, never remembered. Paths outside the PR's worktree still ask.
+- File tools (`Edit`, `Write`) only inside the PR's worktree; reading outside it always asks.
 
 ## What the agent knows
 
@@ -189,7 +201,7 @@ Each PR's chat is Claude Code: the Agent SDK with Claude Code's own system promp
    - **Review style** (`review.md`): how reviews should go (tone, what to raise, what to skip).
    - **Code style** (`code.md`): what good code looks like to you, which reviews hold the PR to. Yours starts with: prefer a generic solution over special cases, avoid piling up flags to keep state, keep functions short.
 
-   They live in `~/.config/purr/` (`review.md`, `code.md`) and `~/.config/purr/repos/<owner>/<name>/` for one repo. `i` asks which one to edit (`r` review style, `c` code style) and opens it in `$EDITOR`: the repo's inside a repo, the general one at home. Inside a repo, `s` there chooses which of its skills reviews follow. New files start with a short how-to in an HTML comment that isn't sent to the agent. Everything here is sent with every turn, so edits apply to sessions already under way.
+   They live in `~/.config/purr/` (`review.md`, `code.md`) and `~/.config/purr/repos/<owner>/<name>/` for one repo. `i` asks which one to edit (`r` review style, `c` code style) and opens it in `$EDITOR`: the repo's inside a repo, the general one at home. `p` there opens your standing permissions, and inside a repo, `s` chooses which of its skills reviews follow. New files start with a short how-to in an HTML comment that isn't sent to the agent. Everything here is sent with every turn, so edits apply to sessions already under way.
 
 Where it differs from Claude Code on purpose: nothing from the PR's own `.claude/` is loaded, since the PR could tamper with it. Skills and agents come from the default branch instead, and the repo's `settings.json` (hooks) isn't used at all. Tool permissions follow Purr's review policy.
 
@@ -245,13 +257,14 @@ Events (broadcast, everyone listens):
 - `user.active` (from the TUI and the voice agent, throttled)
 - `recap.ready {recap_id, headline}`
 
-- `session.answer {request_id, allow}` (reviews worker): answers an agent's permission request. ("Always for this PR" isn't there yet; it's allow once or deny.)
+- `session.answer {request_id, allow, remember}` (reviews worker): answers an agent's permission request; `remember` (`repo` or `all`) also keeps its rule as a standing permission.
 - `review.skills {repo}` (reviews worker): the repo's skills that may be for reviewing, and which one its reviews follow.
 - `review.skill {repo, skill}` (reviews worker): have its reviews follow `skill` ('' for Purr's own; none: ask again next run). Answers a `review.skill_question` too.
 - `pr.assign {pr}` (GitHub worker): assigns you, when you start a review on a pool PR with `r`.
 - `pr.seen {pr}` (GitHub worker): you looked at a PR that had news; stores when, so it isn't news after a restart.
 - `pr.details {prs}` (GitHub worker): description, base and head branches, +/- lines, files, labels, review decision and CI state of some PRs, batched 20 to a request.
 - `pr.diff {pr}` (git worker): the PR's unified diff, from Purr's clone, or from GitHub if the clone doesn't have the PR's head yet.
+- `pr.worktree {pr}` (git worker): the PR's worktree, made again if it was removed (for `c`).
 
 Commands: none yet. Everything that needs a reply is a job.
 
@@ -429,7 +442,6 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 
 - Exact review prompt and output schema for findings/pending actions.
 - How to map findings to GitHub review comments (inline vs. general).
-- Worktree cleanup policy (on Done? after N days?).
 - STT/LLM/TTS choices for the voice agent.
 - How long without activity counts as "away" (default 15 minutes?).
 - Which slash commands the PR session supports at first (`/clear`, `/compact`, `/model`, ...).

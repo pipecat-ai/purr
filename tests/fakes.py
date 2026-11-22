@@ -93,6 +93,17 @@ class FakeRepos:
             raise error
         return getattr(self, "repo_plugin", None)
 
+    def worktrees(self):
+        return [ref for ref, _ in self.checkouts if self.worktree_path(ref).exists()]
+
+    async def remove_worktree(self, ref):
+        import shutil
+
+        self.removed = [*getattr(self, "removed", []), ref]
+        existed = self.worktree_path(ref).exists()
+        shutil.rmtree(self.worktree_path(ref), ignore_errors=True)
+        return existed
+
     async def checkout(self, ref, head_sha):
         path = self.worktree_path(ref)
         path.mkdir(parents=True, exist_ok=True)

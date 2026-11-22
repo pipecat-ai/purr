@@ -1,4 +1,5 @@
-"""Keeps each repo's clone in step with its open PRs, and serves their diffs from it."""
+"""Keeps each repo's clone in step with its open PRs, serves their diffs from it, and
+removes worktrees that are no longer needed."""
 
 import asyncio
 from collections import defaultdict
@@ -10,8 +11,16 @@ from pipecat.workers.base_worker import BaseWorker
 
 from purr.git import GitRepos
 from purr.github import GitHub, GitHubError
-from purr.messages import GIT_WORKER, PR_DIFF, PRListUpdated
-from purr.models import PR, PRRef
+from purr.messages import (
+    GIT_WORKER,
+    PR_DIFF,
+    PR_WORKTREE,
+    ActionResolved,
+    PRChanged,
+    PRListUpdated,
+    Synced,
+)
+from purr.models import PR, ActionKind, GHState, PRChange, PRRef, PRState
 from purr.store import Store
 
 # Enough for any diff worth reading in a terminal; `d` opens all of it in a pager.
@@ -25,6 +34,12 @@ class GitWorker(BaseWorker):
     updated PRs, mostly), after a short pause so a burst of changes is one
     sync. ``pr.diff`` answers from the clone, and from GitHub for a PR that
     isn't synced yet (a repo still being cloned, a push since the last sync).
+
+    A PR's worktree is removed once it's not needed: when you approve the PR
+    through Purr, and when it's merged or closed; after the first poll, any
+    left from before go too. Not while a review is running in it. Its review
+    session survives, and ``pr.worktree`` (or the next review turn) makes the
+    worktree again.
     """
 
     def __init__(
@@ -43,6 +58,7 @@ class GitWorker(BaseWorker):
         self._settle = settle
         self._changed = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._swept = False
 
     async def on_activated(self, args: dict | None) -> None:
         await super().on_activated(args)
@@ -60,6 +76,43 @@ class GitWorker(BaseWorker):
         await super().on_bus_message(message)
         if isinstance(message, PRListUpdated):
             self._changed.set()
+        elif isinstance(message, ActionResolved) and message.approved:
+            self.create_task(self._approved(message.action_id), f"{self}::cleanup")
+        elif isinstance(message, PRChanged) and message.change in (
+            PRChange.MERGED,
+            PRChange.CLOSED,
+        ):
+            self.create_task(self.cleanup(PRRef.parse(message.pr)), f"{self}::cleanup")
+        elif isinstance(message, Synced) and not self._swept:
+            # After the first poll, the store knows what closed while Purr was off.
+            self._swept = True
+            self.create_task(self.sweep(), f"{self}::sweep")
+
+    async def _approved(self, action_id: str) -> None:
+        action = await self._store.get_pending_action(action_id)
+        if action and action.kind == ActionKind.APPROVE:
+            await self.cleanup(action.pr)
+
+    async def cleanup(self, ref: PRRef) -> bool:
+        """Remove the PR's worktree, unless a review is running in it; whether it went."""
+        pr = await self._store.get_pr(ref)
+        if pr and pr.state == PRState.REVIEWING:
+            return False
+        try:
+            removed = await self._repos.remove_worktree(ref)
+        except Exception as e:
+            logger.warning(f"Couldn't remove {ref}'s worktree: {e}")
+            return False
+        if removed:
+            logger.info(f"Removed {ref}'s worktree")
+        return removed
+
+    async def sweep(self) -> None:
+        """Remove the worktrees of PRs that closed, or that you approved."""
+        for ref in self._repos.worktrees():
+            pr = await self._store.get_pr(ref)
+            if pr is None or pr.gh_state != GHState.OPEN or await self._store.approved_by_you(ref):
+                await self.cleanup(ref)
 
     async def _sync_loop(self) -> None:
         while True:
@@ -78,6 +131,24 @@ class GitWorker(BaseWorker):
                 await self._repos.sync(repo, prs)
             except Exception as e:
                 logger.warning(f"Couldn't sync {repo}'s PRs into its clone: {e}")
+
+    @job(name=PR_WORKTREE)
+    async def on_pr_worktree(self, message: BusJobRequestMessage) -> None:
+        try:
+            ref = PRRef.parse(str((message.payload or {}).get("pr")))
+        except ValueError as e:
+            await self.send_job_response(message.job_id, {"error": str(e)})
+            return
+        pr = await self._store.get_pr(ref)
+        if pr is None:
+            await self.send_job_response(message.job_id, {"error": f"Purr doesn't know {ref}"})
+            return
+        try:
+            path = await self._repos.checkout(ref, pr.head_sha)
+        except Exception as e:
+            await self.send_job_response(message.job_id, {"error": f"Couldn't check it out: {e}"})
+            return
+        await self.send_job_response(message.job_id, {"path": str(path)})
 
     @job(name=PR_DIFF)
     async def on_pr_diff(self, message: BusJobRequestMessage) -> None:

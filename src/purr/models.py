@@ -40,6 +40,9 @@ class GHState(StrEnum):
     MERGED = "merged"
 
 
+TRUSTED_AUTHORS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
 class PRChange(StrEnum):
     """Something the poller noticed about a PR."""
 
@@ -115,6 +118,9 @@ class PR:
     updated_at: str
     created_at: str = ""
     base: str = ""  # the branch it merges into; "" until a poll says
+    # The author's relation to the repo, as GitHub says: OWNER, MEMBER, COLLABORATOR,
+    # CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE, ... ("" until a poll says).
+    author_association: str = ""
     assignees: tuple[str, ...] = ()
     assigned_to_me: bool = False
     state: PRState = PRState.NOT_REVIEWED
@@ -124,6 +130,15 @@ class PR:
     @property
     def ref(self) -> PRRef:
         return PRRef(self.repo, self.number)
+
+    @property
+    def trusted(self) -> bool:
+        """Its author is one of the repo's owners, members or collaborators.
+
+        Your standing permissions (see purr.review.grants) only apply to these:
+        running an outside contributor's tests runs their code.
+        """
+        return self.author_association in TRUSTED_AUTHORS
 
     @property
     def in_pool(self) -> bool:

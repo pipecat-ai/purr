@@ -57,6 +57,7 @@ from purr.review.agent import (
     rereview_prompt,
     review_prompt,
 )
+from purr.review.grants import Grants, rule_for
 from purr.review.skills import review_skills
 from purr.store import Store
 from purr.workers.slots import Slots
@@ -94,9 +95,12 @@ class ReviewWorker(BaseWorker):
       wait in line by the plan's priority, then in order, saying where they
       are. Your own messages in a PR's session don't wait.
     - On startup, reviews interrupted by the last shutdown are resumed.
-    - When an agent wants something that isn't pre-approved, a
-      :class:`PermissionRequest` goes out, the PR needs you, and the agent waits
-      for a ``session.answer {request_id, allow}`` job.
+    - When an agent wants something that isn't pre-approved, your standing
+      permissions (:mod:`purr.review.grants`) may allow it, for PRs by the
+      repo's members; otherwise a :class:`PermissionRequest` goes out, the PR
+      needs you, and the agent waits for a ``session.answer {request_id, allow,
+      remember}`` job. ``remember`` keeps the request's rule for the repo or
+      everywhere, and answers other waiting requests it covers.
     - A full review follows the repo's own review skill when it has one (see
       :mod:`purr.review.skills`): one clearly for reviewing PRs is chosen
       without asking (:class:`SkillChosen`); otherwise, if some skills may be,
@@ -115,6 +119,7 @@ class ReviewWorker(BaseWorker):
         github: Reads a PR's review threads for the agent (none: no threads).
         quick_model: Model for quick reviews and re-reviews (none: the agent's
             own); your messages in the PR's session always use the agent's own.
+        grants: Your standing permissions (none: always ask).
         permission_wait: Seconds an agent waits for a permission answer (and a
             review for an answer about the repo's review skill) before carrying
             on without it.
@@ -131,6 +136,7 @@ class ReviewWorker(BaseWorker):
         permission_wait: float = 300,
         max_reviews: int = 3,
         quick_model: str | None = None,
+        grants: Grants | None = None,
     ):
         super().__init__(name)
         self._store = store
@@ -139,10 +145,13 @@ class ReviewWorker(BaseWorker):
         self._github = github
         self._permission_wait = permission_wait
         self._quick_model = quick_model
+        self._grants = grants
         self._running: dict[PRRef, asyncio.Task] = {}
         self._start_lock = asyncio.Lock()
         self._startup_task: asyncio.Task | None = None
         self._asks: dict[str, asyncio.Future[bool]] = {}
+        # request id -> (PR, tool, input, worktree), for remembering and re-checking.
+        self._ask_info: dict[str, tuple[PRRef, str, dict, Path]] = {}
         self._slots = Slots(max_reviews)
         # Per repo (lowercase): its review skill question, and until when reviews wait for it.
         self._skill_asks: dict[str, tuple[asyncio.Future[str | None], float]] = {}
@@ -262,12 +271,41 @@ class ReviewWorker(BaseWorker):
     @job(name=PERMISSION_ANSWER)
     async def on_permission_answer(self, message: BusJobRequestMessage) -> None:
         payload = message.payload or {}
-        future = self._asks.get(str(payload.get("request_id")))
+        request_id = str(payload.get("request_id"))
+        future = self._asks.get(request_id)
         if future is None or future.done():
             await self.send_job_response(message.job_id, {"error": "Nothing is waiting for that"})
             return
-        future.set_result(bool(payload.get("allow")))
-        await self.send_job_response(message.job_id, {"ok": True})
+        allow, remember = bool(payload.get("allow")), payload.get("remember")
+        rule = None
+        if allow and remember in ("repo", "all") and self._grants and request_id in self._ask_info:
+            ref, tool, tool_input, _ = self._ask_info[request_id]
+            if rule := rule_for(tool, tool_input):
+                self._grants.add(rule, repo=ref.repo if remember == "repo" else None)
+        future.set_result(allow)
+        if rule:
+            await self._answer_covered()
+        await self.send_job_response(message.job_id, {"ok": True, "rule": rule})
+
+    async def _granted(self, ref: PRRef, tool: str, tool_input: dict, worktree: Path) -> str | None:
+        """The standing permission that allows this, if any (only for trusted authors)."""
+        if not self._grants:
+            return None
+        pr = await self._store.get_pr(ref)
+        if pr is None or not pr.trusted:
+            return None
+        return self._grants.match(ref.repo, tool, tool_input, worktree)
+
+    async def _answer_covered(self) -> None:
+        """Allow the requests still waiting that a new standing permission covers."""
+        for request_id, (ref, tool, tool_input, worktree) in list(self._ask_info.items()):
+            future = self._asks.get(request_id)
+            if (
+                future
+                and not future.done()
+                and await self._granted(ref, tool, tool_input, worktree)
+            ):
+                future.set_result(True)
 
     @job(name=REVIEW_SKILLS)
     async def on_review_skills(self, message: BusJobRequestMessage) -> None:
@@ -501,7 +539,7 @@ class ReviewWorker(BaseWorker):
                 session_id=review.session_id,
                 resume=resume,
                 prompt=prompt,
-                callbacks=self._callbacks(ref, submitted, run_id),
+                callbacks=self._callbacks(ref, submitted, run_id, worktree),
                 guidelines=await self._repos.guidelines(ref.repo),
                 plugin=plugin,
                 skill=skill,
@@ -577,7 +615,9 @@ class ReviewWorker(BaseWorker):
                     )
                 )
 
-    def _callbacks(self, ref: PRRef, submitted: dict, run_id: int) -> ReviewCallbacks:
+    def _callbacks(
+        self, ref: PRRef, submitted: dict, run_id: int, worktree: Path
+    ) -> ReviewCallbacks:
         async def on_message(entry: dict) -> None:
             await self._store.add_message(run_id, ref, entry)
             await self.send_bus_message(
@@ -609,10 +649,20 @@ class ReviewWorker(BaseWorker):
             # The agent waits for the user, for a while; meanwhile the PR needs them.
             # Claude Code itself gives up after about ten minutes, and after that
             # the session refuses everything, so Purr answers first.
-            request_id = uuid.uuid4().hex
             description = describe_tool_use(tool, tool_input)
+            if rule := await self._granted(ref, tool, tool_input, worktree):
+                # You said so before: no need to ask.
+                entry = {"kind": "permission_auto", "rule": rule, "description": description}
+                await self._store.add_message(run_id, ref, entry, author="purr")
+                await self.send_bus_message(
+                    SessionMessage(source=self.name, pr=str(ref), message=entry)
+                )
+                return True
+            pr = await self._store.get_pr(ref)
+            request_id = uuid.uuid4().hex
             future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._asks[request_id] = future
+            self._ask_info[request_id] = (ref, tool, tool_input, worktree)
             await self._store.set_pr_state(ref, PRState.NEEDS_YOU)
             asked = {
                 "tool": tool,
@@ -631,6 +681,8 @@ class ReviewWorker(BaseWorker):
                     tool=tool,
                     description=description,
                     reason=reason,
+                    rule=rule_for(tool, tool_input) or "",
+                    trusted=bool(pr and pr.trusted),
                 )
             )
             await self.send_bus_message(PRListUpdated(source=self.name))
@@ -641,6 +693,7 @@ class ReviewWorker(BaseWorker):
                 answer = None
             finally:
                 self._asks.pop(request_id, None)
+                self._ask_info.pop(request_id, None)
             await self._store.set_pr_state(ref, PRState.REVIEWING)
             await self._store.add_message(
                 run_id,

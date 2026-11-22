@@ -24,7 +24,10 @@ class Client(BaseWorker):
         super().__init__("client")
 
     async def diff(self, ref: PRRef) -> dict:
-        params = JobParams(name=PR_DIFF, payload={"pr": str(ref)}, timeout=5)
+        return await self.request(PR_DIFF, {"pr": str(ref)})
+
+    async def request(self, name: str, payload: dict) -> dict:
+        params = JobParams(name=name, payload=payload, timeout=5)
         async with self.job(GIT_WORKER, params=params) as j:
             pass
         return j.response
@@ -77,3 +80,76 @@ async def test_open_prs_are_synced_by_repo_when_the_list_changes(setup):
         ("a/b", [1, 2]),
         ("c/d", [3]),
     ]
+
+
+async def until(check, timeout: float = 5) -> None:
+    async def wait():
+        while not await check():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait(), timeout)
+
+
+async def test_worktrees_go_when_approved_merged_or_closed(setup):
+    from purr.messages import ActionResolved, PRChanged
+    from purr.models import ActionKind, ActionStatus, PRState
+
+    store, repos, _, client = setup
+    approved, merged, changes, busy = (pr("a/b", n) for n in (1, 2, 3, 4))
+    await store.apply_sync(upserts=[approved, merged, changes, busy])
+    for p in (approved, merged, changes, busy):
+        await repos.checkout(p.ref, "h")
+
+    async def gone(*prs) -> bool:
+        return all(not repos.worktree_path(p.ref).exists() for p in prs)
+
+    # Approved through Purr: gone. Requesting changes: kept, the review goes on.
+    for p, kind in ((approved, ActionKind.APPROVE), (changes, ActionKind.REQUEST_CHANGES)):
+        action = await store.add_pending_action(p.ref, kind=kind, description="x", payload={})
+        await store.transition_action(
+            action.id, expected=ActionStatus.PENDING, new=ActionStatus.EXECUTED
+        )
+        await client.send_bus_message(
+            ActionResolved(source="github", pr=str(p.ref), action_id=action.id, approved=True)
+        )
+    # Merged: gone, unless a review is still running in it.
+    await store.set_pr_state(busy.ref, PRState.REVIEWING)
+    for p in (merged, busy):
+        await client.send_bus_message(
+            PRChanged(source="github", pr=str(p.ref), change="merged", title="t")
+        )
+    await until(lambda: gone(approved, merged))
+    await asyncio.sleep(0.05)
+    assert repos.worktree_path(changes.ref).exists()
+    assert repos.worktree_path(busy.ref).exists()
+
+    # Needed again (Claude Code, say): made again.
+    response = await client.request("pr.worktree", {"pr": str(approved.ref)})
+    assert response == {"path": str(repos.worktree_path(approved.ref))}
+    assert repos.worktree_path(approved.ref).exists()
+
+
+async def test_leftover_worktrees_are_swept_after_the_first_poll(setup):
+    from purr.messages import Synced
+    from purr.models import ActionKind, ActionStatus, GHState
+
+    store, repos, _, client = setup
+    open_, closed, approved = (pr("a/b", n) for n in (1, 2, 3))
+    await store.apply_sync(upserts=[open_, closed, approved])
+    await store.apply_sync(gh_states={closed.ref: GHState.CLOSED})
+    action = await store.add_pending_action(
+        approved.ref, kind=ActionKind.APPROVE, description="x", payload={}
+    )
+    await store.transition_action(
+        action.id, expected=ActionStatus.PENDING, new=ActionStatus.EXECUTED
+    )
+    for p in (open_, closed, approved):
+        await repos.checkout(p.ref, "h")
+    await repos.checkout(PRRef("gone/repo", 9), "h")  # a PR Purr no longer knows
+
+    await client.send_bus_message(Synced(source="github"))
+
+    async def swept() -> bool:
+        return repos.worktrees() == [open_.ref]
+
+    await until(swept)

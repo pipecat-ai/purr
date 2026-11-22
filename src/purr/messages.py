@@ -52,6 +52,10 @@ PR_DETAILS = "pr.details"
 # A PR's unified diff, as `gh pr diff` shows it:
 # payload: {"pr": "owner/repo#123"} -> {"diff": "..."}
 PR_DIFF = "pr.diff"
+# Job names handled by GIT_WORKER (besides pr.diff).
+# The PR's worktree, made if it's gone (e.g. to open it in Claude Code):
+# payload: {"pr": "owner/repo#123"} -> {"path": "..."}
+PR_WORKTREE = "pr.worktree"
 
 # Job names handled by REVIEW_WORKER.
 # payload: {"pr": "owner/repo#123", "plan": {...} (a ReviewPlan; optional)} -> {"review_id": ...}
@@ -60,7 +64,10 @@ REVIEW_START = "review.start"
 # payload: {"pr": "owner/repo#123"} -> {"started": bool}
 REVIEW_REREVIEW = "review.rereview"
 REVIEW_MESSAGE = "review.message"  # payload: {"pr": "owner/repo#123", "text": "..."}
-# Answer an agent's permission request: {"request_id": "...", "allow": bool} -> {"ok": true}
+# Answer an agent's permission request; "remember" ("repo" or "all") also allows the
+# request's rule from now on, in the PR's repo or everywhere (see purr.review.grants):
+# {"request_id": "...", "allow": bool, "remember": None | "repo" | "all"}
+#   -> {"ok": true, "rule": "Bash(uv run pytest:*)" | None}
 PERMISSION_ANSWER = "session.answer"
 # A repo's skills that look like they're for reviewing, and which one its reviews follow
 # (see purr.review.skills): {"repo": "owner/name"} ->
@@ -142,7 +149,11 @@ class SessionMessage(PurrEvent):
 
 @dataclass(kw_only=True)
 class PermissionRequest(PurrEvent):
-    """A PR's agent wants to do something that isn't pre-approved, and waits for you."""
+    """A PR's agent wants to do something that isn't pre-approved, and waits for you.
+
+    ``rule`` is what "always allow" would remember ("" if nothing safe can be);
+    ``trusted`` says whether such rules apply to this PR's author at all.
+    """
 
     kind: ClassVar[str] = "session.permission_request"
     pr: str
@@ -150,6 +161,8 @@ class PermissionRequest(PurrEvent):
     tool: str
     description: str
     reason: str = ""
+    rule: str = ""
+    trusted: bool = True
 
 
 @dataclass(kw_only=True)

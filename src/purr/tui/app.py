@@ -157,6 +157,8 @@ class PurrApp(App):
         async def chosen(kind: Kind | str | None) -> None:
             if kind == "skill" and repo:
                 await self._choose_review_skill(repo)
+            elif kind == "permissions":
+                await self._edit(self.purr.grants.ensure())
             elif isinstance(kind, Kind):
                 await self._edit(self.purr.instructions.ensure(kind, repo))
 

@@ -205,6 +205,11 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE reviews ADD COLUMN plan TEXT;
     """,
+    # Who wrote the PR, relative to the repo (standing permissions only apply to
+    # its owners, members and collaborators).
+    """
+    ALTER TABLE prs ADD COLUMN author_association TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -267,6 +272,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         updated_at=row["updated_at"],
         created_at=row["created_at"],
         base=row["base"],
+        author_association=row["author_association"],
         assignees=tuple(json.loads(row["assignees"])),
     )
 
@@ -295,8 +301,8 @@ def _activity(row: aiosqlite.Row) -> Activity:
 
 _UPSERT_PR = """
     INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
-                     updated_at, created_at, assignees, base)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     updated_at, created_at, assignees, base, author_association)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET
         title = excluded.title,
         author = excluded.author,
@@ -307,7 +313,8 @@ _UPSERT_PR = """
         updated_at = excluded.updated_at,
         created_at = excluded.created_at,
         assignees = excluded.assignees,
-        base = excluded.base
+        base = excluded.base,
+        author_association = excluded.author_association
 """
 
 
@@ -325,6 +332,7 @@ def _upsert_params(pr: PR) -> tuple:
         pr.created_at,
         json.dumps(list(pr.assignees)),
         pr.base,
+        pr.author_association,
     )
 
 
@@ -976,6 +984,15 @@ class Store:
         action = await self.get_pending_action(action_id)
         assert action is not None
         return action
+
+    async def approved_by_you(self, ref: PRRef) -> bool:
+        """Whether the last thing Purr posted on the PR for you was an approval."""
+        row = await self._fetchone(
+            f"{self._ACTION_SELECT} WHERE prs.repo = ? AND prs.number = ?"
+            " AND pending_actions.status = ? ORDER BY pending_actions.resolved_at DESC LIMIT 1",
+            (ref.repo, ref.number, ActionStatus.EXECUTED),
+        )
+        return bool(row) and _action(row).kind == ActionKind.APPROVE
 
     async def get_pending_action(self, action_id: str) -> PendingAction | None:
         row = await self._fetchone(

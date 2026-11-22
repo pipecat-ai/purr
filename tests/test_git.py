@@ -252,3 +252,20 @@ async def test_new_commits_since_a_review(tmp_path, upstream):
     )
     assert await repos.new_commits(open_pr(7, head), "0" * 40) is None  # unknown commit
     assert await GitRepos(tmp_path / "other").new_commits(pr, reviewed) is None  # no clone
+
+
+async def test_removing_a_worktree(tmp_path, upstream):
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    ref = PRRef("a/b", 7)
+    head = git(upstream, "rev-parse", "refs/pull/7/head")
+    path = await repos.checkout(ref, head)
+    assert repos.worktrees() == [ref]
+
+    assert await repos.remove_worktree(ref) is True
+    assert not path.exists() and repos.worktrees() == []
+    assert "worktrees" not in git(repos.clone_path("a/b"), "worktree", "list")
+    assert await repos.remove_worktree(ref) is False  # nothing left
+
+    # Needed again (a follow-up, a re-review): made again at the same path.
+    assert await repos.checkout(ref, head) == path
+    assert (path / "a.txt").read_text() == "two\n"

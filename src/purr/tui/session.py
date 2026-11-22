@@ -160,6 +160,8 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
         return Text(f"  ✓ done · {details}\n", style="dim")
     if kind == "error":
         return Text(f"✗ {entry.get('text', '')}", style="red")
+    if kind == "permission_auto":
+        return Text(f"  ✓ allowed by your permission {entry.get('rule', '')}", style="dim green")
     return None
 
 
@@ -283,13 +285,20 @@ class PRSession(Vertical):
         )
         decision = self.query_one("#pr-decision", Static)
         if state.ask:
+            always = "   [A] always…" if state.ask.rule else ""
+            outside = (
+                ""
+                if state.ask.trusted
+                else "\nFrom an outside contributor: your standing permissions don't apply."
+            )
             decision.update(
                 Text.assemble(
                     ("The agent wants to: ", "bold"),
                     (_short(state.ask.description, 120), "yellow"),
                     ("\n", ""),
                     (state.ask.reason or "It isn't pre-approved.", "dim"),
-                    ("\n[a] allow   [x] deny", "bold"),
+                    (outside, "dim yellow"),
+                    (f"\n[a] allow once{always}   [x] deny", "bold"),
                 )
             )
             decision.display = True

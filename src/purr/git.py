@@ -137,6 +137,33 @@ class GitRepos:
             return False
         return (await self._pr_heads(clone)).get(ref.number) == head_sha
 
+    def worktrees(self) -> list[PRRef]:
+        """The PRs that have a worktree on disk."""
+        found = []
+        for path in sorted((self._root / "worktrees").glob("*/*/*")):
+            if path.is_dir() and path.name.isdigit():
+                found.append(PRRef(f"{path.parent.parent.name}/{path.parent.name}", int(path.name)))
+        return found
+
+    async def remove_worktree(self, ref: PRRef) -> bool:
+        """Remove the PR's worktree, if it has one; whether there was one.
+
+        Its review session survives (Claude Code keeps it under ~/.claude), and
+        :meth:`checkout` makes the worktree again, at the same path, when it's needed.
+        """
+        path = self.worktree_path(ref)
+        if not path.exists():
+            return False
+        async with self._locks.setdefault(ref.repo, asyncio.Lock()):
+            clone = self.clone_path(ref.repo)
+            try:
+                await self._git(clone, "worktree", "remove", "--force", str(path))
+            except GitError:
+                shutil.rmtree(path, ignore_errors=True)  # not a worktree git knows
+                if (clone / "HEAD").exists():
+                    await self._git(clone, "worktree", "prune")
+        return True
+
     async def _has_ref(self, clone: Path, ref: str) -> bool:
         try:
             await self._git(clone, "rev-parse", "--verify", "--quiet", ref)

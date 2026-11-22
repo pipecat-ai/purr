@@ -18,6 +18,7 @@ from purr.messages import (
     PR_DETAILS,
     PR_DIFF,
     PR_SEEN,
+    PR_WORKTREE,
     RECAP_CREATE,
     RECAP_WORKER,
     REPO_ADD,
@@ -92,6 +93,11 @@ class UIWorker(BaseWorker):
         response = await self._job(GIT_WORKER, PR_DIFF, {"pr": str(pr)})
         return str(response.get("diff") or "")
 
+    async def worktree(self, pr: PRRef) -> str:
+        """The PR's worktree, made again if it was removed."""
+        response = await self._job(GIT_WORKER, PR_WORKTREE, {"pr": str(pr)}, timeout=120)
+        return str(response["path"])
+
     async def send_message(self, pr: PRRef, text: str) -> None:
         await self._job(REVIEW_WORKER, REVIEW_MESSAGE, {"pr": str(pr), "text": text})
 
@@ -111,9 +117,14 @@ class UIWorker(BaseWorker):
     async def active(self) -> None:
         await self.send_bus_message(UserActive(source=self.name))
 
-    async def answer(self, request_id: str, allow: bool) -> None:
-        payload = {"request_id": request_id, "allow": allow}
-        await self._job(REVIEW_WORKER, PERMISSION_ANSWER, payload)
+    async def answer(self, request_id: str, allow: bool, remember: str | None = None) -> str | None:
+        """Answer a permission request; ``remember`` ("repo" or "all") keeps its rule.
+
+        Returns the rule remembered, if any.
+        """
+        payload = {"request_id": request_id, "allow": allow, "remember": remember}
+        response = await self._job(REVIEW_WORKER, PERMISSION_ANSWER, payload)
+        return response.get("rule")
 
     async def review_skills(self, repo: str) -> tuple[list[dict], str | None]:
         """The repo's skills that may be for reviewing, and which one its reviews follow

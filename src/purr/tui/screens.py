@@ -24,7 +24,7 @@ from textual.widgets import ContentSwitcher, DataTable, Footer, Input, Label, Op
 from textual.widgets.option_list import Option
 
 from purr.messages import REVIEW_WORKER
-from purr.models import PR, PRState, RepoSummary
+from purr.models import PR, PRRef, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.tui.bridge import RequestError
 from purr.tui.overview import short_age
@@ -286,6 +286,7 @@ class RepoView(PurrView):
         # Whatever the decision box offers: approve or dismiss a proposal,
         # allow or deny a permission request.
         Binding("a", "approve", "Approve"),
+        Binding("A", "always", "Always allow", show=False),
         Binding("x", "dismiss", "Dismiss"),
         Binding("d", "diff", "Diff"),
         Binding("z", "zoom", "Zoom"),
@@ -605,6 +606,25 @@ class RepoView(PurrView):
             except RequestError as e:
                 self.notify(str(e), severity="warning")
 
+    @work(group="keys")
+    async def action_always(self) -> None:
+        """Allow what the agent asks, and from now on: in this repo or everywhere."""
+        state = self._asking()
+        if not state or not state.ask or not state.ask.rule:
+            return
+        ask = state.ask
+        repo = PRRef.parse(ask.pr).repo
+        scope = await self.app.push_screen_wait(AlwaysScreen(ask.rule, repo, trusted=ask.trusted))
+        if not scope:
+            return
+        try:
+            rule = await self.purr_app.bus.answer(ask.request_id, True, remember=scope)
+        except RequestError as e:
+            self.notify(str(e), severity="warning")
+            return
+        where = f"in {repo}" if scope == "repo" else "everywhere"
+        self.notify(f"Allowed from now on, {where}: {rule}")
+
     async def _answer(self, state: SessionState, allow: bool) -> None:
         assert state.ask
         try:
@@ -624,11 +644,17 @@ class RepoView(PurrView):
         if reviews and pr.ref in getattr(reviews, "running", set()):
             self.notify("The agent is still working on it. Open it once it's done.")
             return
+        # Its worktree may have been removed (approved, say): it comes back as it was.
+        try:
+            worktree = await self.purr_app.bus.worktree(pr.ref)
+        except RequestError as e:
+            self.notify(str(e), severity="warning")
+            return
         command = claude_code_command(review.session_id, str(pr.ref))
         # Purr keeps running underneath (polls, other reviews) while Claude Code
         # has the terminal.
         with self.app.suspend():
-            process = await asyncio.create_subprocess_exec(*command, cwd=review.worktree_path)
+            process = await asyncio.create_subprocess_exec(*command, cwd=worktree)
             await process.wait()
         # The session may have grown in Claude Code: reload its transcript.
         self.purr_app.sessions.pop(str(pr.ref), None)
@@ -758,15 +784,51 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(yes)
 
 
+class AlwaysScreen(ModalScreen[str | None]):
+    """Where to always allow a rule: this repo (``repo``), everywhere (``all``), or not (None)."""
+
+    BINDINGS = [
+        Binding("r", "pick('repo')", "This repo"),
+        Binding("e", "pick('all')", "Everywhere"),
+        Binding("escape", "pick('')", "Cancel", show=False),
+    ]
+
+    def __init__(self, rule: str, repo: str, *, trusted: bool = True):
+        super().__init__()
+        self._rule, self._repo, self._trusted = rule, repo, trusted
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label("Always allow")
+            yield Label(Text(self._rule, style="bold yellow"))
+            yield Label(Text.from_markup(f"[b]r[/b]  in {self._repo}"))
+            yield Label(Text.from_markup("[b]e[/b]  everywhere"))
+            note = (
+                "Only for PRs by the repo's owners, members and collaborators. "
+                "Change them with i, then p."
+            )
+            if not self._trusted:
+                note = (
+                    "This PR is from an outside contributor: it's allowed this once, and the "
+                    "rule applies to PRs by the repo's members. " + note.split(". ", 1)[1]
+                )
+            yield Label(note, classes="hint")
+
+    def action_pick(self, scope: str) -> None:
+        self.dismiss(scope or None)
+
+
 class InstructionsScreen(ModalScreen):
     """Which instructions to edit: how you like reviews, or how you like code.
 
-    Inside a repo, also which of its skills its reviews follow (``skill``).
+    Also your standing permissions (``permissions``), and, inside a repo, which
+    of its skills its reviews follow (``skill``).
     """
 
     BINDINGS = [
         Binding("r", "pick('review')", "Review style"),
         Binding("c", "pick('code')", "Code style"),
+        Binding("p", "pick('permissions')", "Permissions"),
         Binding("s", "pick('skill')", "Review skill"),
         Binding("escape", "pick('')", "Cancel", show=False),
     ]
@@ -781,6 +843,7 @@ class InstructionsScreen(ModalScreen):
             yield Label(f"Your instructions {scope}")
             yield Label("[b]r[/b]  review style: how reviews should go")
             yield Label("[b]c[/b]  code style: what good code looks like to you")
+            yield Label("[b]p[/b]  permissions: what agents may do without asking")
             if self._repo:
                 yield Label("[b]s[/b]  review skill: which of the repo's skills reviews follow")
             yield Label("Opens in $EDITOR. Repo files add to the general ones.", classes="hint")
@@ -791,7 +854,7 @@ class InstructionsScreen(ModalScreen):
     def action_pick(self, kind: str) -> None:
         from purr.review.instructions import Kind
 
-        self.dismiss(kind if kind == "skill" else Kind(kind) if kind else None)
+        self.dismiss(kind if kind in ("skill", "permissions") else Kind(kind) if kind else None)
 
 
 class ReviewSkillScreen(ModalScreen[str | None]):

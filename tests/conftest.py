@@ -1,4 +1,5 @@
-"""Tests never reach real Claude: every way Purr calls it raises instead."""
+"""Tests never reach real Claude (every way Purr calls it raises instead), nor your own
+Purr config and data (they point at a temporary directory instead)."""
 
 import pytest
 
@@ -16,3 +17,10 @@ def no_real_claude(monkeypatch):
     monkeypatch.setattr(purr.lead, "query", _no_claude)
     monkeypatch.setattr(purr.recap, "query", _no_claude)
     monkeypatch.setattr(purr.review.agent, "ClaudeSDKClient", _no_claude)
+
+
+@pytest.fixture(autouse=True)
+def no_real_config(monkeypatch, tmp_path_factory):
+    home = tmp_path_factory.mktemp("purr-home")
+    monkeypatch.setenv("PURR_CONFIG_DIR", str(home / "config"))
+    monkeypatch.setenv("PURR_DATA_DIR", str(home / "data"))
