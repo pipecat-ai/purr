@@ -3,11 +3,11 @@
 import asyncio
 
 import pytest
-from pipecat.pipeline.job_context import JobParams
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
-from purr.messages import RECAP_CREATE, RECAP_WORKER, UserActive
+from purr.jobs import request
+from purr.messages import MakeRecap, UserActive
 from purr.models import PR, PRRef
 from purr.recap import fallback_recap, is_notable, recap_notes
 from purr.store import Store
@@ -71,26 +71,22 @@ async def setup():
             await asyncio.wait_for(task, 5)
 
 
-async def create(client, since="") -> dict:
-    params = JobParams(name=RECAP_CREATE, payload={"since": since}, timeout=5)
-    async with client.job(RECAP_WORKER, params=params) as j:
-        pass
-    return j.response
+async def create(client, since="") -> int | None:
+    return (await request(client, MakeRecap(since=since), timeout=5)).recap_id
 
 
 async def test_recap_worker(setup):
     store, agent, client = setup
-    assert await create(client) == {"recap_id": None}  # nothing happened
+    assert await create(client) is None  # nothing happened
 
     await seed(store)
-    response = await create(client)
-    recap = await store.get_recap(response["recap_id"])
+    recap = await store.get_recap(await create(client))
     assert recap.headline == "1 PRs need you."
     assert recap.items[0]["pr"] == str(REF)
     assert (await store.latest_recap()).id == recap.id
 
     agent.fail = True
-    recap = await store.get_recap((await create(client))["recap_id"])
+    recap = await store.get_recap(await create(client))
     assert recap.headline == "2 things happened while you were away."
 
 

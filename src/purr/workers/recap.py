@@ -3,11 +3,11 @@
 from datetime import UTC, datetime
 
 from loguru import logger
-from pipecat.bus import BusJobRequestMessage, BusMessage
-from pipecat.pipeline.job_decorator import job
+from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.messages import RECAP_CREATE, RECAP_WORKER, RecapReady, UserActive
+from purr.jobs import handles
+from purr.messages import RECAP_WORKER, MakeRecap, RecapMade, RecapReady, UserActive
 from purr.recap import RecapAgent, fallback_recap, is_notable, recap_notes
 from purr.store import Store
 
@@ -35,13 +35,12 @@ class RecapWorker(BaseWorker):
         if isinstance(message, UserActive):
             await self._store.set_meta(LAST_ACTIVE, now())
 
-    @job(name=RECAP_CREATE)
-    async def on_recap_create(self, message: BusJobRequestMessage) -> None:
-        since = str((message.payload or {}).get("since", ""))
+    @handles(MakeRecap)
+    async def make_recap(self, request: MakeRecap) -> RecapMade:
+        since = request.since
         activities = [a for a in await self._store.activity(since=since) if is_notable(a)]
         if not activities:
-            await self.send_job_response(message.job_id, {"recap_id": None})
-            return
+            return RecapMade(recap_id=None)
         refs = list(dict.fromkeys(a.pr for a in activities if a.pr))
         prs = {ref: pr for ref in refs if (pr := await self._store.get_pr(ref))}
         pending = {ref: await self._store.pending_actions(ref) for ref in prs}
@@ -53,7 +52,7 @@ class RecapWorker(BaseWorker):
         recap = await self._store.add_recap(
             since=since, until=now(), headline=headline, items=items
         )
-        await self.send_job_response(message.job_id, {"recap_id": recap.id})
         await self.send_bus_message(
             RecapReady(source=self.name, recap_id=recap.id, headline=recap.headline)
         )
+        return RecapMade(recap_id=recap.id)

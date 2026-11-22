@@ -8,6 +8,7 @@ from textual.widgets import Input, OptionList
 
 from purr.app import Purr
 from purr.config import Config
+from purr.messages import WatchRepo
 from purr.store import Store
 from purr.tui import PurrApp
 from purr.tui.prompt import HistorySearchScreen
@@ -188,7 +189,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
 
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
@@ -305,7 +306,7 @@ async def test_alerts_and_the_switcher(tmp_path):
 
     async with app.run_test(size=(140, 45)) as pilot:
         alert = app.main.query_one("#alert")
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
         await pilot.press("1")
         await until(pilot, lambda: in_repo(app, "pipecat-ai/pipecat"))
@@ -348,7 +349,7 @@ async def test_news_survives_a_restart_and_shows_in_bold(tmp_path):
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2, title="Docs")]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
     # Something happens to #1 while Purr isn't running.
     store = await Store.open(tmp_path / "data" / "purr.db")
@@ -440,7 +441,7 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
     )
 
     async with app.run_test(size=(180, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 19)
@@ -485,7 +486,7 @@ async def test_moving_around_and_searching(tmp_path):
         remote(3, title="Bus shutdown race"),
     ]
     async with app.run_test(size=(160, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("o")  # o opens the repo, like enter
         await until(pilot, lambda: len(pr_ids(app)) == 3)
@@ -567,7 +568,7 @@ async def test_choosing_the_review_skill(tmp_path):
 
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -608,7 +609,7 @@ async def test_always_allowing_from_the_keyboard(tmp_path):
 
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -637,7 +638,7 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path):
 
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -681,7 +682,7 @@ async def test_slash_commands(tmp_path):
 
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -763,7 +764,7 @@ async def test_home_says_what_watching_means(tmp_path):
         # A PR assigned to you, in a repo you don't watch: listed under NOT WATCHED.
         github.assigned = [remote(7, repo="daily-co/daily-x", assignees=("me",))]
         github.open["pipecat-ai/pipecat"] = [remote(1)]
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await app.purr.runner.get_worker("github").poll()
         await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
         await until(pilot, lambda: not hint.display)
@@ -787,7 +788,7 @@ async def test_the_pr_pane_never_keeps_another_prs_transcript(tmp_path):
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus"), remote(2, title="Docs")]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
@@ -814,7 +815,7 @@ async def test_each_step_in_the_transcript_stands_apart(tmp_path):
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -858,7 +859,7 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
     agent = app.purr.agent
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -907,7 +908,7 @@ async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
         remote(i, title=f"Change {name}") for i, name in enumerate(names, start=1)
     ]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 9)
@@ -945,7 +946,7 @@ async def test_selecting_text_in_the_pr_pane_copies_it(tmp_path, monkeypatch):
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -986,7 +987,7 @@ async def test_the_agents_reasoning_is_a_line_per_thought(tmp_path):
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
@@ -1007,7 +1008,7 @@ async def test_writing_instead_of_approving_says_so_in_the_thread(tmp_path):
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.add_repo("pipecat-ai/pipecat")
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)

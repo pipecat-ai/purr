@@ -3,12 +3,12 @@
 import asyncio
 
 import pytest
-from pipecat.pipeline.job_context import JobParams
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
 from purr.github import GitHubError
-from purr.messages import GIT_WORKER, PR_DIFF, PRListUpdated
+from purr.jobs import Failed, request
+from purr.messages import GetDiff, GetWorktree, PRListUpdated
 from purr.models import PR, PRRef
 from purr.store import Store
 from purr.workers import GitWorker
@@ -23,14 +23,8 @@ class Client(BaseWorker):
     def __init__(self):
         super().__init__("client")
 
-    async def diff(self, ref: PRRef) -> dict:
-        return await self.request(PR_DIFF, {"pr": str(ref)})
-
-    async def request(self, name: str, payload: dict) -> dict:
-        params = JobParams(name=name, payload=payload, timeout=5)
-        async with self.job(GIT_WORKER, params=params) as j:
-            pass
-        return j.response
+    async def diff(self, ref: PRRef) -> str:
+        return (await request(self, GetDiff(pr=ref), timeout=5)).diff
 
 
 @pytest.fixture
@@ -55,15 +49,16 @@ async def test_diffs_come_from_the_clone_or_else_github(setup):
     repos.diffs = {local.ref: "local diff"}
     github.diffs = {remote.ref: "github diff"}
 
-    assert await client.diff(local.ref) == {"diff": "local diff"}
-    assert await client.diff(remote.ref) == {"diff": "github diff"}
+    assert await client.diff(local.ref) == "local diff"
+    assert await client.diff(remote.ref) == "github diff"
     assert github.diff_calls == [remote.ref]
 
     async def refused(ref):
         raise GitHubError("Sorry, the diff exceeded the maximum number of files (300)")
 
     github.pr_diff = refused
-    assert "maximum number of files" in (await client.diff(remote.ref))["error"]
+    with pytest.raises(Failed, match="maximum number of files"):
+        await client.diff(remote.ref)
 
 
 async def test_open_prs_are_synced_by_repo_when_the_list_changes(setup):
@@ -124,8 +119,8 @@ async def test_worktrees_go_when_approved_merged_or_closed(setup):
     assert repos.worktree_path(busy.ref).exists()
 
     # Needed again (Claude Code, say): made again.
-    response = await client.request("pr.worktree", {"pr": str(approved.ref)})
-    assert response == {"path": str(repos.worktree_path(approved.ref))}
+    worktree = await request(client, GetWorktree(pr=approved.ref), timeout=5)
+    assert worktree.path == str(repos.worktree_path(approved.ref))
     assert repos.worktree_path(approved.ref).exists()
 
 

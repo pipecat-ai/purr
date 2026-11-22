@@ -5,20 +5,22 @@ import asyncio
 from collections import defaultdict
 
 from loguru import logger
-from pipecat.bus import BusJobRequestMessage, BusMessage
-from pipecat.pipeline.job_decorator import job
+from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 
 from purr.git import GitRepos
 from purr.github import GitHub, GitHubError
+from purr.jobs import Failed, NotFound, handles
 from purr.messages import (
     GIT_WORKER,
-    PR_DIFF,
-    PR_WORKTREE,
     ActionResolved,
+    GetDiff,
+    GetWorktree,
     PRChanged,
+    PRDiff,
     PRListUpdated,
     Synced,
+    Worktree,
 )
 from purr.models import PR, ActionKind, GHState, PRChange, PRRef, PRState
 from purr.store import Store
@@ -132,38 +134,26 @@ class GitWorker(BaseWorker):
             except Exception as e:
                 logger.warning(f"Couldn't sync {repo}'s PRs into its clone: {e}")
 
-    @job(name=PR_WORKTREE)
-    async def on_pr_worktree(self, message: BusJobRequestMessage) -> None:
-        try:
-            ref = PRRef.parse(str((message.payload or {}).get("pr")))
-        except ValueError as e:
-            await self.send_job_response(message.job_id, {"error": str(e)})
-            return
+    @handles(GetWorktree)
+    async def get_worktree(self, request: GetWorktree) -> Worktree:
+        ref = request.pr
         pr = await self._store.get_pr(ref)
         if pr is None:
-            await self.send_job_response(message.job_id, {"error": f"Purr doesn't know {ref}"})
-            return
+            raise NotFound(f"Purr doesn't know {ref}")
         try:
             path = await self._repos.checkout(ref, pr.head_sha)
         except Exception as e:
-            await self.send_job_response(message.job_id, {"error": f"Couldn't check it out: {e}"})
-            return
-        await self.send_job_response(message.job_id, {"path": str(path)})
+            raise Failed(f"Couldn't check it out: {e}") from e
+        return Worktree(path=str(path))
 
-    @job(name=PR_DIFF)
-    async def on_pr_diff(self, message: BusJobRequestMessage) -> None:
-        try:
-            ref = PRRef.parse(str((message.payload or {}).get("pr")))
-        except ValueError as e:
-            await self.send_job_response(message.job_id, {"error": str(e)})
-            return
+    @handles(GetDiff)
+    async def get_diff(self, request: GetDiff) -> PRDiff:
+        ref = request.pr
         pr = await self._store.get_pr(ref)
         diff = await self._repos.diff(pr) if pr else None
         if diff is None:
             try:
                 diff = await self._github.pr_diff(ref)
             except GitHubError as e:
-                error = f"Couldn't read the diff from GitHub: {e}"
-                await self.send_job_response(message.job_id, {"error": error})
-                return
-        await self.send_job_response(message.job_id, {"diff": diff[:MAX_DIFF_CHARS]})
+                raise Failed(f"Couldn't read the diff from GitHub: {e}") from e
+        return PRDiff(diff=diff[:MAX_DIFF_CHARS])

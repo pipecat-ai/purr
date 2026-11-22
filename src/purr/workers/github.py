@@ -7,25 +7,27 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
-from pipecat.bus import BusJobRequestMessage
-from pipecat.pipeline.job_decorator import job
 from pipecat.workers.base_worker import BaseWorker
 
 from purr.actions import ActionError, GhWriter, GitHubWriter, execute
 from purr.github import GitHub, GitHubError, RemotePR
+from purr.jobs import Done, Failed, Invalid, NotFound, handles
 from purr.messages import (
-    ACTION_APPROVE,
-    ACTION_DISMISS,
     GITHUB_WORKER,
-    PR_ASSIGN,
-    PR_DETAILS,
-    PR_SEEN,
-    REPO_ADD,
-    REPO_REMOVE,
     ActionResolved,
+    ApproveAction,
+    AssignMe,
+    DismissAction,
+    FetchDetails,
+    FetchedDetails,
+    MarkSeen,
+    Posted,
     PRChanged,
     PRListUpdated,
     Synced,
+    UnwatchRepo,
+    Watching,
+    WatchRepo,
 )
 from purr.models import ActionStatus, PRRef, PRState, Repo, parse_repo_name
 from purr.store import Store
@@ -174,57 +176,47 @@ class GitHubWorker(BaseWorker):
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._poll_now.wait(), self._interval)
 
-    async def _reject(self, message: BusJobRequestMessage, error: str) -> None:
-        await self.send_job_response(message.job_id, {"error": error})
-
-    @job(name=REPO_ADD)
-    async def on_repo_add(self, message: BusJobRequestMessage) -> None:
+    @handles(WatchRepo)
+    async def watch_repo(self, request: WatchRepo) -> Watching:
         try:
-            name = parse_repo_name(str((message.payload or {}).get("repo", "")))
+            name = parse_repo_name(request.repo)
+        except ValueError as e:
+            raise Invalid(str(e)) from e
+        try:
             canonical = await self._github.repo_name(name)
-        except (ValueError, GitHubError) as e:
-            await self._reject(message, str(e))
-            return
+        except GitHubError as e:
+            raise Failed(str(e)) from e
         if canonical is None:
-            await self._reject(message, f"Can't find {name} on GitHub (or you don't have access)")
-            return
+            raise NotFound(f"Can't find {name} on GitHub (or you don't have access)")
         async with self._lock:
             await self._store.add_repo(canonical)
-        await self.send_job_response(message.job_id, {"repo": canonical})
         await self.send_bus_message(PRListUpdated(source=self.name))
         self.request_poll()
+        return Watching(repo=canonical)
 
-    @job(name=REPO_REMOVE)
-    async def on_repo_remove(self, message: BusJobRequestMessage) -> None:
-        name = str((message.payload or {}).get("repo", ""))
+    @handles(UnwatchRepo)
+    async def unwatch_repo(self, request: UnwatchRepo) -> Done:
         async with self._lock:
-            removed = await self._store.remove_repo(name)
+            removed = await self._store.remove_repo(request.repo)
         if not removed:
-            await self._reject(message, f"{name} isn't being watched")
-            return
-        await self.send_job_response(message.job_id, {"repo": name})
+            raise NotFound(f"{request.repo} isn't being watched")
         await self.send_bus_message(PRListUpdated(source=self.name))
+        return Done()
 
     # -- Writes the user asked for -------------------------------------------------
 
-    @job(name=PR_SEEN)
-    async def on_pr_seen(self, message: BusJobRequestMessage) -> None:
-        try:
-            ref = PRRef.parse(str((message.payload or {}).get("pr")))
-        except ValueError as e:
-            await self._reject(message, str(e))
-            return
-        await self._store.mark_seen(ref)
-        await self.send_job_response(message.job_id, {"ok": True})
+    @handles(MarkSeen)
+    async def mark_seen(self, request: MarkSeen) -> Done:
+        await self._store.mark_seen(request.pr)
+        return Done()
 
-    @job(name=PR_ASSIGN)
-    async def on_pr_assign(self, message: BusJobRequestMessage) -> None:
+    @handles(AssignMe)
+    async def assign_me(self, request: AssignMe) -> Done:
+        ref = request.pr
         try:
-            ref = PRRef.parse(str((message.payload or {}).get("pr")))
             await self._writer.assign_self(ref)
-        except (ValueError, ActionError) as e:
-            await self._reject(message, f"Couldn't assign you: {e}")
-            return
+        except ActionError as e:
+            raise Failed(f"Couldn't assign you: {e}") from e
         # Show it right away; the next poll confirms it.
         pr = await self._store.get_pr(ref)
         if pr and not pr.assigned_to_me:
@@ -232,34 +224,30 @@ class GitHubWorker(BaseWorker):
             mine = dataclasses.replace(pr, assigned_to_me=True, assignees=(*pr.assignees, me))
             await self._store.apply_sync(upserts=[mine])
             await self.send_bus_message(PRListUpdated(source=self.name))
-        await self.send_job_response(message.job_id, {"ok": True})
         self.request_poll()
+        return Done()
 
     # -- Reads for the UIs ------------------------------------------------------------
 
-    @job(name=PR_DETAILS)
-    async def on_pr_details(self, message: BusJobRequestMessage) -> None:
+    @handles(FetchDetails)
+    async def fetch_details(self, request: FetchDetails) -> FetchedDetails:
         try:
-            refs = [PRRef.parse(str(pr)) for pr in (message.payload or {}).get("prs") or []]
-            details = await self._github.pr_details(refs)
-        except (ValueError, GitHubError) as e:
-            await self._reject(message, f"Couldn't read the PR from GitHub: {e}")
-            return
-        payload = {str(ref): dataclasses.asdict(d) for ref, d in details.items()}
-        await self.send_job_response(message.job_id, {"details": payload})
+            details = await self._github.pr_details(request.prs)
+        except GitHubError as e:
+            raise Failed(f"Couldn't read the PR from GitHub: {e}") from e
+        return FetchedDetails(details={str(ref): d for ref, d in details.items()})
 
     # -- Approved actions --------------------------------------------------------
 
-    @job(name=ACTION_APPROVE)
-    async def on_action_approve(self, message: BusJobRequestMessage) -> None:
-        action_id = str((message.payload or {}).get("action_id", ""))
+    @handles(ApproveAction)
+    async def approve_action(self, request: ApproveAction) -> Posted:
+        action_id = request.action_id
         # Claiming it first means approving twice (keys and voice at once) posts once.
         action = await self._store.transition_action(
             action_id, expected=ActionStatus.PENDING, new=ActionStatus.APPROVED
         )
         if action is None:
-            await self._reject(message, "That action was already decided, or doesn't exist")
-            return
+            raise NotFound("That action was already decided, or doesn't exist")
         pr = await self._store.get_pr(action.pr)
         try:
             posted = await execute(
@@ -273,27 +261,22 @@ class GitHubWorker(BaseWorker):
             await self._store.transition_action(
                 action_id, expected=ActionStatus.APPROVED, new=ActionStatus.PENDING
             )
-            await self._reject(message, f"GitHub didn't take it: {e}")
-            return
+            raise Failed(f"GitHub didn't take it: {e}") from e
         await self._store.transition_action(
             action_id, expected=ActionStatus.APPROVED, new=ActionStatus.EXECUTED
         )
         await self._resolved(action.pr, action_id, approved=True)
-        await self.send_job_response(
-            message.job_id, {"url": posted.url, "warnings": posted.warnings}
-        )
+        return Posted(url=posted.url, warnings=list(posted.warnings))
 
-    @job(name=ACTION_DISMISS)
-    async def on_action_dismiss(self, message: BusJobRequestMessage) -> None:
-        action_id = str((message.payload or {}).get("action_id", ""))
+    @handles(DismissAction)
+    async def dismiss_action(self, request: DismissAction) -> Done:
         action = await self._store.transition_action(
-            action_id, expected=ActionStatus.PENDING, new=ActionStatus.DISMISSED
+            request.action_id, expected=ActionStatus.PENDING, new=ActionStatus.DISMISSED
         )
         if action is None:
-            await self._reject(message, "That action was already decided, or doesn't exist")
-            return
-        await self._resolved(action.pr, action_id, approved=False)
-        await self.send_job_response(message.job_id, {"ok": True})
+            raise NotFound("That action was already decided, or doesn't exist")
+        await self._resolved(action.pr, request.action_id, approved=False)
+        return Done()
 
     async def _resolved(self, ref: PRRef, action_id: str, *, approved: bool) -> None:
         pr = await self._store.get_pr(ref)

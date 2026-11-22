@@ -4,12 +4,12 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from pipecat.pipeline.job_context import JobParams
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
 from purr.actions import ActionError, execute
-from purr.messages import ACTION_APPROVE, ACTION_DISMISS, GITHUB_WORKER, PR_ASSIGN
+from purr.jobs import Done, Failed, NotFound, request
+from purr.messages import ApproveAction, AssignMe, DismissAction
 from purr.models import PR, ActionKind, ActionStatus, PendingAction, PRRef, PRState
 from purr.store import Store
 from purr.workers import GitHubWorker
@@ -117,39 +117,32 @@ async def setup():
             await asyncio.wait_for(task, 5)
 
 
-async def decide(client, name, action_id) -> dict:
-    params = JobParams(name=name, payload={"action_id": action_id}, timeout=5)
-    async with client.job(GITHUB_WORKER, params=params) as j:
-        pass
-    return j.response
-
-
 async def test_approving_posts_once_and_the_pr_is_done(setup):
     store, writer, client, pending = setup
-    response = await decide(client, ACTION_APPROVE, pending.id)
-    assert response["url"].endswith("#review-1")
+    posted = await request(client, ApproveAction(action_id=pending.id), timeout=5)
+    assert posted.url.endswith("#review-1")
     assert (await store.get_pending_action(pending.id)).status == ActionStatus.EXECUTED
     assert (await store.get_pr(REF)).state == PRState.DONE
 
-    response = await decide(client, ACTION_APPROVE, pending.id)
-    assert "already decided" in response["error"]
+    with pytest.raises(NotFound, match="already decided"):
+        await request(client, ApproveAction(action_id=pending.id), timeout=5)
     assert len(writer.reviews) == 1
 
 
 async def test_a_failed_post_can_be_retried(setup):
     store, writer, client, pending = setup
     writer.fail_with = ["Bad credentials"]
-    response = await decide(client, ACTION_APPROVE, pending.id)
-    assert "Bad credentials" in response["error"]
+    with pytest.raises(Failed, match="Bad credentials"):
+        await request(client, ApproveAction(action_id=pending.id), timeout=5)
     assert (await store.get_pending_action(pending.id)).status == ActionStatus.PENDING
     assert (await store.get_pr(REF)).state == PRState.NEEDS_YOU
 
-    assert "url" in await decide(client, ACTION_APPROVE, pending.id)
+    assert (await request(client, ApproveAction(action_id=pending.id), timeout=5)).url
 
 
 async def test_dismissing(setup):
     store, writer, client, pending = setup
-    assert await decide(client, ACTION_DISMISS, pending.id) == {"ok": True}
+    assert await request(client, DismissAction(action_id=pending.id), timeout=5) == Done()
     assert (await store.get_pending_action(pending.id)).status == ActionStatus.DISMISSED
     assert (await store.get_pr(REF)).state == PRState.DONE
     assert writer.reviews == []
@@ -157,10 +150,7 @@ async def test_dismissing(setup):
 
 async def test_assigning_yourself(setup):
     store, writer, client, pending = setup
-    params = JobParams(name=PR_ASSIGN, payload={"pr": str(REF)}, timeout=5)
-    async with client.job(GITHUB_WORKER, params=params) as j:
-        pass
-    assert j.response == {"ok": True}
+    assert await request(client, AssignMe(pr=REF), timeout=5) == Done()
     assert writer.assigned == [REF]
     assert (await store.get_pr(REF)).assigned_to_me is True
 

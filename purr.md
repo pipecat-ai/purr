@@ -170,7 +170,7 @@ Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that 
 - The prompt takes several lines: `enter` sends, and `ctrl+j` starts a new line (so do `shift+enter`/`alt+enter` in terminals that tell them apart, and a `\` at the end of the line, as in Claude Code). Pasting keeps the lines.
 - It works like a shell's: `↑`/`↓` on the first/last line go through what you asked on this PR, `ctrl+r` searches everything you've asked on any PR (type to filter, `enter` puts it in the prompt), and `ctrl+a`/`ctrl+e`/`ctrl+b`/`ctrl+f`/`alt+b`/`alt+f` move around the line (`ctrl+k`/`ctrl+u`/`ctrl+w` delete). `page up`/`page down` scroll the transcript while you type. What you ask is kept in the `prompts` table, so the history survives restarts.
 - History comes from the SDK's transcript of the session; new turns stream over the bus as `session.message` events, so the TUI and the voice agent see the same conversation.
-- One conversation per PR. Typed and spoken messages go into the same session (`review.message` job) and queue if a turn is in flight.
+- One conversation per PR. Typed and spoken messages go into the same session (the `SendMessage` job) and queue if a turn is in flight.
 - **Slash commands** (`tui/commands.py`). Typing `/` lists what matches above the prompt (Purr's commands, Claude Code's useful ones, the repo's skills; after three letters, by what's in the name too, so `/prose` finds `/pipecat:prose-review`): ↑/↓ pick, tab or enter fills it in, enter again runs it.
   - *Purr's own*, handled by Purr, never sent to the agent: `/help` (all of this, with the repo's skills); `/review [quick|full]` (start over with a fresh review, planned by the lead unless you say how deep; `/clear` is the same, so Claude Code's `/clear` can't cut the session off from Purr); `/model [name|default]` (the model for everything in this PR's conversation, stored with the PR, so it sticks, unlike Claude Code's `/model`, which Purr would override on the next turn); `/cost` (each run on this PR: what it was, when, how long, turns, tokens, cost, model, and the total, from the `runs` table); `/shell` (same as `!`); `/claude` (same as `c`). Their output goes in the transcript, just for you.
   - *Passed to Claude Code as typed*: `/compact` and `/context`, the repo's skills (`/pipecat:prose-review`), and anything else after a `/`, your own skills included.
@@ -237,16 +237,27 @@ If things happen while you're not looking, Purr shows you a recap when you come 
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-## Bus messages (initial sketch)
+## Bus messages
+
+Jobs are requests one worker answers. Each is a dataclass in `src/purr/messages.py` that names the worker that handles it and its reply, also a dataclass: `class SendMessage(Request[MessageSent])`. The plumbing is in `src/purr/jobs.py`, once: a worker handles one with a method decorated `@handles(SendMessage)` that takes the request and returns the reply, and any worker (the TUI, the lead, a test) sends one with `request(sender, SendMessage(pr=..., text=...))`, which returns the reply. On the bus they're JSON (pydantic encodes the dataclasses), so they could cross a network bus later. A request that can't be done raises a `PurrError`, which goes back as itself (class and message), so a caller can tell `Busy` from `NotFound` from `Invalid`, `Failed` or `Unanswered` (no answer in time) without reading the text; anything else a handler raises is logged and goes back as a plain `PurrError`, so the asker hears about it at once rather than timing out.
 
 Jobs:
-- `lead.review {prs}` (lead worker): plan and start reviews you asked for (TUI `r`, voice); answers once they've started, with why any didn't.
-- `review.start {pr, plan}` (reviews worker, dispatched by the lead; without a plan, a full review)
-- `review.rereview {pr, plan}` (reviews worker, dispatched by the lead on new commits)
-- `review.message {pr, text}` (send a follow-up into a PR's session)
-- `recap.create {since}` (when you come back, or on demand)
-- `repo.add {repo}` / `repo.remove {repo}` (handled by the GitHub worker; `repo` can be `owner/name` or a GitHub URL)
-- `action.approve {action_id}` / `action.dismiss {action_id}` (GitHub worker). Approving claims the action atomically (so keys and voice can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. **What Purr posts says so:** the review's text and each reply in a thread end with `<sub>Sent from Purr.</sub>` (the `signature` setting; empty turns it off). Inline comments don't: they belong to the review, whose text already says it, and one under every comment would be noise. An approval with nothing to say is just the signature. The proposal in the PR's conversation shows it too, so `a` still posts exactly what you read.
+- `PlanReviews {prs, depth}` (lead worker): plan and start reviews you asked for (TUI `r`, voice); answers once they've started, with why any didn't.
+- `StartReview {pr, plan}` (reviews worker, sent by the lead; without a plan, a full review)
+- `Rereview {pr, plan}` (reviews worker, sent by the lead on new commits)
+- `SendMessage {pr, text}` (reviews worker): say something in a PR's conversation. Its reply says what that did besides: answered a permission request (a no, with directions), set proposals aside, or went to the agent at work.
+- `AnswerPermission {request_id, allow, remember}` (reviews worker): answers an agent's permission request; `remember` (`repo` or `all`) also keeps its rule as a standing permission.
+- `SetModel {pr, model}` (reviews worker): the model for a PR's conversation (`/model`).
+- `ListRepoSkills {repo}` / `ListReviewSkills {repo}` (reviews worker): a repo's skills, for `/help` and completion; those that may be for reviewing, and which one its reviews follow.
+- `ChooseReviewSkill {repo, skill}` (reviews worker): have its reviews follow `skill` ('' for Purr's own; none: ask again next run). Answers a `review.skill_question` too.
+- `MakeRecap {since}` (when you come back, or on demand)
+- `WatchRepo {repo}` / `UnwatchRepo {repo}` (GitHub worker; `repo` can be `owner/name` or a GitHub URL)
+- `AssignMe {pr}` (GitHub worker): assigns you, when you start a review on a pool PR with `r`.
+- `MarkSeen {pr}` (GitHub worker): you looked at a PR that had news; stores when, so it isn't news after a restart.
+- `FetchDetails {prs}` (GitHub worker): description, base and head branches, +/- lines, files, labels, review decision and CI state of some PRs, batched 20 to a request.
+- `GetDiff {pr}` (git worker): the PR's unified diff, from Purr's clone, or from GitHub if the clone doesn't have the PR's head yet.
+- `GetWorktree {pr}` (git worker): the PR's worktree, made again if it was removed (for `c`).
+- `ApproveAction {action_id}` / `DismissAction {action_id}` (GitHub worker). Approving claims the action atomically (so keys and voice can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. **What Purr posts says so:** the review's text and each reply in a thread end with `<sub>Sent from Purr.</sub>` (the `signature` setting; empty turns it off). Inline comments don't: they belong to the review, whose text already says it, and one under every comment would be noise. An approval with nothing to say is just the signature. The proposal in the PR's conversation shows it too, so `a` still posts exactly what you read.
 
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)
@@ -263,18 +274,9 @@ Events (broadcast, everyone listens):
 - `user.active` (from the TUI and the voice agent, throttled)
 - `recap.ready {recap_id, headline}`
 
-- `session.answer {request_id, allow, remember}` (reviews worker): answers an agent's permission request; `remember` (`repo` or `all`) also keeps its rule as a standing permission.
-- `review.skills {repo}` (reviews worker): the repo's skills that may be for reviewing, and which one its reviews follow.
-- `review.skill {repo, skill}` (reviews worker): have its reviews follow `skill` ('' for Purr's own; none: ask again next run). Answers a `review.skill_question` too.
-- `pr.assign {pr}` (GitHub worker): assigns you, when you start a review on a pool PR with `r`.
-- `pr.seen {pr}` (GitHub worker): you looked at a PR that had news; stores when, so it isn't news after a restart.
-- `pr.details {prs}` (GitHub worker): description, base and head branches, +/- lines, files, labels, review decision and CI state of some PRs, batched 20 to a request.
-- `pr.diff {pr}` (git worker): the PR's unified diff, from Purr's clone, or from GitHub if the clone doesn't have the PR's head yet.
-- `pr.worktree {pr}` (git worker): the PR's worktree, made again if it was removed (for `c`).
-
 Commands: none yet. Everything that needs a reply is a job.
 
-Implemented in `src/purr/messages.py`: jobs are `@job(name=...)` handlers on the `reviews` worker; events (`PurrEvent`) and commands (`PurrCommand`) are `BusDataMessage` subclasses. Events are broadcast (no target); commands target the worker that executes them. PRs travel as `owner/repo#123` strings.
+Events (`PurrEvent`) and commands (`PurrCommand`) are `BusDataMessage` subclasses in `src/purr/messages.py`, with plain JSON fields (PRs as `owner/repo#123` strings), since everything that listens gets them, and most go into the activity log. Events are broadcast (no target); commands target the worker that executes them.
 
 ## SQLite store
 
@@ -372,7 +374,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
   - **What scrolls**: the PR's description, then its diff (colored like `git diff`, a rule per file with its `+/−`; lock files and other generated files collapsed; the first 3000 lines), then the session with the agent (Claude Code style, see PR session). A PR nobody has reviewed yet opens at its description, so you can decide whether to take it; a reviewed one opens at the end of the conversation.
   - **The pending action box and the prompt**, which stay put too. The prompt takes several lines and grows with them (up to 10).
   - `d` opens the full diff in your pager (`gh pr diff`).
-- **Details are fetched ahead; diffs are local.** Selecting a PR fetches its details from GitHub (about 0.5 s), plus those of the 10 PRs below it in one request. Its diff comes from Purr's clone (`pr.diff` on the `git` worker, see Repos), in a few ms. Details are cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing; diffs are kept by head commit (the last 50).
+- **Details are fetched ahead; diffs are local.** Selecting a PR fetches its details from GitHub (about 0.5 s), plus those of the 10 PRs below it in one request. Its diff comes from Purr's clone (`GetDiff` on the `git` worker, see Repos), in a few ms. Details are cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing; diffs are kept by head commit (the last 50).
 - **Focus**: each pane has a rounded border, and the one with the focus lights up in the accent color, with its title (`PRs`, `PR`). `o` on a PR moves the focus into its pane (`enter` into its prompt); `tab` goes back and forth.
 - **Status bar**: key hints for the focused pane, and mic state.
 - **Selecting text**: drag over the PR pane (description, diff, conversation) and it's copied, as in a terminal; `ctrl+c` copies it too (Textual's binding). Textual's `RichLog` can't be selected in, so the pane is a `Transcript`, a `RichLog` that marks where each line's text is. Copying asks the terminal (OSC 52, which works over ssh) and also runs the system's copy command if there's one (`wl-copy`, `xclip`, `xsel`, `pbcopy`): GNOME Terminal and the other VTE terminals ignore OSC 52, so there it takes `wl-clipboard` or `xclip`, and Purr says so. `shift`+drag selects with the terminal itself, anywhere.
@@ -385,7 +387,7 @@ News is something you'd want to know that happened since you last looked at a PR
 - **The top bar says one short thing about other repos**, on every screen, so you know to go and look: the latest news there if there's any (`🔔 2 · whisker#112 review: found 2 issues  (ctrl+n)`), otherwise how many PRs need you there (`⚠ 3 need you in other repos  (0)`). `0` goes to the repo list, which says where: a ● after each repo with news, and its NEEDS YOU count.
 - **In a repo, PRs with news have their title in bold**, like unread mail, until you look at them. News about the PR you're looking at isn't news.
 - `ctrl+n` jumps to the newest news in another repo (or in this one if there's none elsewhere); pressing it again goes through the rest.
-- **It survives restarts.** Looking at a PR stores when (`prs.seen_at`, through a `pr.seen` job), and on startup the news comes from the activity log: what happened to open PRs since you last looked at them.
+- **It survives restarts.** Looking at a PR stores when (`prs.seen_at`, through a `MarkSeen` job), and on startup the news comes from the activity log: what happened to open PRs since you last looked at them.
 
 ### Moving around
 
@@ -441,7 +443,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 5. Pending action execution (post comments / review verdict / merge) gated on approval. (Done for reviews: approve / request changes / comment. Merging isn't proposed yet. Tested against a fake GitHub; not yet run against a real PR.)
 6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher. (Done. Transcripts come from the SDK's session file plus live `session.message` events. Alerts survive restarts: `prs.seen_at` plus the activity log.)
 7. "Start from app" also assigns you on GitHub. (Done: `r` on a pool PR starts the review and assigns you.)
-8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`recap.create {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
+8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`MakeRecap {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
 9. Open a PR's session in Claude Code (`c`). (Done. `claude --resume` keeps the session ID; `--fork-session` is what would make a new one. It runs with `--setting-sources user`, GitHub writes disallowed, and a note that Purr's own tools aren't available there. Purr keeps running underneath, and reloads the transcript afterwards.)
 10. The lead: plans every review (quick or full, priority, focus) before it starts, never skips one, and every review says whether it found something. (Done; see The lead.)
 11. Voice agent with push-to-talk, on the same planning.

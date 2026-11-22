@@ -17,9 +17,17 @@ from textual.containers import Vertical
 from textual.widgets import OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
-from purr.messages import PermissionRequest
+from purr.jobs import PurrError
+from purr.messages import (
+    ListRepoSkills,
+    PermissionRequest,
+    PlanReviews,
+    SendMessage,
+    SetModel,
+)
 from purr.models import (
     PR,
+    Depth,
     Outcome,
     PendingAction,
     PRDetails,
@@ -29,8 +37,8 @@ from purr.models import (
     ReviewStatus,
 )
 from purr.review.agent import INSTEAD, thought_headline
+from purr.review.skills import RepoSkill
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
-from purr.tui.bridge import RequestError
 from purr.tui.commands import (
     PURR_NAMES,
     Command,
@@ -269,7 +277,7 @@ class PRSession(Vertical):
 
     # -- Slash commands (see purr.tui.commands) ----------------------------------------
 
-    def _skills(self) -> list[dict]:
+    def _skills(self) -> list[RepoSkill]:
         """The repo's skills, for suggestions; fetched in the background the first time."""
         if not self.pr:
             return []
@@ -280,10 +288,11 @@ class PRSession(Vertical):
             self.run_worker(self._load_skills(repo), group="skills")
         return cache[repo]
 
-    async def _load_skills(self, repo: str) -> list[dict]:
+    async def _load_skills(self, repo: str) -> list[RepoSkill]:
         try:
-            self.purr_app.repo_skills[repo] = await self.purr_app.bus.repo_skills(repo)
-        except RequestError:
+            reply = await self.purr_app.bus.request(ListRepoSkills(repo=repo))
+            self.purr_app.repo_skills[repo] = reply.skills
+        except PurrError:
             self.purr_app.repo_skills.pop(repo, None)  # try again next time
             return []
         self._suggest()
@@ -339,7 +348,8 @@ class PRSession(Vertical):
             if args not in ("", "quick", "full"):
                 log.write(Text("Say /review, /review quick or /review full.", style="yellow"))
                 return
-            errors = await self.purr_app.bus.start_review([ref], depth=args or None)
+            depth = Depth(args) if args else None
+            errors = (await self.purr_app.bus.request(PlanReviews(prs=[ref], depth=depth))).errors
             for error in errors.values():
                 log.write(Text(error, style="yellow"))
             if not errors:
@@ -347,7 +357,7 @@ class PRSession(Vertical):
         elif name == "model":
             if args:
                 model = None if args in ("default", "auto") else args
-                await self.purr_app.bus.set_model(ref, model)
+                await self.purr_app.bus.request(SetModel(pr=ref, model=model))
                 self.pr = await self.purr_app.purr.store.get_pr(ref) or self.pr
             chosen = self.pr.model
             config = self.purr_app.purr.config
@@ -597,18 +607,18 @@ class PRSession(Vertical):
             event.prompt.remember(text)
             try:
                 await self._command(*command)
-            except RequestError as e:
+            except PurrError as e:
                 self.notify(str(e), severity="warning")
             return
         try:
-            decided = await self.purr_app.bus.send_message(self.pr.ref, text)
-        except RequestError as e:
+            sent = await self.purr_app.bus.request(SendMessage(pr=self.pr.ref, text=text))
+        except PurrError as e:
             self.notify(str(e), severity="warning")
             return
         event.prompt.clear()
         event.prompt.remember(text)
         ref = str(self.pr.ref)
-        for proposal in decided.get("set_aside") or []:
+        for proposal in sent.set_aside:
             self.append(ref, {"kind": "set_aside", "text": proposal})
-        if not decided.get("answered"):  # if it did, it shows under the call it said no to
+        if not sent.answered:  # if it did, it shows under the call it said no to
             self.append(ref, {"kind": "user", "text": text})

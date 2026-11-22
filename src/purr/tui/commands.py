@@ -12,6 +12,8 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 
+from purr.review.skills import RepoSkill
+
 
 @dataclass(frozen=True)
 class Command:
@@ -47,7 +49,7 @@ def parse(text: str) -> tuple[str, str] | None:
     return (name, args.strip()) if name else None
 
 
-def suggestions(text: str, skills: list[dict]) -> list[Command]:
+def suggestions(text: str, skills: list[RepoSkill]) -> list[Command]:
     """Commands that start with what's typed (``/re``): Purr's, Claude Code's, the repo's skills."""
     if not text.startswith("/") or " " in text or "\n" in text:
         return []
@@ -55,7 +57,7 @@ def suggestions(text: str, skills: list[dict]) -> list[Command]:
     everything = [
         *PURR_COMMANDS,
         *CLAUDE_CODE_COMMANDS,
-        *(Command(str(s["name"]), "", str(s.get("description", ""))) for s in skills),
+        *(Command(s.name, "", s.description) for s in skills),
     ]
     starts = [c for c in everything if c.name.lower().startswith(typed)]
     # pipecat:prose-review comes up for /prose too, once there's enough to go on.
@@ -65,7 +67,7 @@ def suggestions(text: str, skills: list[dict]) -> list[Command]:
     return starts + inside
 
 
-def render_help(skills: list[dict]) -> RenderableType:
+def render_help(skills: list[RepoSkill]) -> RenderableType:
     def table(commands: list[Command]) -> Table:
         grid = Table.grid(padding=(0, 2))
         grid.add_column(no_wrap=True)
@@ -85,7 +87,7 @@ def render_help(skills: list[dict]) -> RenderableType:
     if skills:
         parts += [
             Text("\nThe repo's skills", style="bold magenta"),
-            table([Command(str(s["name"]), "", str(s.get("description", ""))) for s in skills]),
+            table([Command(s.name, "", s.description) for s in skills]),
         ]
     parts.append(
         Text(

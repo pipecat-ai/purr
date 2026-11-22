@@ -2,9 +2,9 @@
 
 Everything in Purr talks over one Pipecat worker bus:
 
-- **Jobs** are requests handled by one worker (``@job(name=...)`` handlers),
-  dispatched with ``request_job()`` / ``job()``. Their payloads carry PRs as
-  ``owner/repo#123`` strings (see :class:`purr.models.PRRef`).
+- **Jobs** are requests handled by one worker: a :class:`purr.jobs.Request`
+  dataclass, answered with its reply dataclass or a :class:`purr.jobs.PurrError`
+  (see :mod:`purr.jobs`).
 - **Events** (:class:`PurrEvent`) are broadcast, so the TUI, the voice agent and
   anything else listening all see the same thing. Most are also recorded in the
   activity log (see ``recorded``).
@@ -16,9 +16,13 @@ if components ever move to separate processes.
 """
 
 from dataclasses import dataclass, field, fields
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pipecat.bus import BusDataMessage, BusMessage
+
+from purr.jobs import Done, Request
+from purr.models import Depth, PRDetails, PRRef, ReviewPlan
+from purr.review.skills import RepoSkill, Skill
 
 # Worker names (bus addresses).
 GITHUB_WORKER = "github"
@@ -27,62 +31,249 @@ RECAP_WORKER = "recap"
 GIT_WORKER = "git"
 LEAD_WORKER = "lead"
 
-# Job names handled by LEAD_WORKER, which decides what gets reviewed, how deep and
-# in what order (see purr.lead). It answers once it has the PRs; their reviews
-# start after it has planned them.
-# payload: {"prs": ["owner/repo#123", ...], "depth": "quick" | "full" | None}
-#   -> {"started": [...], "errors": {pr: error}}; "depth" overrides the lead's.
-LEAD_REVIEW = "lead.review"
+# -- Jobs (see purr.jobs): each request names the worker that handles it, and its reply.
 
-# Job names handled by RECAP_WORKER.
-# payload: {"since": ISO time} -> {"recap_id": int | None} (None: nothing notable happened)
-RECAP_CREATE = "recap.create"
+# The lead (LEAD_WORKER) decides what gets reviewed, how deep and in what order (see
+# purr.lead).
 
-# Job names handled by GITHUB_WORKER. A request that can't be done (bad name,
-# unknown repo) still completes, with {"error": "..."} as the response.
-REPO_ADD = "repo.add"  # payload: {"repo": "owner/name" or a GitHub URL} -> {"repo": "owner/name"}
-REPO_REMOVE = "repo.remove"  # payload: {"repo": "owner/name"} -> {"repo": "owner/name"}
-# payload: {"action_id": "..."} -> {"url": "...", "warnings": [...]}
-ACTION_APPROVE = "action.approve"
-ACTION_DISMISS = "action.dismiss"  # payload: {"action_id": "..."} -> {"ok": true}
-PR_ASSIGN = "pr.assign"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: assigns you
-PR_SEEN = "pr.seen"  # payload: {"pr": "owner/repo#123"} -> {"ok": true}: you looked at it
-# Description, files and CI of some PRs, read from GitHub (see purr.models.PRDetails):
-# payload: {"prs": ["owner/repo#123", ...]} -> {"details": {"owner/repo#123": {...}}}
-PR_DETAILS = "pr.details"
-# A PR's unified diff, as `gh pr diff` shows it:
-# payload: {"pr": "owner/repo#123"} -> {"diff": "..."}
-PR_DIFF = "pr.diff"
-# Job names handled by GIT_WORKER (besides pr.diff).
-# The PR's worktree, made if it's gone (e.g. to open it in Claude Code):
-# payload: {"pr": "owner/repo#123"} -> {"path": "..."}
-PR_WORKTREE = "pr.worktree"
 
-# Job names handled by REVIEW_WORKER.
-# payload: {"pr": "owner/repo#123", "plan": {...} (a ReviewPlan; optional)} -> {"review_id": ...}
-REVIEW_START = "review.start"
-# The model for everything in a PR's conversation, from now on (None: Purr's choice):
-# payload: {"pr": "owner/repo#123", "model": "opus" | None} -> {"ok": true}
-REVIEW_MODEL = "review.model"
-# A repo's skills and commands, as Claude Code names them (for /help and completion):
-# payload: {"repo": "owner/name"} -> {"skills": [{"name", "description"}]}
-REPO_SKILLS = "repo.skills"
-# Have a finished review look at the PR's new commits:
-# payload: {"pr": "owner/repo#123"} -> {"started": bool}
-REVIEW_REREVIEW = "review.rereview"
-REVIEW_MESSAGE = "review.message"  # payload: {"pr": "owner/repo#123", "text": "..."}
-# Answer an agent's permission request; "remember" ("repo" or "all") also keeps Claude
-# Code's suggested rule, for the PR's repo or everywhere (see purr.review.rules):
-# {"request_id": "...", "allow": bool, "remember": None | "repo" | "all"}
-#   -> {"ok": true, "rule": "Bash(uv run pytest:*)" | None}
-PERMISSION_ANSWER = "session.answer"
-# A repo's skills that look like they're for reviewing, and which one its reviews follow
-# (see purr.review.skills): {"repo": "owner/name"} ->
-# {"skills": [{"name", "description", "likely"}], "chosen": "skill" | "" (Purr's own) | None}
-REVIEW_SKILLS = "review.skills"
-# Choose it: {"repo": "owner/name", "skill": "skill" | "" (Purr's own) | None (ask again
-# next time)} -> {"ok": true}
-REVIEW_SKILL = "review.skill"
+@dataclass(kw_only=True)
+class Planned:
+    started: list[PRRef] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)  # owner/repo#123 -> why not
+
+
+@dataclass(kw_only=True)
+class PlanReviews(Request[Planned]):
+    """Have the lead plan these PRs' reviews, and start them. It answers once it has
+    the PRs; their reviews start after it has planned them. ``depth`` overrides its."""
+
+    worker: ClassVar[str] = LEAD_WORKER
+    timeout: ClassVar[float] = 180
+    prs: list[PRRef]
+    depth: Depth | None = None
+
+
+# RECAP_WORKER
+
+
+@dataclass(kw_only=True)
+class RecapMade:
+    recap_id: int | None  # None: nothing notable happened
+
+
+@dataclass(kw_only=True)
+class MakeRecap(Request[RecapMade]):
+    """Recap what happened since ``since`` (an ISO time)."""
+
+    worker: ClassVar[str] = RECAP_WORKER
+    timeout: ClassVar[float] = 180
+    since: str
+
+
+# GITHUB_WORKER
+
+
+@dataclass(kw_only=True)
+class Watching:
+    repo: str  # GitHub's spelling of its name
+
+
+@dataclass(kw_only=True)
+class WatchRepo(Request[Watching]):
+    worker: ClassVar[str] = GITHUB_WORKER
+    repo: str  # owner/name, or its GitHub URL
+
+
+@dataclass(kw_only=True)
+class UnwatchRepo(Request[Done]):
+    worker: ClassVar[str] = GITHUB_WORKER
+    repo: str
+
+
+@dataclass(kw_only=True)
+class Posted:
+    url: str
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class ApproveAction(Request[Posted]):
+    """Post what the agent proposed, as you."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    action_id: str
+
+
+@dataclass(kw_only=True)
+class DismissAction(Request[Done]):
+    worker: ClassVar[str] = GITHUB_WORKER
+    action_id: str
+
+
+@dataclass(kw_only=True)
+class AssignMe(Request[Done]):
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
+class MarkSeen(Request[Done]):
+    """You looked at the PR: what happened so far isn't news anymore."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
+class FetchedDetails:
+    details: dict[str, PRDetails]  # owner/repo#123 -> its details
+
+
+@dataclass(kw_only=True)
+class FetchDetails(Request[FetchedDetails]):
+    """Description, files and CI of some PRs, from GitHub."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    prs: list[PRRef]
+
+
+# GIT_WORKER
+
+
+@dataclass(kw_only=True)
+class PRDiff:
+    diff: str
+
+
+@dataclass(kw_only=True)
+class GetDiff(Request[PRDiff]):
+    """A PR's unified diff, as `gh pr diff` shows it."""
+
+    worker: ClassVar[str] = GIT_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
+class Worktree:
+    path: str
+
+
+@dataclass(kw_only=True)
+class GetWorktree(Request[Worktree]):
+    """The PR's worktree, made if it's gone (to open it in Claude Code, say)."""
+
+    worker: ClassVar[str] = GIT_WORKER
+    timeout: ClassVar[float] = 120
+    pr: PRRef
+
+
+# REVIEW_WORKER
+
+
+@dataclass(kw_only=True)
+class ReviewOpened:
+    review_id: int
+
+
+@dataclass(kw_only=True)
+class StartReview(Request[ReviewOpened]):
+    worker: ClassVar[str] = REVIEW_WORKER
+    pr: PRRef
+    plan: ReviewPlan | None = None
+
+
+@dataclass(kw_only=True)
+class Rereviewing:
+    started: bool  # False: nothing new to look at
+
+
+@dataclass(kw_only=True)
+class Rereview(Request[Rereviewing]):
+    """Have a finished review look at the PR's new commits."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    pr: PRRef
+    plan: ReviewPlan | None = None
+
+
+@dataclass(kw_only=True)
+class MessageSent:
+    """What writing did, besides going to the agent (see ReviewWorker.send_followup)."""
+
+    answered: bool = False  # it answered the agent's permission request: a no
+    set_aside: list[str] = field(default_factory=list)  # the proposals it set aside
+    while_working: bool = False  # the agent takes it up at its next step
+
+
+@dataclass(kw_only=True)
+class SendMessage(Request[MessageSent]):
+    """Say something in the PR's conversation."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    pr: PRRef
+    text: str
+
+
+@dataclass(kw_only=True)
+class PermissionAnswered:
+    rule: str | None = None  # the rule kept, if any: Bash(uv run pytest:*)
+
+
+@dataclass(kw_only=True)
+class AnswerPermission(Request[PermissionAnswered]):
+    """Answer an agent's permission request. ``remember`` keeps Claude Code's suggested
+    rule, for the PR's repo or everywhere (see purr.review.rules)."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    request_id: str
+    allow: bool
+    remember: Literal["repo", "all"] | None = None
+
+
+@dataclass(kw_only=True)
+class SetModel(Request[Done]):
+    """The model for everything in a PR's conversation, from now on (None: Purr's choice)."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    pr: PRRef
+    model: str | None
+
+
+@dataclass(kw_only=True)
+class RepoSkills:
+    skills: list[RepoSkill]
+
+
+@dataclass(kw_only=True)
+class ListRepoSkills(Request[RepoSkills]):
+    """A repo's skills and commands, as Claude Code names them (for /help and completion)."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    repo: str
+
+
+@dataclass(kw_only=True)
+class ReviewSkills:
+    skills: list[Skill]  # likeliest first
+    chosen: str | None = None  # what its reviews follow: '' for Purr's own; None: undecided
+
+
+@dataclass(kw_only=True)
+class ListReviewSkills(Request[ReviewSkills]):
+    """A repo's skills that look like they're for reviewing (see purr.review.skills)."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    repo: str
+
+
+@dataclass(kw_only=True)
+class ChooseReviewSkill(Request[Done]):
+    """Have the repo's reviews follow ``skill`` ('' for Purr's own; None: ask next time)."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    repo: str
+    skill: str | None
 
 
 @dataclass(kw_only=True)
@@ -193,7 +384,8 @@ class PermissionResolved(PurrEvent):
 class SkillQuestion(PurrEvent):
     """A repo has skills that may be for reviewing; should its reviews follow one?
 
-    Its reviews wait a while for a ``review.skill`` answer, then go ahead without.
+    Its reviews wait a while for an answer (:class:`ChooseReviewSkill`), then go ahead
+    without.
     ``skills`` are ``{"name", "description", "likely"}``, likeliest first.
     """
 

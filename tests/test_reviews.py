@@ -5,37 +5,38 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from pipecat.bus import BusMessage
-from pipecat.pipeline.job_context import JobParams
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
+from purr.jobs import Busy, Done, NotFound, Request, request
 from purr.messages import (
-    LEAD_REVIEW,
-    LEAD_WORKER,
-    PERMISSION_ANSWER,
-    REPO_SKILLS,
-    REVIEW_MESSAGE,
-    REVIEW_MODEL,
-    REVIEW_SKILL,
-    REVIEW_SKILLS,
-    REVIEW_START,
     REVIEW_WORKER,
     ActionPending,
     ActionResolved,
+    AnswerPermission,
+    ChooseReviewSkill,
+    ListRepoSkills,
+    ListReviewSkills,
+    MessageSent,
+    PermissionAnswered,
     PermissionRequest,
     PermissionResolved,
+    PlanReviews,
     PRChanged,
     PurrEvent,
     ReviewFailed,
     ReviewFinished,
     ReviewProgress,
     ReviewStarted,
+    SendMessage,
     SessionMessage,
+    SetModel,
     SkillChosen,
     SkillQuestion,
+    StartReview,
     Synced,
 )
-from purr.models import PR, ActionStatus, PRRef, PRState, ReviewStatus
+from purr.models import PR, ActionStatus, Depth, PRRef, PRState, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
 from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
@@ -70,11 +71,8 @@ class Client(BaseWorker):
     def of(self, kind: type) -> list:
         return [e for e in self.events if isinstance(e, kind)]
 
-    async def request(self, name: str, payload: dict, worker: str = REVIEW_WORKER) -> dict:
-        params = JobParams(name=name, payload=payload, timeout=5)
-        async with self.job(worker, params=params) as j:
-            pass
-        return j.response
+    async def request[R](self, req: Request[R]) -> R:
+        return await request(self, req, timeout=5)
 
 
 async def eventually(check: Callable[[], Awaitable[bool] | bool], timeout: float = 5) -> None:
@@ -149,8 +147,8 @@ async def test_a_review_produces_findings_and_a_pending_action(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
 
-    response = await s.client.request(REVIEW_START, {"pr": str(REF)})
-    assert "review_id" in response
+    opened = await s.client.request(StartReview(pr=REF))
+    assert opened.review_id == (await s.store.latest_review(REF)).id
     await eventually(lambda: s.client.of(ReviewFinished))
 
     review = await s.store.latest_review(REF)
@@ -169,7 +167,7 @@ async def test_a_review_produces_findings_and_a_pending_action(make):
     assert s.agent.runs[0]["session_id"] == review.session_id
 
     # Starting again supersedes the pending action, and re-reviews.
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
     assert (await s.store.get_pending_action(action.id)).status == ActionStatus.DISMISSED
     assert s.client.of(ActionResolved)
@@ -216,7 +214,7 @@ async def test_a_failed_review_needs_you(make):
     await s.store.upsert_pr(make_pr())
     s.agent.fail_with = "out of credits"
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFailed))
     review = await s.store.latest_review(REF)
     assert review.status == ReviewStatus.FAILED and review.error == "out of credits"
@@ -229,14 +227,14 @@ async def test_one_review_at_a_time_per_pr(make):
     await s.store.upsert_pr(make_pr())
     s.agent.gate = asyncio.Event()
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
-    response = await s.client.request(REVIEW_START, {"pr": str(REF)})
-    assert "already being reviewed" in response["error"]
+    await s.client.request(StartReview(pr=REF))
+    with pytest.raises(Busy, match="already being reviewed"):
+        await s.client.request(StartReview(pr=REF))
     # What you write while it works goes to it, as in Claude Code; commands wait.
-    response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "why?"})
-    assert response == {"ok": True, "while_working": True}
-    response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "/compact"})
-    assert "still working" in response["error"]
+    sent = await s.client.request(SendMessage(pr=REF, text="why?"))
+    assert sent == MessageSent(while_working=True)
+    with pytest.raises(Busy, match="still working"):
+        await s.client.request(SendMessage(pr=REF, text="/compact"))
     s.agent.gate.set()
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.read == ["why?"] and len(s.agent.runs) == 1
@@ -247,9 +245,9 @@ async def test_what_the_agent_didnt_read_in_its_run_comes_after(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
     s.agent.gate, s.agent.reads_inbox = asyncio.Event(), False
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.agent.runs)
-    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "and the tests?"})
+    await s.client.request(SendMessage(pr=REF, text="and the tests?"))
     s.agent.gate.set()
     await eventually(lambda: len(s.agent.runs) == 2)
     assert s.agent.runs[1]["prompt"].endswith("and the tests?")
@@ -258,13 +256,13 @@ async def test_what_the_agent_didnt_read_in_its_run_comes_after(make):
 async def test_follow_up_continues_the_session(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
 
     [proposal] = await s.store.pending_actions(REF)
     s.agent.gate = asyncio.Event()
-    response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "Is the race real?"})
-    assert response == {"ok": True, "set_aside": [proposal.description]}
+    sent = await s.client.request(SendMessage(pr=REF, text="Is the race real?"))
+    assert sent == MessageSent(set_aside=[proposal.description])
     await eventually(lambda: len(s.agent.runs) == 2)
     followup = s.agent.runs[1]
     assert followup["resume"] is True and followup["session_id"] == s.agent.runs[0]["session_id"]
@@ -281,7 +279,7 @@ async def test_follow_up_continues_the_session(make):
 
     # A slash command isn't a reply: the proposal stays.
     await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
-    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "/compact"})
+    await s.client.request(SendMessage(pr=REF, text="/compact"))
     await eventually(lambda: len(s.agent.runs) == 3)
     assert s.agent.runs[2]["prompt"] == "/compact"
 
@@ -304,7 +302,7 @@ async def test_stopping_leaves_the_review_to_resume(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
     s.agent.gate = asyncio.Event()
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.agent.runs)
 
     await s.runner.end()
@@ -317,18 +315,19 @@ async def test_the_agent_waits_for_permission(make):
     await s.store.upsert_pr(make_pr())
     s.agent.ask = ("Bash", {"command": "uv run pytest"}, "only read-only commands are pre-approved")
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(PermissionRequest))
     [request] = s.client.of(PermissionRequest)
     assert request.description == "$ uv run pytest"
     assert await s.state() == PRState.NEEDS_YOU
     assert not s.client.of(ReviewFinished)
 
-    answer = {"request_id": request.request_id, "allow": True}
-    assert await s.client.request(PERMISSION_ANSWER, answer) == {"ok": True, "rule": None}
+    answer = AnswerPermission(request_id=request.request_id, allow=True)
+    assert await s.client.request(answer) == PermissionAnswered(rule=None)
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.answers == [True]
-    assert "error" in await s.client.request(PERMISSION_ANSWER, answer)  # already answered
+    with pytest.raises(NotFound):  # already answered
+        await s.client.request(answer)
 
 
 async def test_writing_when_asked_for_permission_says_no_and_what_to_do(make):
@@ -336,12 +335,11 @@ async def test_writing_when_asked_for_permission_says_no_and_what_to_do(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
     s.agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(PermissionRequest))
 
     text = "Only run tests/test_bus.py"
-    response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": text})
-    assert response == {"ok": True, "answered": True}
+    assert await s.client.request(SendMessage(pr=REF, text=text)) == MessageSent(answered=True)
     await eventually(lambda: s.client.of(ReviewFinished))
     assert (s.agent.answers, s.agent.insteads) == ([False], [text])
     assert len(s.agent.runs) == 1  # the same run carries on: no follow-up
@@ -387,7 +385,7 @@ def test_a_no_with_what_to_do_instead_reaches_the_agent_and_the_transcript():
 async def test_new_commits_get_a_rereview_in_the_same_session(make):
     s = await make()
     await s.store.upsert_pr(make_pr(assigned_to_me=True))
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     first = s.agent.runs[0]
     assert (await s.store.latest_review(REF)).head_sha == "abc123"
@@ -414,7 +412,7 @@ async def test_an_unanswered_permission_request_lets_the_agent_carry_on(make):
     await s.store.upsert_pr(make_pr())
     s.agent.ask = ("Bash", {"command": "uv --version"}, "not pre-approved")
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.answers == [None]  # "nobody answered", not "no"
     [resolved] = s.client.of(PermissionResolved)
@@ -441,7 +439,7 @@ async def test_reviews_get_the_repo_guidelines(make):
     s = await make()
     s.repos.repo_guidelines = "### AGENTS.md\n\nUse Google-style docstrings."
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert "Google-style" in s.agent.runs[0]["guidelines"]
 
@@ -450,7 +448,7 @@ async def test_reviews_get_the_repo_plugin(make, tmp_path):
     s = await make()
     s.repos.repo_plugin = tmp_path / "plugin"
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["plugin"] == tmp_path / "plugin"
 
@@ -459,7 +457,7 @@ async def test_reviews_go_ahead_without_the_repo_plugin(make):
     s = await make()
     s.repos.plugin_error = OSError("disk full")
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["plugin"] is None
 
@@ -470,12 +468,12 @@ async def test_reviews_wait_in_line_but_your_messages_dont(make):
     for ref in (first, second, chat):
         await s.store.upsert_pr(make_pr(number=ref.number))
     # A PR you've already reviewed, to talk to later.
-    await s.client.request(REVIEW_START, {"pr": str(chat)})
+    await s.client.request(StartReview(pr=chat))
     await eventually(lambda: len(s.client.of(ReviewFinished)) == 1)
 
     s.agent.gate = asyncio.Event()
-    await s.client.request(REVIEW_START, {"pr": str(first)})
-    await s.client.request(REVIEW_START, {"pr": str(second)})
+    await s.client.request(StartReview(pr=first))
+    await s.client.request(StartReview(pr=second))
     await eventually(lambda: [r["pr"] for r in s.agent.runs][-1:] == [first])
 
     def progress(ref: PRRef) -> list[str]:
@@ -485,7 +483,7 @@ async def test_reviews_wait_in_line_but_your_messages_dont(make):
     assert second not in [r["pr"] for r in s.agent.runs]
 
     # Your message doesn't wait behind them.
-    await s.client.request(REVIEW_MESSAGE, {"pr": str(chat), "text": "and the tests?"})
+    await s.client.request(SendMessage(pr=chat, text="and the tests?"))
     await eventually(lambda: s.agent.runs[-1]["prompt"].endswith("and the tests?"))
     assert second not in [r["pr"] for r in s.agent.runs]
 
@@ -503,12 +501,12 @@ async def test_conversations_are_recorded_with_times(make):
     async def answer_when_asked():
         await eventually(lambda: s.client.of(PermissionRequest))
         request = s.client.of(PermissionRequest)[0]
-        await s.client.request(PERMISSION_ANSWER, {"request_id": request.request_id, "allow": True})
+        await s.client.request(AnswerPermission(request_id=request.request_id, allow=True))
 
-    await asyncio.gather(s.client.request(REVIEW_START, {"pr": str(REF)}), answer_when_asked())
+    await asyncio.gather(s.client.request(StartReview(pr=REF)), answer_when_asked())
     await eventually(lambda: s.client.of(ReviewFinished))
     s.agent.ask = None
-    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "is it safe?"})
+    await s.client.request(SendMessage(pr=REF, text="is it safe?"))
     await eventually(lambda: s.agent.runs[-1]["prompt"].endswith("is it safe?"))
 
     async def two_runs_done():
@@ -555,7 +553,7 @@ async def test_failed_and_interrupted_runs_are_recorded(make):
     s = await make(before_start=seed)
     await eventually(lambda: _statuses(s, ["interrupted"]))
     s.agent.fail_with = "API overloaded"
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: _statuses(s, ["interrupted", "failed"]))
     failed = (await s.store.runs(REF))[1]
     assert failed["error"] == "API overloaded"
@@ -577,7 +575,7 @@ async def test_a_clear_review_skill_is_followed_without_asking(make, tmp_path):
     s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
     await s.store.upsert_pr(make_pr())
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     [run] = s.agent.runs
     assert run["prompt"] == "/pipecat:code-review https://github.com/pipecat-ai/pipecat/pull/2841"
@@ -602,7 +600,7 @@ async def test_you_are_asked_when_its_not_clear_and_the_review_waits(make, tmp_p
     s.repos.repo_plugin = make_plugin(tmp_path / "plugin", UNCLEAR)
     await s.store.upsert_pr(make_pr())
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(SkillQuestion))
     [question] = s.client.of(SkillQuestion)
     assert question.repo == REF.repo
@@ -613,7 +611,7 @@ async def test_you_are_asked_when_its_not_clear_and_the_review_waits(make, tmp_p
     await asyncio.sleep(0.05)
     assert not s.agent.runs  # waiting for you
 
-    await s.client.request(REVIEW_SKILL, {"repo": REF.repo, "skill": "pipecat:security-review"})
+    await s.client.request(ChooseReviewSkill(repo=REF.repo, skill="pipecat:security-review"))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["skill"] == "pipecat:security-review"
     assert await s.store.review_skill(REF.repo) == "pipecat:security-review"
@@ -627,14 +625,14 @@ async def test_reviews_go_ahead_if_nobody_answers_about_the_skill(make, tmp_path
     await s.store.upsert_pr(make_pr())
     await s.store.upsert_pr(make_pr(number=7))
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["skill"] is None
     assert s.agent.runs[0]["prompt"].startswith("Review pipecat-ai/pipecat#2841")
     assert await s.store.review_skill(REF.repo) is None  # still to decide, next time
 
     # Asked once per run: the next review doesn't wait again.
-    await s.client.request(REVIEW_START, {"pr": str(other)})
+    await s.client.request(StartReview(pr=other))
     await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
     assert len(s.client.of(SkillQuestion)) == 1
 
@@ -643,10 +641,10 @@ async def test_not_now_lets_waiting_reviews_go_ahead(make, tmp_path):
     s = await make()
     s.repos.repo_plugin = make_plugin(tmp_path / "plugin", UNCLEAR)
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(SkillQuestion))
 
-    await s.client.request(REVIEW_SKILL, {"repo": REF.repo, "skill": None})
+    await s.client.request(ChooseReviewSkill(repo=REF.repo, skill=None))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["skill"] is None
     assert await s.store.review_skill(REF.repo) is None
@@ -660,14 +658,14 @@ async def test_your_choice_sticks(make, tmp_path):
     s = await make(before_start=seed)
     s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["skill"] is None
     assert not s.client.of(SkillQuestion) and not s.client.of(SkillChosen)
 
-    response = await s.client.request(REVIEW_SKILLS, {"repo": REF.repo})
-    assert response["chosen"] == ""
-    assert [skill["name"] for skill in response["skills"]] == ["pipecat:code-review"]
+    found = await s.client.request(ListReviewSkills(repo=REF.repo))
+    assert found.chosen == ""
+    assert [skill.name for skill in found.skills] == ["pipecat:code-review"]
 
 
 async def test_a_chosen_skill_the_repo_dropped_means_purrs_own_review(make, tmp_path):
@@ -677,7 +675,7 @@ async def test_a_chosen_skill_the_repo_dropped_means_purrs_own_review(make, tmp_
     s = await make(before_start=seed)
     s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["skill"] is None
 
@@ -741,22 +739,18 @@ async def test_reviews_you_ask_for_are_planned_at_high_priority(make):
     await s.store.upsert_pr(make_pr())
     s.lead.plans = {str(REF): {"priority": "low"}}
 
-    response = await s.client.request(
-        LEAD_REVIEW, {"prs": [str(REF), "pipecat-ai/pipecat#404"]}, worker=LEAD_WORKER
-    )
-    assert response["started"] == [str(REF)]
-    assert response["errors"] == {
-        "pipecat-ai/pipecat#404": "Purr doesn't know pipecat-ai/pipecat#404"
-    }
+    planned = await s.client.request(PlanReviews(prs=[REF, PRRef("pipecat-ai/pipecat", 404)]))
+    assert planned.started == [REF]
+    assert planned.errors == {"pipecat-ai/pipecat#404": "Purr doesn't know pipecat-ai/pipecat#404"}
     assert "the user asked for this review now" in s.lead.notes[0]
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["plan"].priority == "high"
 
     # Already being reviewed: says so.
     s.agent.gate = asyncio.Event()
-    await s.client.request(LEAD_REVIEW, {"prs": [str(REF)]}, worker=LEAD_WORKER)
-    response = await s.client.request(LEAD_REVIEW, {"prs": [str(REF)]}, worker=LEAD_WORKER)
-    assert "already being reviewed" in response["errors"][str(REF)]
+    await s.client.request(PlanReviews(prs=[REF]))
+    planned = await s.client.request(PlanReviews(prs=[REF]))
+    assert "already being reviewed" in planned.errors[str(REF)]
     s.agent.gate.set()
 
 
@@ -768,7 +762,7 @@ async def test_quick_reviews_use_the_quick_model_but_your_questions_dont(make):
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.runs[0]["model"] == "quick-model"
 
-    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "Is the race real?"})
+    await s.client.request(SendMessage(pr=REF, text="Is the race real?"))
     await eventually(lambda: len(s.agent.runs) == 2)
     assert s.agent.runs[1]["model"] is None  # the agent's own, full model
 
@@ -817,14 +811,13 @@ async def test_claude_codes_question_and_always_allow(make):
     s.agent.ask = PYTEST
     await s.store.upsert_pr(make_pr())
 
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(PermissionRequest))
     [asked] = s.client.of(PermissionRequest)
     assert (asked.rule, asked.reason) == ("Bash(uv run pytest:*)", "Claude Code asks first")
 
-    answer = {"request_id": asked.request_id, "allow": True, "remember": "repo"}
-    response = await s.client.request(PERMISSION_ANSWER, answer)
-    assert response == {"ok": True, "rule": "Bash(uv run pytest:*)"}
+    answer = AnswerPermission(request_id=asked.request_id, allow=True, remember="repo")
+    assert await s.client.request(answer) == PermissionAnswered(rule="Bash(uv run pytest:*)")
     await eventually(lambda: s.client.of(ReviewFinished))
     # The agent gets your answer, and keeps Claude Code's rule for the repo.
     assert (s.agent.answers, s.agent.remembered) == ([True], ["repo"])
@@ -834,12 +827,12 @@ async def test_nothing_to_remember_without_a_suggested_rule(make):
     s = await make(permission_wait=5)
     s.agent.ask = ("WebFetch", {"url": "https://x"}, "")
     await s.store.upsert_pr(make_pr())
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(PermissionRequest))
     [asked] = s.client.of(PermissionRequest)
     assert asked.rule == ""
-    answer = {"request_id": asked.request_id, "allow": True, "remember": "all"}
-    assert await s.client.request(PERMISSION_ANSWER, answer) == {"ok": True, "rule": None}
+    answer = AnswerPermission(request_id=asked.request_id, allow=True, remember="all")
+    assert await s.client.request(answer) == PermissionAnswered(rule=None)
     await eventually(lambda: s.client.of(ReviewFinished))
     assert s.agent.remembered == [None]
 
@@ -853,16 +846,16 @@ async def test_a_review_of_the_depth_you_ask_for_and_your_model(make, tmp_path):
     await s.store.upsert_pr(make_pr())
     s.lead.plans = {str(REF): {"depth": "full", "why": "Big change."}}
 
-    await s.client.request(LEAD_REVIEW, {"prs": [str(REF)], "depth": "quick"}, worker=LEAD_WORKER)
+    await s.client.request(PlanReviews(prs=[REF], depth=Depth.QUICK))
     await eventually(lambda: s.client.of(ReviewFinished))
     plan = s.agent.runs[0]["plan"]
     assert (plan.depth, plan.why) == ("quick", "You asked for a quick review.")
     assert s.agent.runs[0]["model"] == "quick-model"
 
     # /model: everything in the PR's conversation uses yours, quick or not.
-    assert await s.client.request(REVIEW_MODEL, {"pr": str(REF), "model": "opus"}) == {"ok": True}
+    assert await s.client.request(SetModel(pr=REF, model="opus")) == Done()
     assert (await s.store.get_pr(REF)).model == "opus"
-    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "And the race?"})
+    await s.client.request(SendMessage(pr=REF, text="And the race?"))
     await eventually(lambda: len(s.agent.runs) == 2)
     assert s.agent.runs[1]["model"] == "opus"
     # A poll doesn't count it as GitHub changing the PR, nor forget it.
@@ -870,20 +863,13 @@ async def test_a_review_of_the_depth_you_ask_for_and_your_model(make, tmp_path):
 
     stored = await s.store.get_pr(REF)
     assert _same_metadata(stored, make_pr())
-    await s.client.request(REVIEW_MODEL, {"pr": str(REF), "model": None})
+    await s.client.request(SetModel(pr=REF, model=None))
     assert (await s.store.get_pr(REF)).model is None
 
-    bad = await s.client.request(
-        LEAD_REVIEW, {"prs": [str(REF)], "depth": "deep"}, worker=LEAD_WORKER
-    )
-    assert bad == {"error": "No such depth: deep"}
-
-    skills = await s.client.request(REPO_SKILLS, {"repo": REF.repo})
-    review_skill = {
-        "name": "pipecat:code-review",
-        "description": "Automated code review for pull requests",
-    }
-    assert skills == {"skills": [review_skill]}
+    listed = await s.client.request(ListRepoSkills(repo=REF.repo))
+    assert [(skill.name, skill.description) for skill in listed.skills] == [
+        ("pipecat:code-review", "Automated code review for pull requests")
+    ]
 
 
 async def test_what_background_agents_are_up_to_shows_but_isnt_kept(make):
@@ -896,7 +882,7 @@ async def test_what_background_agents_are_up_to_shows_but_isnt_kept(make):
         {"kind": "background", "running": 1},
         {"kind": "task_progress", "id": "a1", "text": "Bug scan", "tool": "Grep", "tools": 14},
     ]
-    await s.client.request(REVIEW_START, {"pr": str(REF)})
+    await s.client.request(StartReview(pr=REF))
     await eventually(lambda: s.client.of(ReviewFinished))
     progress = [p.text for p in s.client.of(ReviewProgress)]
     assert "In the background: Bug scan" in progress

@@ -15,10 +15,14 @@ from textual.worker import NoActiveWorker, get_current_worker
 
 from purr.app import Purr
 from purr.checkout import github_repos
+from purr.jobs import PurrError
 from purr.messages import (
     REVIEW_WORKER,
     ActionPending,
     ActionResolved,
+    ChooseReviewSkill,
+    ListReviewSkills,
+    MarkSeen,
     PermissionRequest,
     PermissionResolved,
     PRChanged,
@@ -30,11 +34,13 @@ from purr.messages import (
     SessionMessage,
     SkillChosen,
     SkillQuestion,
+    WatchRepo,
 )
 from purr.models import Outcome, PRChange, PRRef
 from purr.review.instructions import Kind
 from purr.review.rules import CLAUDE_SETTINGS
-from purr.tui.bridge import BusEvent, RequestError, UIWorker
+from purr.review.skills import RepoSkill, Skill
+from purr.tui.bridge import BusEvent, UIWorker
 from purr.tui.clipboard import copy_command, system_copy, terminal_copies
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
@@ -101,7 +107,7 @@ class PurrApp(App):
         self.sessions: dict[str, SessionState] = {}  # per PR, see SessionState
         self.full_thinking = False  # the agents' reasoning in full, or a line per thought (t)
         self.details = DetailsCache()  # PR descriptions, files and CI
-        self.repo_skills: dict[str, list[dict]] = {}  # for / commands, fetched once per repo
+        self.repo_skills: dict[str, list[RepoSkill]] = {}  # for / commands, once per repo
         # PR -> what happened since you last looked at it, newest last (from
         # the store on startup, then live).
         self.alerts: dict[str, str] = {}
@@ -138,8 +144,8 @@ class PurrApp(App):
         if not await self.push_screen_wait(ConfirmScreen(question)):
             return
         try:
-            name = await self.bus.add_repo(target)
-        except RequestError as e:
+            name = (await self.bus.request(WatchRepo(repo=target))).repo
+        except PurrError as e:
             self.notify(str(e), severity="warning")
             return
         await self.open_repo(name)
@@ -187,23 +193,24 @@ class PurrApp(App):
 
     async def _choose_review_skill(self, repo: str) -> None:
         try:
-            skills, current = await self.bus.review_skills(repo)
-        except RequestError as e:
+            found = await self.bus.request(ListReviewSkills(repo=repo))
+        except PurrError as e:
             self.notify(str(e), severity="warning")
             return
-        if not skills:
+        if not found.skills:
             self.notify(
                 f"None of {repo}'s skills look like they're for reviewing. You can still "
                 "run any of them in a PR's session, as /<plugin>:<skill>."
             )
             return
-        self.push_screen(ReviewSkillScreen(repo, skills, current), self._set_review_skill(repo))
+        screen = ReviewSkillScreen(repo, found.skills, found.chosen)
+        self.push_screen(screen, self._set_review_skill(repo))
 
     def _set_review_skill(self, repo: str):
         async def answer(skill: str | None) -> None:
             try:
-                await self.bus.set_review_skill(repo, skill)
-            except RequestError as e:
+                await self.bus.request(ChooseReviewSkill(repo=repo, skill=skill))
+            except PurrError as e:
                 self.notify(str(e), severity="warning")
 
         return answer
@@ -283,13 +290,13 @@ class PurrApp(App):
     def seen(self, pr: str) -> None:
         """The user is looking at a PR: what happened there isn't news anymore."""
         if self.alerts.pop(pr, None) is not None:
-            self.run_worker(self.bus.seen(PRRef.parse(pr)), group="seen")
+            self.run_worker(self.bus.request(MarkSeen(pr=PRRef.parse(pr))), group="seen")
             self._alerts_changed()
 
     def _alert(self, pr: str, text: str) -> None:
         shown = self.main.repo.session.pr if self.main.is_mounted else None
         if self.location and shown and str(shown.ref) == pr:
-            self.run_worker(self.bus.seen(PRRef.parse(pr)), group="seen")
+            self.run_worker(self.bus.request(MarkSeen(pr=PRRef.parse(pr))), group="seen")
             return  # you're looking at it
         self.alerts.pop(pr, None)
         self.alerts[pr] = text
@@ -334,7 +341,8 @@ class PurrApp(App):
     def on_bus_event(self, message: BusEvent) -> None:
         event = message.event
         if isinstance(event, SkillQuestion):
-            screen = ReviewSkillScreen(event.repo, event.skills, asking=True)
+            skills = [Skill(**skill) for skill in event.skills]
+            screen = ReviewSkillScreen(event.repo, skills, asking=True)
             self.push_screen(screen, self._set_review_skill(event.repo))
             return
         if isinstance(event, SkillChosen):

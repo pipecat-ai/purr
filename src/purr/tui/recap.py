@@ -12,9 +12,10 @@ from textual.screen import ModalScreen
 from textual.widgets import Label, OptionList, Static
 from textual.widgets.option_list import Option
 
+from purr.jobs import PurrError
+from purr.messages import MakeRecap
 from purr.models import PRRef, Recap
 from purr.recap import event_text, is_notable
-from purr.tui.bridge import RequestError
 from purr.tui.switcher import short_name
 
 if TYPE_CHECKING:
@@ -75,8 +76,8 @@ class RecapScreen(ModalScreen[None]):
     @work(exclusive=True)
     async def _write(self, since: str) -> None:
         try:
-            recap_id = await self.purr_app.bus.create_recap(since)
-        except RequestError as e:
+            recap_id = (await self.purr_app.bus.request(MakeRecap(since=since))).recap_id
+        except PurrError as e:
             self.query_one("#recap-headline", Static).update(Text(str(e), style="red"))
             return
         recap = await self.purr_app.purr.store.get_recap(recap_id) if recap_id else None

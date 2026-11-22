@@ -7,34 +7,39 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from loguru import logger
-from pipecat.bus import BusJobRequestMessage
-from pipecat.pipeline.job_decorator import job
 from pipecat.workers.base_worker import BaseWorker
 
 from purr.git import GitRepos
 from purr.github import GitHub, GitHubError
+from purr.jobs import Busy, Done, Failed, Invalid, NotFound, PurrError, handles
 from purr.messages import (
-    PERMISSION_ANSWER,
-    REPO_SKILLS,
-    REVIEW_MESSAGE,
-    REVIEW_MODEL,
-    REVIEW_REREVIEW,
-    REVIEW_SKILL,
-    REVIEW_SKILLS,
-    REVIEW_START,
     REVIEW_WORKER,
     ActionPending,
     ActionResolved,
+    AnswerPermission,
+    ChooseReviewSkill,
+    ListRepoSkills,
+    ListReviewSkills,
+    MessageSent,
+    PermissionAnswered,
     PermissionRequest,
     PermissionResolved,
     PRListUpdated,
+    RepoSkills,
+    Rereview,
+    Rereviewing,
     ReviewFailed,
     ReviewFinished,
+    ReviewOpened,
     ReviewProgress,
+    ReviewSkills,
     ReviewStarted,
+    SendMessage,
     SessionMessage,
+    SetModel,
     SkillChosen,
     SkillQuestion,
+    StartReview,
 )
 from purr.models import (
     PR,
@@ -68,8 +73,10 @@ from purr.store import Store
 from purr.workers.slots import Slots
 
 
-class ReviewError(Exception):
-    """A review couldn't be started or didn't complete."""
+def _repo(repo: str) -> str:
+    if not repo:
+        raise Invalid("Which repo?")
+    return repo
 
 
 def _metrics(result: AgentResult) -> dict:
@@ -238,99 +245,51 @@ class ReviewWorker(BaseWorker):
 
     # -- Jobs ---------------------------------------------------------------------
 
-    @job(name=REVIEW_START)
-    async def on_review_start(self, message: BusJobRequestMessage) -> None:
-        payload = message.payload or {}
-        plan = ReviewPlan.from_dict(payload["plan"]) if payload.get("plan") else None
-        try:
-            review = await self.start_review(PRRef.parse(str(payload.get("pr"))), plan=plan)
-        except (ReviewError, ValueError) as e:
-            await self.send_job_response(message.job_id, {"error": str(e)})
-            return
-        await self.send_job_response(message.job_id, {"review_id": review.id})
+    @handles(StartReview)
+    async def handle_start_review(self, request: StartReview) -> ReviewOpened:
+        review = await self.start_review(request.pr, plan=request.plan)
+        return ReviewOpened(review_id=review.id)
 
-    @job(name=REVIEW_REREVIEW)
-    async def on_rereview(self, message: BusJobRequestMessage) -> None:
-        payload = message.payload or {}
-        plan = ReviewPlan.from_dict(payload["plan"]) if payload.get("plan") else None
-        try:
-            started = await self.rereview(PRRef.parse(str(payload.get("pr"))), plan=plan)
-        except ValueError as e:
-            await self.send_job_response(message.job_id, {"error": str(e)})
-            return
-        await self.send_job_response(message.job_id, {"started": started})
+    @handles(Rereview)
+    async def handle_rereview(self, request: Rereview) -> Rereviewing:
+        return Rereviewing(started=await self.rereview(request.pr, plan=request.plan))
 
-    @job(name=REVIEW_MESSAGE)
-    async def on_review_message(self, message: BusJobRequestMessage) -> None:
-        payload = message.payload or {}
-        try:
-            ref, text = PRRef.parse(str(payload.get("pr"))), str(payload.get("text", ""))
-            decided = await self.send_followup(ref, text)
-        except (ReviewError, ValueError) as e:
-            await self.send_job_response(message.job_id, {"error": str(e)})
-            return
-        await self._store.add_prompt(ref, text)  # for the prompt's history
-        await self.send_job_response(message.job_id, {"ok": True, **decided})
+    @handles(SendMessage)
+    async def send_message(self, request: SendMessage) -> MessageSent:
+        sent = await self.send_followup(request.pr, request.text)
+        await self._store.add_prompt(request.pr, request.text)  # for the prompt's history
+        return sent
 
-    @job(name=PERMISSION_ANSWER)
-    async def on_permission_answer(self, message: BusJobRequestMessage) -> None:
-        payload = message.payload or {}
-        request_id = str(payload.get("request_id"))
-        future = self._asks.get(request_id)
+    @handles(AnswerPermission)
+    async def answer_permission(self, request: AnswerPermission) -> PermissionAnswered:
+        future = self._asks.get(request.request_id)
         if future is None or future.done():
-            await self.send_job_response(message.job_id, {"error": "Nothing is waiting for that"})
-            return
-        allow, remember = bool(payload.get("allow")), payload.get("remember")
-        rule = self._ask_rules.get(request_id)
-        remember = remember if allow and rule and remember in ("repo", "all") else None
-        future.set_result(PermissionAnswer(allowed=allow, remember=remember))
-        await self.send_job_response(
-            message.job_id, {"ok": True, "rule": rule if remember else None}
-        )
+            raise NotFound("Nothing is waiting for that")
+        rule = self._ask_rules.get(request.request_id)
+        remember = request.remember if request.allow and rule else None
+        future.set_result(PermissionAnswer(allowed=request.allow, remember=remember))
+        return PermissionAnswered(rule=rule if remember else None)
 
-    @job(name=REVIEW_MODEL)
-    async def on_review_model(self, message: BusJobRequestMessage) -> None:
-        payload = message.payload or {}
-        try:
-            ref = PRRef.parse(str(payload.get("pr")))
-        except ValueError as e:
-            await self.send_job_response(message.job_id, {"error": str(e)})
-            return
-        model = str(payload["model"]).strip() if payload.get("model") else None
-        await self._store.set_pr_model(ref, model or None)
-        await self.send_job_response(message.job_id, {"ok": True})
+    @handles(SetModel)
+    async def set_model(self, request: SetModel) -> Done:
+        model = request.model.strip() if request.model else None
+        await self._store.set_pr_model(request.pr, model or None)
+        return Done()
 
-    @job(name=REPO_SKILLS)
-    async def on_repo_skills(self, message: BusJobRequestMessage) -> None:
-        repo = str((message.payload or {}).get("repo") or "")
-        if not repo:
-            await self.send_job_response(message.job_id, {"error": "Which repo?"})
-            return
-        skills = repo_skills(await self._repo_plugin(repo))
-        listed = [{"name": s.name, "description": s.description} for s in skills]
-        await self.send_job_response(message.job_id, {"skills": listed})
+    @handles(ListRepoSkills)
+    async def list_repo_skills(self, request: ListRepoSkills) -> RepoSkills:
+        return RepoSkills(skills=repo_skills(await self._repo_plugin(_repo(request.repo))))
 
-    @job(name=REVIEW_SKILLS)
-    async def on_review_skills(self, message: BusJobRequestMessage) -> None:
-        repo = str((message.payload or {}).get("repo") or "")
-        if not repo:
-            await self.send_job_response(message.job_id, {"error": "Which repo?"})
-            return
+    @handles(ListReviewSkills)
+    async def list_review_skills(self, request: ListReviewSkills) -> ReviewSkills:
+        repo = _repo(request.repo)
         skills = review_skills(await self._repo_plugin(repo))
-        chosen = await self._store.review_skill(repo)
-        await self.send_job_response(
-            message.job_id, {"skills": [asdict(s) for s in skills], "chosen": chosen}
-        )
+        return ReviewSkills(skills=skills, chosen=await self._store.review_skill(repo))
 
-    @job(name=REVIEW_SKILL)
-    async def on_review_skill(self, message: BusJobRequestMessage) -> None:
-        payload = message.payload or {}
-        repo, skill = str(payload.get("repo") or ""), payload.get("skill")
-        if not repo:
-            await self.send_job_response(message.job_id, {"error": "Which repo?"})
-            return
+    @handles(ChooseReviewSkill)
+    async def choose_review_skill(self, request: ChooseReviewSkill) -> Done:
+        repo, skill = _repo(request.repo), request.skill
         if skill is not None:
-            skill = str(skill)
             await self._store.set_review_skill(repo, skill, chosen_by="you")
             await self.send_bus_message(
                 SkillChosen(source=self.name, repo=repo, skill=skill, chosen_by="you")
@@ -339,7 +298,7 @@ class ReviewWorker(BaseWorker):
         asked = self._skill_asks.get(repo.lower())
         if asked and not asked[0].done():
             asked[0].set_result(skill)
-        await self.send_job_response(message.job_id, {"ok": True})
+        return Done()
 
     # -- Starting -------------------------------------------------------------------
 
@@ -348,10 +307,10 @@ class ReviewWorker(BaseWorker):
         plan = plan or ReviewPlan()
         async with self._start_lock:
             if ref in self._running:
-                raise ReviewError(f"{ref} is already being reviewed")
+                raise Busy(f"{ref} is already being reviewed")
             pr = await self._store.get_pr(ref)
             if pr is None:
-                raise ReviewError(f"Purr doesn't know {ref}")
+                raise NotFound(f"Purr doesn't know {ref}")
             # A new review supersedes whatever the last one proposed.
             await self._dismiss_pending(ref)
             review = await self._store.start_review(
@@ -372,7 +331,7 @@ class ReviewWorker(BaseWorker):
         await self.send_bus_message(PRListUpdated(source=self.name))
         return review
 
-    async def send_followup(self, ref: PRRef, text: str) -> dict:
+    async def send_followup(self, ref: PRRef, text: str) -> MessageSent:
         """Continue a PR's session with a message from the user.
 
         As in Claude Code: writing while the agent works goes to it straight
@@ -382,47 +341,47 @@ class ReviewWorker(BaseWorker):
         again if it still stands. A slash command (``/compact``) decides nothing,
         and waits until the agent's done.
 
-        Returns what it did: ``{"answered": True}`` (the permission request),
-        ``{"set_aside": [proposal, ...]}``, ``{"while_working": True}``, or ``{}``.
+        Returns what it did besides: answered a permission request, set proposals
+        aside, or went to the agent at work.
         """
         if not text.strip():
-            raise ReviewError("Nothing to send")
+            raise Invalid("Nothing to send")
         command = text.lstrip().startswith("/")  # /compact, a skill: not a reply
         async with self._start_lock:
             if ref in self._running:
                 if command or ref not in self._inboxes:
-                    raise ReviewError(f"The agent is still working on {ref}")
+                    raise Busy(f"The agent is still working on {ref}")
                 if self._answer_instead(ref, text):
-                    return {"answered": True}
+                    return MessageSent(answered=True)
                 self._inboxes[ref].put_nowait(text)
                 if (run_id := self._run_ids.get(ref)) is not None:
                     await self._store.add_message(
                         run_id, ref, {"kind": "prompt", "text": text}, author="you"
                     )
-                return {"while_working": True}
+                return MessageSent(while_working=True)
             review = await self._store.latest_review(ref)
             pr = await self._store.get_pr(ref)
             if review is None or pr is None or not review.session_id:
-                raise ReviewError(f"{ref} hasn't been reviewed yet")
-            decided: dict = {}
+                raise NotFound(f"{ref} hasn't been reviewed yet")
+            sent = MessageSent()
             if not command and (proposals := await self._store.pending_actions(ref)):
                 await self._dismiss_pending(ref)
                 if pr.state == PRState.NEEDS_YOU:  # nothing left to decide, as with x
                     await self._store.set_pr_state(ref, PRState.DONE)
                     pr = replace(pr, state=PRState.DONE)
-                decided = {"set_aside": [p.description for p in proposals]}
-                text = set_aside_note(decided["set_aside"]) + text
+                sent.set_aside = [p.description for p in proposals]
+                text = set_aside_note(sent.set_aside) + text
             # You're waiting on this one: it doesn't queue behind reviews.
             self._launch(
                 pr, review, prompt=text, resume=True, followup=True, queued=False, kind="message"
             )
-            return decided
+            return sent
 
     async def _send_after(self, ref: PRRef, text: str) -> None:
         """What you wrote that the agent didn't get to read in its run, as a follow-up."""
         try:
             await self.send_followup(ref, text)
-        except ReviewError as e:
+        except PurrError as e:
             logger.warning(f"Couldn't send what you wrote to {ref}'s agent: {e}")
 
     def _answer_instead(self, ref: PRRef, text: str) -> bool:
@@ -604,7 +563,7 @@ class ReviewWorker(BaseWorker):
                 inbox=self._inboxes.get(ref),
             )
             if result.is_error:
-                raise ReviewError(result.error or "The agent session failed")
+                raise Failed(result.error or "The agent session failed")
             await self._store.finish_run(run_id, result=_metrics(result))
             if submitted or not followup:
                 summary = submitted.get("summary") or result.text or "No summary."

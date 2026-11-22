@@ -4,22 +4,21 @@ import asyncio
 from dataclasses import replace
 
 from loguru import logger
-from pipecat.bus import BusJobRequestMessage, BusMessage
-from pipecat.pipeline.job_context import JobParams
-from pipecat.pipeline.job_decorator import job
+from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 
 from purr.git import GitRepos
 from purr.github import GitHub
+from purr.jobs import PurrError, handles, request
 from purr.lead import LeadAgent, LeadInput, RepoContext, default_plan, lead_notes, plans_from
 from purr.messages import (
-    LEAD_REVIEW,
     LEAD_WORKER,
-    REVIEW_REREVIEW,
-    REVIEW_START,
-    REVIEW_WORKER,
+    Planned,
+    PlanReviews,
     PRChanged,
+    Rereview,
     ReviewProgress,
+    StartReview,
     Synced,
 )
 from purr.models import (
@@ -121,22 +120,10 @@ class LeadWorker(BaseWorker):
             self._pending[PRRef.parse(message.pr)] = "rereview"
             self._wake.set()
 
-    @job(name=LEAD_REVIEW)
-    async def on_lead_review(self, message: BusJobRequestMessage) -> None:
-        try:
-            refs = [PRRef.parse(str(pr)) for pr in (message.payload or {}).get("prs") or []]
-        except ValueError as e:
-            await self.send_job_response(message.job_id, {"error": str(e)})
-            return
-        depth = (message.payload or {}).get("depth")
-        if depth not in (None, *Depth):
-            await self.send_job_response(message.job_id, {"error": f"No such depth: {depth}"})
-            return
-        started, errors = await self.review(
-            refs, requested=True, depth=Depth(depth) if depth else None
-        )
-        response = {"started": [str(ref) for ref in started], "errors": errors}
-        await self.send_job_response(message.job_id, response)
+    @handles(PlanReviews)
+    async def plan_reviews(self, request: PlanReviews) -> Planned:
+        started, errors = await self.review(request.prs, requested=True, depth=request.depth)
+        return Planned(started=started, errors=errors)
 
     async def _loop(self) -> None:
         while True:
@@ -296,28 +283,19 @@ class LeadWorker(BaseWorker):
 
     async def _start(self, ref: PRRef, plan: ReviewPlan) -> str | None:
         """Start the review; the error if it couldn't."""
-        payload = {"pr": str(ref), "plan": plan.to_dict()}
-        params = JobParams(name=REVIEW_START, payload=payload, timeout=30)
         try:
-            async with self.job(REVIEW_WORKER, params=params) as j:
-                pass
-        except Exception as e:
+            await request(self, StartReview(pr=ref, plan=plan), timeout=30)
+        except PurrError as e:
             return str(e)
-        return (j.response or {}).get("error")
+        return None
 
     async def _rereview(self, ref: PRRef, plan: ReviewPlan) -> str | None:
         """Have the PR's review look at its new commits; the error if it couldn't."""
-        payload = {"pr": str(ref), "plan": plan.to_dict()}
-        params = JobParams(name=REVIEW_REREVIEW, payload=payload, timeout=30)
         try:
-            async with self.job(REVIEW_WORKER, params=params) as j:
-                pass
-        except Exception as e:
+            reply = await request(self, Rereview(pr=ref, plan=plan), timeout=30)
+        except PurrError as e:
             return str(e)
-        response = j.response or {}
-        if not response.get("started"):
-            return response.get("error") or f"{ref} wasn't re-reviewed"
-        return None
+        return None if reply.started else f"{ref} wasn't re-reviewed"
 
     async def _progress(self, ref: PRRef, text: str) -> None:
         await self.send_bus_message(ReviewProgress(source=self.name, pr=str(ref), text=text))

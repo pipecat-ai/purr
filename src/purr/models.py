@@ -167,12 +167,6 @@ class PRDetails:
     review_decision: str | None = None
     checks: str | None = None
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "PRDetails":
-        """From its JSON form (``dataclasses.asdict``), as it crosses the bus."""
-        files = tuple(FileChange(**f) for f in data.get("files") or ())
-        return cls(**{**data, "files": files, "labels": tuple(data.get("labels") or ())})
-
 
 @dataclass
 class Repo:

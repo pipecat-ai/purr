@@ -4,11 +4,12 @@ import io
 
 from rich.console import Console
 
+from purr.review.skills import RepoSkill
 from purr.tui.commands import parse, render_cost, render_help, suggestions
 
 SKILLS = [
-    {"name": "pipecat:prose-review", "description": "Check the prose"},
-    {"name": "pipecat:docstring", "description": "Document a module"},
+    RepoSkill(name="pipecat:prose-review", description="Check the prose"),
+    RepoSkill(name="pipecat:docstring", description="Document a module"),
 ]
 
 

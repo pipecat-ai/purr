@@ -5,18 +5,18 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from pipecat.bus import BusMessage
-from pipecat.pipeline.job_context import JobParams
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
+from purr.jobs import Invalid, NotFound, request
 from purr.messages import (
-    GITHUB_WORKER,
-    REPO_ADD,
-    REPO_REMOVE,
     PRChanged,
     PRListUpdated,
     PurrEvent,
     Synced,
+    UnwatchRepo,
+    Watching,
+    WatchRepo,
 )
 from purr.models import PRChange, PRRef
 from purr.store import Store
@@ -65,21 +65,13 @@ async def setup():
             await asyncio.wait_for(task, 5)
 
 
-async def repo_job(client: Client, name: str, repo: str) -> dict:
-    async with client.job(
-        GITHUB_WORKER, params=JobParams(name=name, payload={"repo": repo}, timeout=5)
-    ) as j:
-        pass
-    return j.response
-
-
 async def test_add_poll_and_remove_a_repo(setup):
     store, github, worker, client = setup
     github.open["pipecat-ai/pipecat"] = [remote(1)]
 
     # Added by URL, stored under GitHub's spelling.
-    response = await repo_job(client, REPO_ADD, "https://github.com/Pipecat-AI/pipecat")
-    assert response == {"repo": "pipecat-ai/pipecat"}
+    watching = await request(client, WatchRepo(repo="https://github.com/Pipecat-AI/pipecat"))
+    assert watching == Watching(repo="pipecat-ai/pipecat")
     await client.next_event(PRListUpdated)
 
     # The first sync fills the pool quietly.
@@ -106,17 +98,17 @@ async def test_add_poll_and_remove_a_repo(setup):
 
     await eventually(recorded)
 
-    await repo_job(client, REPO_REMOVE, "pipecat-ai/pipecat")
+    await request(client, UnwatchRepo(repo="pipecat-ai/pipecat"))
     assert await store.list_repos() == []
     assert await store.list_prs() == []
 
 
 async def test_adding_an_unknown_repo_is_rejected(setup):
     store, _, _, client = setup
-    response = await repo_job(client, REPO_ADD, "nobody/nothing")
-    assert "Can't find nobody/nothing" in response["error"]
-    response = await repo_job(client, REPO_ADD, "not a repo")
-    assert "not a GitHub repo" in response["error"]
-    response = await repo_job(client, REPO_REMOVE, "nobody/nothing")
-    assert "isn't being watched" in response["error"]
+    with pytest.raises(NotFound, match="Can't find nobody/nothing"):
+        await request(client, WatchRepo(repo="nobody/nothing"))
+    with pytest.raises(Invalid, match="not a GitHub repo"):
+        await request(client, WatchRepo(repo="not a repo"))
+    with pytest.raises(NotFound, match="isn't being watched"):
+        await request(client, UnwatchRepo(repo="nobody/nothing"))
     assert await store.list_repos() == []

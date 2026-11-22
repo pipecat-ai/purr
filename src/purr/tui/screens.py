@@ -23,10 +23,23 @@ from textual.widget import Widget
 from textual.widgets import ContentSwitcher, Footer, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
-from purr.messages import REVIEW_WORKER
+from purr.jobs import PurrError
+from purr.messages import (
+    REVIEW_WORKER,
+    AnswerPermission,
+    ApproveAction,
+    AssignMe,
+    DismissAction,
+    FetchDetails,
+    GetDiff,
+    GetWorktree,
+    PlanReviews,
+    UnwatchRepo,
+    WatchRepo,
+)
 from purr.models import PR, PRRef, PRState, RepoSummary
 from purr.review.agent import claude_code_command
-from purr.tui.bridge import RequestError
+from purr.review.skills import Skill
 from purr.tui.overview import short_age
 from purr.tui.session import NUMBER_STYLE, PRSession, SessionState, outcome_mark
 from purr.tui.working import COLOR, FRAME_SECONDS, FRAMES
@@ -327,8 +340,8 @@ class ReposView(PurrView):
     @work
     async def remove(self, repo: str) -> None:
         try:
-            await self.purr_app.bus.remove_repo(repo)
-        except RequestError as e:
+            await self.purr_app.bus.request(UnwatchRepo(repo=repo))
+        except PurrError as e:
             self.notify(str(e), severity="warning")
 
 
@@ -543,7 +556,8 @@ class RepoView(PurrView):
 
     async def _fetch_details(self, prs: list[PR]) -> None:
         try:
-            fetched, error = await self.purr_app.bus.details([pr.ref for pr in prs]), None
+            request = FetchDetails(prs=[pr.ref for pr in prs])
+            fetched, error = (await self.purr_app.bus.request(request)).details, None
         except Exception as e:  # never let a background fetch take the UI down
             fetched, error = {}, str(e) or type(e).__name__
         for pr in prs:
@@ -557,7 +571,7 @@ class RepoView(PurrView):
 
     async def _fetch_diff(self, pr: PR) -> None:
         try:
-            diff, error = await self.purr_app.bus.diff(pr.ref), None
+            diff, error = (await self.purr_app.bus.request(GetDiff(pr=pr.ref))).diff, None
         except Exception as e:  # never let a background fetch take the UI down
             diff, error = None, str(e) or type(e).__name__
         state = self.purr_app.sessions.setdefault(str(pr.ref), SessionState())
@@ -688,15 +702,16 @@ class RepoView(PurrView):
             if not pr.assigned_to_me:
                 # Taking it from the pool: assign yourself, so teammates see it's taken.
                 try:
-                    await self.purr_app.bus.assign(pr.ref)
-                except RequestError as e:
+                    await self.purr_app.bus.request(AssignMe(pr=pr.ref))
+                except PurrError as e:
                     self.notify(str(e), severity="warning")
         plural = "s" if len(targets) != 1 else ""
         self.notify(f"Planning {len(targets)} review{plural}")
         # The lead plans them together (a few seconds), then they start.
         try:
-            errors = await self.purr_app.bus.start_review([pr.ref for pr in targets])
-        except RequestError as e:
+            request = PlanReviews(prs=[pr.ref for pr in targets])
+            errors = (await self.purr_app.bus.request(request)).errors
+        except PurrError as e:
             self.notify(str(e), severity="warning")
             return
         for error in errors.values():
@@ -718,12 +733,12 @@ class RepoView(PurrView):
         if not actions:
             return
         try:
-            url, warnings = await self.purr_app.bus.approve(actions[0].id)
-        except RequestError as e:
+            posted = await self.purr_app.bus.request(ApproveAction(action_id=actions[0].id))
+        except PurrError as e:
             self.notify(str(e), severity="error")
             return
-        self.notify(f"Posted: {url}" if url else "Posted")
-        for warning in warnings:
+        self.notify(f"Posted: {posted.url}" if posted.url else "Posted")
+        for warning in posted.warnings:
             self.notify(warning, severity="warning")
 
     @work(group="keys")
@@ -735,8 +750,8 @@ class RepoView(PurrView):
         actions = await self.purr_app.purr.store.pending_actions(pr.ref) if pr else []
         if actions:
             try:
-                await self.purr_app.bus.dismiss(actions[0].id)
-            except RequestError as e:
+                await self.purr_app.bus.request(DismissAction(action_id=actions[0].id))
+            except PurrError as e:
                 self.notify(str(e), severity="warning")
 
     @work(group="keys")
@@ -751,8 +766,9 @@ class RepoView(PurrView):
         if not scope:
             return
         try:
-            rule = await self.purr_app.bus.answer(ask.request_id, True, remember=scope)
-        except RequestError as e:
+            answer = AnswerPermission(request_id=ask.request_id, allow=True, remember=scope)
+            rule = (await self.purr_app.bus.request(answer)).rule
+        except PurrError as e:
             self.notify(str(e), severity="warning")
             return
         where = f"in {repo}" if scope == "repo" else "everywhere"
@@ -761,8 +777,9 @@ class RepoView(PurrView):
     async def _answer(self, state: SessionState, allow: bool) -> None:
         assert state.ask
         try:
-            await self.purr_app.bus.answer(state.ask.request_id, allow)
-        except RequestError as e:
+            answer = AnswerPermission(request_id=state.ask.request_id, allow=allow)
+            await self.purr_app.bus.request(answer)
+        except PurrError as e:
             self.notify(str(e), severity="warning")
 
     async def action_open_claude(self) -> None:
@@ -779,8 +796,8 @@ class RepoView(PurrView):
             return
         # Its worktree may have been removed (approved, say): it comes back as it was.
         try:
-            worktree = await self.purr_app.bus.worktree(pr.ref)
-        except RequestError as e:
+            worktree = (await self.purr_app.bus.request(GetWorktree(pr=pr.ref))).path
+        except PurrError as e:
             self.notify(str(e), severity="warning")
             return
         await self.purr_app.run_outside(
@@ -801,8 +818,8 @@ class RepoView(PurrView):
         if not pr:
             return
         try:
-            worktree = await self.purr_app.bus.worktree(pr.ref)
-        except RequestError as e:
+            worktree = (await self.purr_app.bus.request(GetWorktree(pr=pr.ref))).path
+        except PurrError as e:
             self.notify(str(e), severity="warning")
             return
         shell = os.environ.get("SHELL") or "/bin/sh"
@@ -914,8 +931,8 @@ class AddRepoScreen(ModalScreen[str | None]):
     @work(exclusive=True)
     async def add(self, value: str) -> None:
         try:
-            name = await cast("PurrApp", self.app).bus.add_repo(value)
-        except RequestError as e:
+            name = (await cast("PurrApp", self.app).bus.request(WatchRepo(repo=value))).repo
+        except PurrError as e:
             self.query_one("#error", Static).update(Text(str(e), style="red"))
             return
         self.dismiss(name)
@@ -1023,7 +1040,7 @@ class ReviewSkillScreen(ModalScreen[str | None]):
 
     Args:
         repo: The repo.
-        skills: Its skills that may be for reviewing (``{"name", "description"}``).
+        skills: Its skills that may be for reviewing.
         chosen: What its reviews follow now ('' for Purr's own, None: not decided).
         asking: Purr is asking (reviews are waiting), rather than you changing it.
     """
@@ -1031,11 +1048,11 @@ class ReviewSkillScreen(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "cancel", "Not now")]
 
     def __init__(
-        self, repo: str, skills: list[dict], chosen: str | None = None, *, asking: bool = False
+        self, repo: str, skills: list[Skill], chosen: str | None = None, *, asking: bool = False
     ):
         super().__init__()
         self._repo = repo
-        self._choices = [str(skill.get("name", "")) for skill in skills] + [""]
+        self._choices = [skill.name for skill in skills] + [""]
         self._skills = skills
         self._chosen = chosen
         self._asking = asking
@@ -1055,11 +1072,11 @@ class ReviewSkillScreen(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         options = []
-        for skill in [*self._skills, {"name": "", "description": ""}]:
-            name = str(skill.get("name", ""))
+        for skill in [*self._skills, Skill(name="", description="", likely=False)]:
+            name = skill.name
             title = f"/{name}" if name else "Purr's own review"
             description = (
-                str(skill.get("description", ""))
+                skill.description
                 if name
                 else "Its general review, holding the PR to the repo's CLAUDE.md / AGENTS.md"
             )
