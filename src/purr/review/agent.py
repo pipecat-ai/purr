@@ -20,6 +20,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
+    McpSdkServerConfig,
     PermissionResultAllow,
     PermissionResultDeny,
     ResultMessage,
@@ -329,70 +330,98 @@ def session_state(message: Any) -> str | None:
     return None
 
 
+def _task_started_entries(message: TaskStartedMessage) -> list[dict]:
+    return [
+        {"kind": "task", "event": "started", "text": message.description, "id": message.task_id}
+    ]
+
+
+def _task_progress_entries(message: TaskProgressMessage) -> list[dict]:
+    """What a background task is up to."""
+    usage = message.usage or {}
+    return [
+        {
+            "kind": "task_progress",
+            "id": message.task_id,
+            "text": message.description,
+            "tool": message.last_tool_name,
+            "tools": usage.get("tool_uses", 0),
+        }
+    ]
+
+
+def _task_notification_entries(message: TaskNotificationMessage) -> list[dict]:
+    return [
+        {
+            "kind": "task",
+            "event": message.status,
+            "text": message.summary,
+            "id": message.task_id,
+        }
+    ]
+
+
+def _assistant_entries(message: AssistantMessage) -> list[dict]:
+    return [entry for block in message.content if (entry := _assistant_block_entry(block))]
+
+
+def _assistant_block_entry(block: Any) -> dict | None:
+    """A block of what the agent said, as an entry; None if it's empty or not for the transcript."""
+    if isinstance(block, TextBlock) and block.text.strip():
+        return {"kind": "text", "text": block.text}
+    if isinstance(block, ThinkingBlock) and block.thinking.strip():
+        return {"kind": "thinking", "text": block.thinking}
+    if isinstance(block, ToolUseBlock):
+        return {"kind": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    return None
+
+
+def _user_entries(message: UserMessage) -> list[dict]:
+    if isinstance(message.content, str):
+        return [{"kind": "user", "text": message.content}]
+    return [
+        {
+            "kind": "tool_result",
+            "tool_use_id": block.tool_use_id,
+            "is_error": bool(block.is_error),
+            "text": _text(block.content),
+        }
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+
+
+def _result_entries(message: ResultMessage) -> list[dict]:
+    return [
+        {
+            "kind": "result",
+            "is_error": message.is_error,
+            "text": message.result,
+            "turns": message.num_turns,
+            "cost_usd": message.total_cost_usd,
+            "duration_ms": message.duration_ms,
+            "api_duration_ms": message.duration_api_ms,
+            "model": _models(message),
+            "usage": message.usage or {},
+        }
+    ]
+
+
+# The transcript entries for each kind of SDK message; other kinds have none.
+_ENTRIES: dict[type, Callable[[Any], list[dict]]] = {
+    TaskStartedMessage: _task_started_entries,
+    TaskProgressMessage: _task_progress_entries,
+    TaskNotificationMessage: _task_notification_entries,
+    AssistantMessage: _assistant_entries,
+    UserMessage: _user_entries,
+    ResultMessage: _result_entries,
+}
+
+
 def _entries(message: Any) -> list[dict]:
-    if isinstance(message, TaskStartedMessage):
-        return [
-            {"kind": "task", "event": "started", "text": message.description, "id": message.task_id}
-        ]
-    if isinstance(message, TaskProgressMessage):  # what a background task is up to
-        usage = message.usage or {}
-        return [
-            {
-                "kind": "task_progress",
-                "id": message.task_id,
-                "text": message.description,
-                "tool": message.last_tool_name,
-                "tools": usage.get("tool_uses", 0),
-            }
-        ]
-    if isinstance(message, TaskNotificationMessage):
-        return [
-            {
-                "kind": "task",
-                "event": message.status,
-                "text": message.summary,
-                "id": message.task_id,
-            }
-        ]
-    if isinstance(message, AssistantMessage):
-        entries = []
-        for block in message.content:
-            if isinstance(block, TextBlock) and block.text.strip():
-                entries.append({"kind": "text", "text": block.text})
-            elif isinstance(block, ThinkingBlock) and block.thinking.strip():
-                entries.append({"kind": "thinking", "text": block.thinking})
-            elif isinstance(block, ToolUseBlock):
-                entries.append(
-                    {"kind": "tool_use", "id": block.id, "name": block.name, "input": block.input}
-                )
-        return entries
-    if isinstance(message, UserMessage):
-        if isinstance(message.content, str):
-            return [{"kind": "user", "text": message.content}]
-        return [
-            {
-                "kind": "tool_result",
-                "tool_use_id": block.tool_use_id,
-                "is_error": bool(block.is_error),
-                "text": _text(block.content),
-            }
-            for block in message.content
-            if isinstance(block, ToolResultBlock)
-        ]
-    if isinstance(message, ResultMessage):
-        return [
-            {
-                "kind": "result",
-                "is_error": message.is_error,
-                "text": message.result,
-                "turns": message.num_turns,
-                "cost_usd": message.total_cost_usd,
-                "duration_ms": message.duration_ms,
-                "api_duration_ms": message.duration_api_ms,
-                "model": _models(message),
-                "usage": message.usage or {},
-            }
-        ]
+    for message_type, entries in _ENTRIES.items():
+        if isinstance(message, message_type):
+            return entries(message)
     return []
 
 
@@ -444,42 +473,50 @@ def history_entries(
 
 
 def _history_entries(item: Any) -> list[dict]:
-    entries: list[dict] = []
+    """A stored message (a raw API message) as transcript entries."""
     body = item.message if isinstance(item.message, dict) else {}
     content = body.get("content")
     if item.type == "assistant" and isinstance(content, list):
-        for block in content:
-            if block.get("type") == "text" and str(block.get("text", "")).strip():
-                entries.append({"kind": "text", "text": block["text"]})
-            elif block.get("type") == "thinking" and str(block.get("thinking") or "").strip():
-                entries.append({"kind": "thinking", "text": block["thinking"]})
-            elif block.get("type") == "tool_use":
-                entries.append(
-                    {
-                        "kind": "tool_use",
-                        "id": block.get("id"),
-                        "name": block.get("name"),
-                        "input": block.get("input") or {},
-                    }
-                )
-    elif item.type == "user":
-        if isinstance(content, str):
-            entries += [{"kind": "set_aside", "text": p} for p in set_aside_in(content)]
-            entries.append({"kind": "user", "text": _as_typed(content)})
-        elif isinstance(content, list):
-            for block in content:
-                if block.get("type") == "tool_result":
-                    entries.append(
-                        {
-                            "kind": "tool_result",
-                            "tool_use_id": block.get("tool_use_id"),
-                            "is_error": bool(block.get("is_error")),
-                            "text": _text(block.get("content")),
-                        }
-                    )
-                elif block.get("type") == "text":
-                    entries.append({"kind": "user", "text": block.get("text", "")})
-    return entries
+        return [entry for block in content if (entry := _stored_assistant_entry(block))]
+    if item.type == "user" and isinstance(content, str):
+        set_aside = [{"kind": "set_aside", "text": text} for text in set_aside_in(content)]
+        return [*set_aside, {"kind": "user", "text": _as_typed(content)}]
+    if item.type == "user" and isinstance(content, list):
+        return [entry for block in content if (entry := _stored_user_entry(block))]
+    return []
+
+
+def _stored_assistant_entry(block: dict) -> dict | None:
+    """A stored block of what the agent said, as an entry; None if it's empty or not for the
+    transcript."""
+    kind = block.get("type")
+    if kind == "text" and str(block.get("text", "")).strip():
+        return {"kind": "text", "text": block["text"]}
+    if kind == "thinking" and str(block.get("thinking") or "").strip():
+        return {"kind": "thinking", "text": block["thinking"]}
+    if kind == "tool_use":
+        return {
+            "kind": "tool_use",
+            "id": block.get("id"),
+            "name": block.get("name"),
+            "input": block.get("input") or {},
+        }
+    return None
+
+
+def _stored_user_entry(block: dict) -> dict | None:
+    """A stored block of a user message (yours, or a tool's result), as an entry."""
+    kind = block.get("type")
+    if kind == "tool_result":
+        return {
+            "kind": "tool_result",
+            "tool_use_id": block.get("tool_use_id"),
+            "is_error": bool(block.get("is_error")),
+            "text": _text(block.get("content")),
+        }
+    if kind == "text":
+        return {"kind": "user", "text": block.get("text", "")}
+    return None
 
 
 _COMMAND = re.compile(
@@ -567,6 +604,198 @@ def _ok(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}]}
 
 
+def _purr_server(callbacks: ReviewCallbacks) -> McpSdkServerConfig:
+    """Purr's tools for the agent: submitting its review, proposing what to post, and
+    reading the PR's review threads."""
+
+    @tool(
+        SUBMIT_REVIEW,
+        "Submit your review: a short summary and your findings.",
+        SUBMIT_REVIEW_SCHEMA,
+    )
+    async def submit_review(args: dict) -> dict:
+        await callbacks.on_submit(str(args.get("summary", "")), _findings(args.get("findings", [])))
+        return _ok("Review recorded. Now call propose_action.")
+
+    @tool(
+        PROPOSE_ACTION,
+        "Propose a GitHub review for the user to approve; Purr posts it if they do.",
+        PROPOSE_ACTION_SCHEMA,
+    )
+    async def propose_action(args: dict) -> dict:
+        try:
+            kind = ActionKind(args.get("kind"))
+        except ValueError:
+            return {**_ok(f"Unknown kind {args.get('kind')!r}."), "is_error": True}
+        payload = {
+            "body": args.get("body", ""),
+            "comments": args.get("comments", []),
+            "replies": args.get("replies", []),
+        }
+        action_id = await callbacks.on_propose(kind, str(args.get("description", "")), payload)
+        return _ok(f"Proposed (action {action_id}). The user will approve or dismiss it.")
+
+    @tool(
+        GET_REVIEW_THREADS,
+        "The PR's review threads: id, file and line, resolved or not, and the comments "
+        "(by_user marks the user's own).",
+        {"type": "object", "properties": {}},
+    )
+    async def get_review_threads(args: dict) -> dict:
+        return _ok(json.dumps(await callbacks.on_threads(), indent=1))
+
+    tools = [submit_review, propose_action, get_review_threads]
+    return create_sdk_mcp_server(PURR_SERVER, tools=tools)
+
+
+async def _deny_github_writes(hook_input: Any, tool_use_id: str | None, context: Any) -> dict:
+    """The ``PreToolUse`` hook that keeps the agent from changing GitHub."""
+    # Purr's one rule. Everything else is up to Claude Code's permissions.
+    reason = github_write(hook_input["tool_name"], hook_input.get("tool_input") or {})
+    if not reason:
+        return {}
+    decision = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }
+    return {"hookSpecificOutput": decision}
+
+
+def _ask_the_user(
+    callbacks: ReviewCallbacks, repo: str, rules: RepoRules | None
+) -> Callable[[str, dict, Any], Awaitable[Any]]:
+    """Claude Code's ``can_use_tool``: when it wants to ask, the question goes to Purr's UI."""
+
+    async def can_use_tool(name: str, tool_input: dict, context: Any) -> Any:
+        suggestions = list(getattr(context, "suggestions", None) or [])
+        reason = getattr(context, "decision_reason", None) or getattr(context, "title", None)
+        answer = await callbacks.on_ask(name, tool_input, reason or "", rule_texts(suggestions))
+        return permission_result(answer, suggestions, repo, rules)
+
+    return can_use_tool
+
+
+def _agent_result(message: ResultMessage) -> AgentResult:
+    """A turn's result as the run's. Its figures are running totals, so the last turn's
+    are the whole run's."""
+    return AgentResult(
+        text=message.result,
+        is_error=message.is_error,
+        error=message.result if message.is_error else None,
+        cost_usd=message.total_cost_usd,
+        turns=message.num_turns,
+        denials=[json.dumps(denial, default=str) for denial in message.permission_denials or []],
+        duration_ms=message.duration_ms,
+        api_duration_ms=message.duration_api_ms,
+        model=_models(message),
+        usage=message.usage or {},
+    )
+
+
+class _Run:
+    """One run of a review session: follows its messages until it's done, passing their
+    transcript entries on, and sends in what you write meanwhile (``inbox``)."""
+
+    def __init__(self, callbacks: ReviewCallbacks, inbox: "asyncio.Queue[str] | None"):
+        self.callbacks = callbacks
+        self.inbox = inbox
+        self.result = AgentResult()
+        self.running: dict[str, str] = {}  # background tasks (agents, shells) still at work
+        self.state: str | None = None  # the CLI's session state, once it reports one
+        self.turn_over = False  # a turn ended, and no other has started since
+        self.unseen = 0  # your messages sent while it was idle, until it takes up work
+        self.sending = 0  # your messages on their way into the session
+        self.reports = asyncio.Event()  # the CLI reports its state: messages can go in live
+        self.done: dict | None = None  # the last turn's result: "done", once, at the end
+
+    async def follow(self, client: ClaudeSDKClient) -> None:
+        """Take the session's messages until the run is over, sending in what you write."""
+        delivering = asyncio.create_task(self._deliver(client)) if self.inbox is not None else None
+        try:
+            await self._take_messages(client)
+        finally:
+            if delivering:
+                delivering.cancel()
+
+    async def finish(self) -> AgentResult:
+        """Say the run is done (with its last turn's result entry), and return its result."""
+        if self.done:
+            await self.callbacks.on_message(self.done)
+        return self.result
+
+    def _over(self) -> bool:
+        """Whether the run is done: its turn is over, and the CLI says it's idle with
+        nothing of yours on its way in or unread."""
+        if self.state is None:  # a CLI that doesn't say: the result is all there is
+            return self.turn_over and not self.running
+        pending = self.sending or self.unseen or (self.inbox is not None and not self.inbox.empty())
+        return self.turn_over and self.state == "idle" and not pending
+
+    async def _deliver(self, client: ClaudeSDKClient) -> None:
+        """Send what you write into the session as it comes, once the CLI reports its state."""
+        await self.reports.wait()
+        while True:
+            text = await self.inbox.get()
+            self.sending += 1
+            if self.state == "idle":
+                self.unseen += 1  # it's done for now: wait until it takes this up
+            try:
+                await client.query(text)
+            finally:
+                self.sending -= 1
+
+    async def _take_messages(self, client: ClaudeSDKClient) -> None:
+        async for message in client.receive_messages():
+            if await self._take(message):
+                return
+
+    async def _take(self, message: Any) -> bool:
+        """Take in the session's next message; whether the run is over with it."""
+        if (state := session_state(message)) is not None:
+            self._state_changed(state)
+            return self._over()
+        if isinstance(message, AssistantMessage) and not message.parent_tool_use_id:
+            self.turn_over, self.unseen = False, 0  # a turn under way
+        await self._pass_on(self._tracked_entries(message))
+        if not isinstance(message, ResultMessage):
+            return False
+        self.result = _agent_result(message)
+        # A turn can end with agents still working in the background
+        # ("I'll get back to you"): Claude Code carries on when they
+        # report, so the run isn't over until none are left.
+        self.turn_over = True
+        return self._over()
+
+    def _state_changed(self, state: str) -> None:
+        self.state = state
+        self.reports.set()
+        if state == "running":
+            self.unseen = 0
+
+    def _tracked_entries(self, message: Any) -> list[dict]:
+        """The message's transcript entries, keeping track of the background tasks: which
+        one reported, and how many are out when that changes."""
+        entries = transcript_entries(message)
+        for entry in entries:
+            if entry["kind"] == "task" and entry.get("id") in self.running:
+                # Say which task it was: its report is often a note to the
+                # agent ("delivered to you as a message from ...").
+                entry["text"] = self.running[entry["id"]]
+        out = len(self.running)
+        track_tasks(message, self.running)
+        if len(self.running) != out:  # for the working line, not the transcript
+            entries.append({"kind": "background", "running": len(self.running)})
+        return entries
+
+    async def _pass_on(self, entries: list[dict]) -> None:
+        for entry in entries:
+            if entry["kind"] == "result":
+                self.done = entry  # a turn's end, maybe not the run's
+                continue
+            await self.callbacks.on_message(entry)
+
+
 class ClaudeReviewAgent:
     """Runs reviews as Claude Agent SDK sessions.
 
@@ -632,84 +861,52 @@ class ClaudeReviewAgent:
         works. That takes the CLI saying when it's done (``session_state``); from
         one that doesn't, it stays in ``inbox`` for after the run.
         """
-
-        @tool(
-            SUBMIT_REVIEW,
-            "Submit your review: a short summary and your findings.",
-            SUBMIT_REVIEW_SCHEMA,
+        options = self._options(
+            pr=pr,
+            worktree=worktree,
+            session_id=session_id,
+            resume=resume,
+            callbacks=callbacks,
+            guidelines=guidelines,
+            plugin=plugin,
+            skill=skill,
+            plan=plan,
+            model=model,
         )
-        async def submit_review(args: dict) -> dict:
-            await callbacks.on_submit(
-                str(args.get("summary", "")), _findings(args.get("findings", []))
-            )
-            return _ok("Review recorded. Now call propose_action.")
+        run = _Run(callbacks, inbox)
+        async with ClaudeSDKClient(options) as client:
+            await client.query(prompt)
+            await run.follow(client)
+        return await run.finish()
 
-        @tool(
-            PROPOSE_ACTION,
-            "Propose a GitHub review for the user to approve; Purr posts it if they do.",
-            PROPOSE_ACTION_SCHEMA,
-        )
-        async def propose_action(args: dict) -> dict:
-            try:
-                kind = ActionKind(args.get("kind"))
-            except ValueError:
-                return {**_ok(f"Unknown kind {args.get('kind')!r}."), "is_error": True}
-            payload = {
-                "body": args.get("body", ""),
-                "comments": args.get("comments", []),
-                "replies": args.get("replies", []),
-            }
-            action_id = await callbacks.on_propose(kind, str(args.get("description", "")), payload)
-            return _ok(f"Proposed (action {action_id}). The user will approve or dismiss it.")
-
-        @tool(
-            GET_REVIEW_THREADS,
-            "The PR's review threads: id, file and line, resolved or not, and the comments "
-            "(by_user marks the user's own).",
-            {"type": "object", "properties": {}},
-        )
-        async def get_review_threads(args: dict) -> dict:
-            return _ok(json.dumps(await callbacks.on_threads(), indent=1))
-
-        async def pre_tool_use(hook_input: Any, tool_use_id: str | None, context: Any) -> dict:
-            # Purr's one rule. Everything else is up to Claude Code's permissions.
-            reason = github_write(hook_input["tool_name"], hook_input.get("tool_input") or {})
-            if not reason:
-                return {}
-            decision = {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-            return {"hookSpecificOutput": decision}
-
-        async def can_use_tool(name: str, tool_input: dict, context: Any) -> Any:
-            # Claude Code wants to ask: the question goes to Purr's UI.
-            suggestions = list(getattr(context, "suggestions", None) or [])
-            reason = getattr(context, "decision_reason", None) or getattr(context, "title", None)
-            answer = await callbacks.on_ask(name, tool_input, reason or "", rule_texts(suggestions))
-            return permission_result(answer, suggestions, pr.repo, self._rules)
-
-        options = ClaudeAgentOptions(
+    def _options(
+        self,
+        *,
+        pr: PR,
+        worktree: Path,
+        session_id: str,
+        resume: bool,
+        callbacks: ReviewCallbacks,
+        guidelines: str,
+        plugin: Path | None,
+        skill: str | None,
+        plan: ReviewPlan | None,
+        model: str | None,
+    ) -> ClaudeAgentOptions:
+        """The review session's options: Purr's instructions and tools, and Claude Code's
+        own permissions plus Purr's one rule."""
+        return ClaudeAgentOptions(
             cwd=str(worktree),
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
-                + guidelines_section(pr.repo, guidelines)
-                + (skill_section(pr.repo, skill) if skill else "")
-                + (plan_section(plan) if plan else "")
-                + (self._instructions.for_repo(pr.repo) if self._instructions else ""),
+                "append": self._system_prompt(pr, guidelines, skill, plan),
             },
-            mcp_servers={
-                PURR_SERVER: create_sdk_mcp_server(
-                    PURR_SERVER, tools=[submit_review, propose_action, get_review_threads]
-                )
-            },
+            mcp_servers={PURR_SERVER: _purr_server(callbacks)},
             # The repo's own skills and agents, from its default branch.
             plugins=[{"type": "local", "path": str(plugin)}] if plugin else [],
-            hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]},
-            can_use_tool=can_use_tool,
+            hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[_deny_github_writes])]},
+            can_use_tool=_ask_the_user(callbacks, pr.repo, self._rules),
             permission_mode=self._permission_mode,  # type: ignore[arg-type]
             # The rules you allowed for the repo, Purr's GitHub rule, the sandbox.
             settings=(
@@ -733,93 +930,18 @@ class ClaudeReviewAgent:
             env={"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS": "1"},
         )
 
-        result = AgentResult()
-        running: dict[str, str] = {}  # background tasks (agents, shells) still at work
-        state: str | None = None  # the CLI's session state, once it reports one
-        turn_over = False  # a turn ended, and no other has started since
-        unseen = 0  # your messages sent while it was idle, until it takes up work
-        sending = 0
-        reports = asyncio.Event()  # the CLI reports its state: messages can go in live
-        done: dict | None = None  # the last turn's result: "done", once, at the end
-
-        def over() -> bool:
-            if state is None:  # a CLI that doesn't say: the result is all there is
-                return turn_over and not running
-            pending = sending or unseen or (inbox is not None and not inbox.empty())
-            return turn_over and state == "idle" and not pending
-
-        async def deliver(client: ClaudeSDKClient) -> None:
-            nonlocal sending, unseen
-            await reports.wait()
-            while True:
-                text = await inbox.get()
-                sending += 1
-                if state == "idle":
-                    unseen += 1  # it's done for now: wait until it takes this up
-                try:
-                    await client.query(text)
-                finally:
-                    sending -= 1
-
-        async with ClaudeSDKClient(options) as client:
-            await client.query(prompt)
-            delivering = asyncio.create_task(deliver(client)) if inbox is not None else None
-            try:
-                async for message in client.receive_messages():
-                    if (now := session_state(message)) is not None:
-                        state = now
-                        reports.set()
-                        if now == "running":
-                            unseen = 0
-                        if over():
-                            break
-                        continue
-                    if isinstance(message, AssistantMessage) and not message.parent_tool_use_id:
-                        turn_over, unseen = False, 0  # a turn under way
-                    entries = transcript_entries(message)
-                    for entry in entries:
-                        if entry["kind"] == "task" and entry.get("id") in running:
-                            # Say which task it was: its report is often a note to the
-                            # agent ("delivered to you as a message from ...").
-                            entry["text"] = running[entry["id"]]
-                    out = len(running)
-                    track_tasks(message, running)
-                    if len(running) != out:  # for the working line, not the transcript
-                        entries.append({"kind": "background", "running": len(running)})
-                    for entry in entries:
-                        if entry["kind"] == "result":
-                            done = entry  # a turn's end, maybe not the run's
-                            continue
-                        await callbacks.on_message(entry)
-                    if isinstance(message, ResultMessage):
-                        # Figures are running totals: the last result has the whole run's.
-                        result = AgentResult(
-                            text=message.result,
-                            is_error=message.is_error,
-                            error=message.result if message.is_error else None,
-                            cost_usd=message.total_cost_usd,
-                            turns=message.num_turns,
-                            denials=[
-                                json.dumps(d, default=str)
-                                for d in (message.permission_denials or [])
-                            ],
-                            duration_ms=message.duration_ms,
-                            api_duration_ms=message.duration_api_ms,
-                            model=_models(message),
-                            usage=message.usage or {},
-                        )
-                        # A turn can end with agents still working in the background
-                        # ("I'll get back to you"): Claude Code carries on when they
-                        # report, so the run isn't over until none are left.
-                        turn_over = True
-                        if over():
-                            break
-            finally:
-                if delivering:
-                    delivering.cancel()
-        if done:
-            await callbacks.on_message(done)
-        return result
+    def _system_prompt(
+        self, pr: PR, guidelines: str, skill: str | None, plan: ReviewPlan | None
+    ) -> str:
+        """What Purr adds to Claude Code's system prompt: how to review, and what to hold
+        the PR to."""
+        return (
+            INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
+            + guidelines_section(pr.repo, guidelines)
+            + (skill_section(pr.repo, skill) if skill else "")
+            + (plan_section(plan) if plan else "")
+            + (self._instructions.for_repo(pr.repo) if self._instructions else "")
+        )
 
 
 # Opening a session in Claude Code itself (the `o` key). Same protections as in

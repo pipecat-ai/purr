@@ -98,24 +98,33 @@ def handles[R](kind: type[Request[R]]) -> Callable:
         @job(name=kind.__name__)
         @functools.wraps(method)
         async def handler(self: BaseWorker, message: BusJobRequestMessage) -> None:
-            try:
-                request = _adapter(kind).validate_python((message.payload or {}).get("request"))
-            except ValidationError as e:
-                response = _error(Invalid(f"Not a {kind.__name__}: {e}"))
-            else:
-                try:
-                    reply = await method(self, request)
-                    response = {"reply": _adapter(kind.reply).dump_python(reply, mode="json")}
-                except PurrError as e:
-                    response = _error(e)
-                except Exception as e:
-                    logger.exception(f"{self} couldn't do {request}")
-                    response = _error(PurrError(str(e) or type(e).__name__))
+            response = await _response(self, kind, method, message.payload)
             await self.send_job_response(message.job_id, response)
 
         return handler
 
     return decorate
+
+
+async def _response[R](
+    worker: BaseWorker,
+    kind: type[Request[R]],
+    method: Callable[[Any, Any], Awaitable[R]],
+    payload: dict | None,
+) -> dict:
+    """What ``worker`` answers a request of ``kind`` with: ``method``'s reply, or the error."""
+    try:
+        request = _adapter(kind).validate_python((payload or {}).get("request"))
+    except ValidationError as e:
+        return _error(Invalid(f"Not a {kind.__name__}: {e}"))
+    try:
+        reply = await method(worker, request)
+        return {"reply": _adapter(kind.reply).dump_python(reply, mode="json")}
+    except PurrError as e:
+        return _error(e)
+    except Exception as e:
+        logger.exception(f"{worker} couldn't do {request}")
+        return _error(PurrError(str(e) or type(e).__name__))
 
 
 async def request[R](sender: BaseWorker, req: Request[R], *, timeout: float | None = None) -> R:
