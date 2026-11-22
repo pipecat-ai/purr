@@ -224,6 +224,10 @@ async def test_pr_details():
                 "body": "Fixes the bus.",
                 "baseRefName": "main",
                 "headRefName": "fix-bus",
+                "headRefOid": "abc",
+                "mergeable": "MERGEABLE",
+                "mergeStateStatus": "BLOCKED",
+                "baseRepository": {"viewerDefaultMergeMethod": "SQUASH"},
                 "additions": 22,
                 "deletions": 4,
                 "changedFiles": 1,
@@ -246,6 +250,10 @@ async def test_pr_details():
             files=(FileChange("bus.py", 22, 4),),
             labels=("bug",),
             checks="FAILURE",
+            head_sha="abc",
+            mergeable="MERGEABLE",
+            merge_state="BLOCKED",
+            merge_method="SQUASH",
         )
     }
 

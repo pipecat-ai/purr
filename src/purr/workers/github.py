@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.actions import ActionError, GhWriter, GitHubWriter, execute
+from purr.actions import ActionError, GhWriter, GitHubWriter, execute, merge_blocker
 from purr.github import GitHub, GitHubError, RemotePR, Snapshot
-from purr.jobs import Done, Failed, Invalid, NotFound, handles
+from purr.jobs import Busy, Done, Failed, Invalid, NotFound, handles
 from purr.messages import (
     GITHUB_WORKER,
     ActionResolved,
@@ -22,6 +22,8 @@ from purr.messages import (
     FetchDetails,
     FetchedDetails,
     MarkSeen,
+    Merged,
+    MergePR,
     Posted,
     PRChanged,
     PRListUpdated,
@@ -35,6 +37,7 @@ from purr.models import (
     ActionStatus,
     GHState,
     PRChange,
+    PRDetails,
     PRRef,
     PRState,
     Reply,
@@ -370,12 +373,10 @@ class GitHubWorker(BaseWorker):
         if action is None:
             raise NotFound("That action was already decided, or doesn't exist")
         pr = await self._store.get_pr(action.pr)
+        head_sha = pr.head_sha if pr else ""
         try:
             posted = await execute(
-                self._writer,
-                action,
-                head_sha=pr.head_sha if pr else "",
-                signature=self._signature,
+                self._writer, action, head_sha=head_sha, signature=self._signature
             )
         except ActionError as e:
             # Back to pending, so it can be retried.
@@ -384,7 +385,10 @@ class GitHubWorker(BaseWorker):
             )
             raise Failed(f"GitHub didn't take it: {e}") from e
         await self._store.transition_action(
-            action_id, expected=ActionStatus.APPROVED, new=ActionStatus.EXECUTED
+            action_id,
+            expected=ActionStatus.APPROVED,
+            new=ActionStatus.EXECUTED,
+            posted_head=head_sha or None,  # an approval is of this commit
         )
         await self._store.dismiss_replies(action.pr)  # you've had your say
         await self._resolved(action.pr, action_id, approved=True)
@@ -399,6 +403,47 @@ class GitHubWorker(BaseWorker):
             raise NotFound("That action was already decided, or doesn't exist")
         await self._resolved(action.pr, request.action_id, approved=False)
         return Done()
+
+    # -- Merging ----------------------------------------------------------------
+
+    @handles(MergePR)
+    async def merge_pr(self, request: MergePR) -> Merged:
+        """Merge what you approved, as you approved it, once GitHub says it's ready: checked
+        again here, just before, since CI and the PR move on their own."""
+        ref = request.pr
+        pr = await self._store.get_pr(ref)
+        if pr is None or pr.gh_state != GHState.OPEN:
+            raise NotFound(f"{ref} isn't open")
+        approved = await self._store.approved_head(ref)
+        details = await self._fresh_details(ref)
+        if blocker := merge_blocker(details, approved):
+            raise Busy(blocker)
+        method = (details.merge_method or "MERGE").lower()
+        try:
+            # Only at the commit you approved: GitHub refuses if the PR moved since.
+            await self._writer.merge(ref, method=method, sha=approved)
+        except ActionError as e:
+            raise Failed(f"GitHub didn't merge it: {e}") from e
+        await self._merged(pr)
+        return Merged(method=method)
+
+    async def _fresh_details(self, ref: PRRef) -> PRDetails:
+        try:
+            details = await self._github.pr_details([ref])
+        except GitHubError as e:
+            raise Failed(f"Couldn't read the PR from GitHub: {e}") from e
+        if ref not in details:
+            raise NotFound(f"GitHub doesn't show {ref}")
+        return details[ref]
+
+    async def _merged(self, pr: PR) -> None:
+        """Show it merged right away; the next poll would only find it out."""
+        await self._store.apply_sync(gh_states={pr.ref: GHState.MERGED})
+        change = PRChanged(
+            source=self.name, pr=str(pr.ref), change=PRChange.MERGED.value, title=pr.title
+        )
+        await self.send_bus_message(change)
+        await self.send_bus_message(PRListUpdated(source=self.name))
 
     async def _resolved(self, ref: PRRef, action_id: str, *, approved: bool) -> None:
         # Nothing left to decide: the PR is done (unless something else needs you).

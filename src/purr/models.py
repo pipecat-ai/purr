@@ -173,7 +173,11 @@ class PRDetails:
     """What you look at before deciding to review a PR. Fetched on demand.
 
     ``checks`` is the head commit's combined CI state as GitHub names it
-    (``SUCCESS``, ``FAILURE``, ``PENDING``, ...), or None without CI.
+    (``SUCCESS``, ``FAILURE``, ``PENDING``, ...), or None without CI. Whether it
+    can be merged, as GitHub says: ``mergeable`` (``MERGEABLE``, ``CONFLICTING``,
+    ``UNKNOWN``) and ``merge_state`` (``CLEAN``, ``BLOCKED``, ``BEHIND``, ``DIRTY``,
+    ...); ``merge_method`` is your default in its repo (``MERGE``, ``SQUASH``,
+    ``REBASE``), what GitHub's own page picks for you.
     """
 
     body: str = ""
@@ -186,6 +190,10 @@ class PRDetails:
     labels: tuple[str, ...] = ()
     review_decision: str | None = None
     checks: str | None = None
+    head_sha: str = ""
+    mergeable: str | None = None
+    merge_state: str | None = None
+    merge_method: str = ""
 
 
 @dataclass

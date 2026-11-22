@@ -229,6 +229,7 @@ class FakeWriter:
         self.reviews: list[dict] = []
         self.assigned: list = []
         self.replies: list[tuple[str, str]] = []
+        self.merges: list[tuple] = []  # (ref, method, sha)
         self.fail_with: list[str] = []  # errors to raise, one per call, before succeeding
         self.fail_replies = False
 
@@ -244,6 +245,13 @@ class FakeWriter:
 
     async def assign_self(self, ref):
         self.assigned.append(ref)
+
+    async def merge(self, ref, *, method, sha):
+        from purr.actions import ActionError
+
+        if self.fail_with:
+            raise ActionError(self.fail_with.pop(0))
+        self.merges.append((ref, method, sha))
 
     async def reply_to_thread(self, thread_id, body):
         from purr.actions import ActionError

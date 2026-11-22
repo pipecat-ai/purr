@@ -52,7 +52,8 @@ _PR_FIELDS = """
     repository { nameWithOwner }
 """
 _DETAILS_FIELDS = """
-    body baseRefName headRefName additions deletions changedFiles reviewDecision
+    body baseRefName headRefName headRefOid additions deletions changedFiles reviewDecision
+    mergeable mergeStateStatus baseRepository { viewerDefaultMergeMethod }
     labels(first: 10) { nodes { name } }
     files(first: 100) { nodes { path additions deletions } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
@@ -572,6 +573,10 @@ def _details(pr: dict) -> PRDetails:
         labels=tuple(label["name"] for label in _nodes(pr.get("labels"))),
         review_decision=pr.get("reviewDecision"),
         checks=(rollup or {}).get("state"),
+        head_sha=pr.get("headRefOid") or "",
+        mergeable=pr.get("mergeable"),
+        merge_state=pr.get("mergeStateStatus"),
+        merge_method=(pr.get("baseRepository") or {}).get("viewerDefaultMergeMethod") or "",
     )
 
 

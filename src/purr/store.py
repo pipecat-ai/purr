@@ -236,6 +236,11 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE prs ADD COLUMN involved INTEGER NOT NULL DEFAULT 0;
     """,
+    # The PR's head when an action was posted: an approval is of that commit (m
+    # merges only that).
+    """
+    ALTER TABLE pending_actions ADD COLUMN posted_head TEXT;
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -1087,6 +1092,17 @@ class Store:
         )
         return bool(row) and _action(row).kind == ActionKind.APPROVE
 
+    async def approved_head(self, ref: PRRef) -> str | None:
+        """The commit you approved the PR at through Purr, if that's the last thing Purr
+        posted for you there (None: it isn't, or it was before Purr kept it)."""
+        row = await self._fetchone(
+            f"{self._ACTION_SELECT} WHERE prs.repo = ? AND prs.number = ?"
+            " AND pending_actions.status = ? ORDER BY pending_actions.resolved_at DESC LIMIT 1",
+            (ref.repo, ref.number, ActionStatus.EXECUTED),
+        )
+        approved = row is not None and _action(row).kind == ActionKind.APPROVE
+        return row["posted_head"] if approved else None
+
     async def get_pending_action(self, action_id: str) -> PendingAction | None:
         row = await self._fetchone(
             f"{self._ACTION_SELECT} WHERE pending_actions.id = ?", (action_id,)
@@ -1104,17 +1120,23 @@ class Store:
         return [_action(row) for row in rows]
 
     async def transition_action(
-        self, action_id: str, *, expected: ActionStatus, new: ActionStatus
+        self,
+        action_id: str,
+        *,
+        expected: ActionStatus,
+        new: ActionStatus,
+        posted_head: str | None = None,
     ) -> PendingAction | None:
         """Move an action from ``expected`` to ``new`` status, atomically.
 
         Returns the updated action, or None if it wasn't in ``expected`` status.
         This is what stops one action being approved twice (say, from the TUI
-        and by voice at the same time).
+        and by voice at the same time). ``posted_head``: the PR's head it was posted at.
         """
         cursor = await self._db.execute(
-            "UPDATE pending_actions SET status = ?, resolved_at = ? WHERE id = ? AND status = ?",
-            (new, _now(), action_id, expected),
+            "UPDATE pending_actions SET status = ?, resolved_at = ?,"
+            " posted_head = COALESCE(?, posted_head) WHERE id = ? AND status = ?",
+            (new, _now(), posted_head, action_id, expected),
         )
         await self._db.commit()
         if cursor.rowcount == 0:

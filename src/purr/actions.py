@@ -1,8 +1,8 @@
 """Executing approved actions on GitHub.
 
 This is the only place Purr writes to GitHub, and it only runs after the user
-approved a pending action (or, for assignment, asked for a review). Writes go
-through ``gh``, as the user.
+approved a pending action (or, for assignment, asked for a review; for a merge,
+pressed ``m`` and confirmed). Writes go through ``gh``, as the user.
 
 What Purr posts says so: the review's text and each reply in a thread end with
 a small signature ("Sent from Purr.", linking to Purr, by default). Inline
@@ -17,7 +17,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from purr.models import ActionKind, PendingAction, PRRef
+from purr.models import ActionKind, PendingAction, PRDetails, PRRef
 
 _REVIEW_EVENTS = {
     ActionKind.APPROVE: "APPROVE",
@@ -39,6 +39,8 @@ class GitHubWriter(Protocol):
 
     async def reply_to_thread(self, thread_id: str, body: str) -> str: ...
 
+    async def merge(self, ref: PRRef, *, method: str, sha: str) -> None: ...
+
 
 @dataclass
 class Posted:
@@ -46,6 +48,40 @@ class Posted:
 
     url: str
     warnings: list[str] = field(default_factory=list)
+
+
+# Why a PR can't be merged yet, by CI state and by GitHub's merge state.
+_CI_NOT_PASSED = {
+    "PENDING": "CI is still running",
+    "EXPECTED": "CI is still running",
+    "FAILURE": "CI failed",
+    "ERROR": "CI failed",
+}
+_NOT_MERGEABLE = {
+    "BLOCKED": "GitHub says it's blocked: a required review or check is missing",
+    "BEHIND": "It's behind {base}: its branch needs updating first",
+    "DIRTY": "It has conflicts with {base}",
+    "DRAFT": "It's a draft",
+    "UNKNOWN": "GitHub is still working out whether it can be merged; try again in a moment",
+}
+
+
+def merge_blocker(details: PRDetails, approved_head: str | None) -> str | None:
+    """Why ``m`` can't merge the PR now, or None if it can.
+
+    It merges what you approved through Purr, as you approved it (no commits
+    since), once CI passed and GitHub says nothing else stands in the way.
+    """
+    if not approved_head:
+        return "Approve it first"
+    if details.head_sha and details.head_sha != approved_head:
+        return "It has new commits since you approved it"
+    if details.checks and details.checks != "SUCCESS":
+        return _CI_NOT_PASSED.get(details.checks, f"CI says {details.checks.lower()}")
+    if details.mergeable == "CONFLICTING":
+        return _NOT_MERGEABLE["DIRTY"].format(base=details.base or "its base branch")
+    reason = _NOT_MERGEABLE.get(details.merge_state or "")
+    return reason.format(base=details.base or "its base branch") if reason else None
 
 
 def signed(text: str, signature: str) -> str:
@@ -191,12 +227,17 @@ class GhWriter:
         reply = json.loads(stdout or "{}").get("data", {}).get("addPullRequestReviewThreadReply")
         return ((reply or {}).get("comment") or {}).get("url", "")
 
-    async def _api(self, path: str, request: dict) -> dict:
+    async def merge(self, ref: PRRef, *, method: str, sha: str) -> None:
+        """Merge the PR (``method``: merge, squash or rebase), only if its head is ``sha``."""
+        request = {"merge_method": method, "sha": sha}
+        await self._api(f"repos/{ref.repo}/pulls/{ref.number}/merge", request, http="PUT")
+
+    async def _api(self, path: str, request: dict, *, http: str = "POST") -> dict:
         process = await asyncio.create_subprocess_exec(
             self._gh,
             "api",
             "--method",
-            "POST",
+            http,
             path,
             "--input",
             "-",

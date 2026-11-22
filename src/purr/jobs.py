@@ -45,7 +45,7 @@ class NotFound(PurrError):
 
 
 class Busy(PurrError):
-    """Not now: the agent's working, or a review's already running."""
+    """Not now: the agent's working, a review's already running, CI hasn't passed."""
 
 
 class Failed(PurrError):

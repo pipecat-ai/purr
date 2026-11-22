@@ -118,6 +118,19 @@ class DismissReplies(Request[Done]):
 
 
 @dataclass(kw_only=True)
+class Merged:
+    method: str  # how: merge, squash or rebase
+
+
+@dataclass(kw_only=True)
+class MergePR(Request[Merged]):
+    """Merge the PR you approved, as you approved it, once CI passed (see merge_blocker)."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class AssignMe(Request[Done]):
     worker: ClassVar[str] = GITHUB_WORKER
     pr: PRRef
