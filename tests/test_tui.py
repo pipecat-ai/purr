@@ -736,7 +736,7 @@ async def test_home_says_what_watching_means(tmp_path):
         await app.purr.runner.get_worker("github").poll()
         await until(pilot, lambda: app.repo_names == ["daily-co/daily-x"])
         await until(pilot, lambda: not hint.has_class("alone"))
-        assert "only show the PRs assigned to you" in str(hint.render())
+        assert "show only those" in str(hint.render())
         # Not typing: the terminal's cursor is parked out of the way.
         assert app.cursor_position == Offset(app.size.width - 1, app.size.height - 1)
 

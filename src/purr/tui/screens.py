@@ -152,8 +152,8 @@ class ReposView(PurrView):
         Binding("enter,o", "open", "Open", key_display="o"),
         Binding("n", "move(1)", "Next", show=False),
         Binding("p", "move(-1)", "Previous", show=False),
-        Binding("plus", "add", "Add repo"),
-        Binding("minus", "remove", "Remove repo"),
+        Binding("plus", "add", "Watch repo"),
+        Binding("minus", "remove", "Stop watching"),
     ]
 
     def __init__(self, **kwargs):
@@ -169,6 +169,9 @@ class ReposView(PurrView):
         table = self.query_one(DataTable)
         table.add_column("", key="number", width=2)
         table.add_column("REPO", key="repo")
+        # Watched repos show all their open PRs; the rest are listed only because a PR
+        # there is assigned to you, and show just those.
+        table.add_column("SHOWS", key="shows")
         table.add_column("NEEDS YOU", key="needs_you")
         table.add_column("REVIEWING", key="reviewing")
         table.add_column("NOT REVIEWED", key="not_reviewed")
@@ -199,8 +202,8 @@ class ReposView(PurrView):
         if summaries and self.purr_app.location is None and self.app.focused is None:
             table.focus()
         empty.update(
-            "Repos marked [dim](assigned to you)[/] only show the PRs assigned to you. "
-            "Select one and press [b]+[/b] to watch it and see all its open PRs."
+            "Repos showing [b]yours[/b] are listed because PRs there are assigned to you, and "
+            "show only those. Select one and press [b]+[/b] to watch it: all its open PRs."
             if summaries
             else "No repos yet. Press [b]+[/b] to watch one and see its open PRs."
         )
@@ -211,12 +214,12 @@ class ReposView(PurrView):
         name = Text(summary.name)
         if alerted:
             name.append(" ●", style="bold yellow")
-        if not summary.watched:
-            name.append("  (assigned to you)", style="dim")
+        shows = Text("all PRs") if summary.watched else Text("yours", style="dim")
         needs = Text(_count(summary.needs_you), style="bold yellow" if summary.needs_you else "")
         return [
             str(i) if i <= 9 else "",
             name,
+            shows,
             needs,
             _count(summary.reviewing),
             _count(summary.not_reviewed),
