@@ -123,6 +123,7 @@ class PR:
     state: PRState = PRState.NOT_REVIEWED
     gh_state: GHState = GHState.OPEN
     model: str | None = None  # you chose it for the PR's conversation (/model)
+    state_at: str | None = None  # when it got to its state (done: when you finished)
     id: int | None = None
 
     @property

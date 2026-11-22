@@ -1,3 +1,5 @@
+import asyncio
+
 import aiosqlite
 import pytest
 
@@ -56,6 +58,14 @@ async def test_upsert_refreshes_metadata_but_keeps_state(store):
     assert updated.title == "Renamed"
     assert updated.assigned_to_me is True
     assert updated.state == PRState.NEEDS_YOU
+
+    # When it got to its state: moves with the state, not with GitHub's news.
+    assert pr.state_at is None and updated.state_at
+    await store.set_pr_state(pr.ref, PRState.NEEDS_YOU)
+    assert (await store.get_pr(pr.ref)).state_at == updated.state_at
+    await asyncio.sleep(0.005)  # timestamps are to the millisecond
+    await store.set_pr_state(pr.ref, PRState.DONE)
+    assert (await store.get_pr(pr.ref)).state_at > updated.state_at
 
 
 async def test_list_prs_puts_needs_you_first(store):

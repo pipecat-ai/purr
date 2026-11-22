@@ -214,6 +214,14 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE prs ADD COLUMN model TEXT;
     """,
+    # When a PR got to its state (the list shows the latest done ones). Until
+    # now: its latest review's.
+    """
+    ALTER TABLE prs ADD COLUMN state_at TEXT;
+    UPDATE prs SET state_at = (
+        SELECT MAX(COALESCE(finished_at, started_at)) FROM reviews WHERE pr_id = prs.id
+    );
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -279,6 +287,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         author_association=row["author_association"],
         assignees=tuple(json.loads(row["assignees"])),
         model=row["model"],
+        state_at=row["state_at"],
     )
 
 
@@ -489,8 +498,12 @@ class Store:
 
     async def set_pr_state(self, ref: PRRef, state: PRState) -> None:
         cursor = await self._db.execute(
-            "UPDATE prs SET state = ? WHERE repo = ? AND number = ?",
-            (state, ref.repo, ref.number),
+            # SET sees the row as it was: state_at moves only when the state does.
+            """
+            UPDATE prs SET state_at = CASE WHEN state = ? THEN state_at ELSE ? END, state = ?
+            WHERE repo = ? AND number = ?
+            """,
+            (state, _now_ms(), state, ref.repo, ref.number),
         )
         await self._db.commit()
         if cursor.rowcount == 0:

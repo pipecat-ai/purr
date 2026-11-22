@@ -882,3 +882,40 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         await pilot.press("a")
         await until(pilot, lambda: "Review: found 1 issue" in header(app))
         await until(pilot, lambda: not working.display and mark() not in FRAMES)
+
+
+async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
+    from purr.models import PRRef, PRState
+
+    names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india"]
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [
+        remote(i, title=f"Change {name}") for i, name in enumerate(names, start=1)
+    ]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 9)
+        for number in range(1, 8):  # #7 finished last
+            await app.purr.store.set_pr_state(PRRef("pipecat-ai/pipecat", number), PRState.DONE)
+            await asyncio.sleep(0.005)
+        repo = app.main.repo
+        await repo.reload()
+
+        def numbers() -> list[int]:
+            return [int(i.rsplit("#", 1)[1]) for i in pr_ids(app)]
+
+        await until(pilot, lambda: numbers() == [7, 6, 5, 4, 3, 9, 8])
+        text = "\n".join(option_texts(app))
+        assert text.index("DONE (7)") < text.index("NOT REVIEWED (2)")
+        assert "the latest 5; / finds the others" in text
+
+        # Searching finds the others, and the one you picked stays when you clear it...
+        await pilot.press("slash", *"alpha", "enter")
+        await until(pilot, lambda: numbers() == [1])
+        await pilot.press("slash", "ctrl+u", "enter")
+        await until(pilot, lambda: numbers() == [7, 6, 5, 4, 3, 1, 9, 8])
+        # ...as does one you go to (an alert, ctrl+p).
+        await app.goto_pr(PRRef("pipecat-ai/pipecat", 2))
+        await until(pilot, lambda: numbers() == [7, 6, 5, 4, 3, 2, 9, 8])

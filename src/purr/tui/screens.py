@@ -35,13 +35,16 @@ if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
 OTHERS = "others"
+# Done comes before the pool of unreviewed PRs (hundreds, in a big repo), so
+# the ones you finished lately are at hand: the latest few, search finds the rest.
 _GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
-    (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
     (PRState.DONE, "✓", "DONE", "bold green"),
+    (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
     (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
 ]
+DONE_SHOWN = 5
 _ICONS = {key: icon for key, icon, *_ in _GROUPS}
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
 DIFFS_AHEAD = 3  # of those, whose diffs too (one request each, and bigger)
@@ -423,6 +426,17 @@ class RepoView(PurrView):
             if len(options) > 1:
                 options.append(Option(" ", disabled=True))
             heading = Text(f"{icon} {label} ({len(members)})", style=style)
+            if key == PRState.DONE:
+                members.sort(key=lambda pr: pr.state_at or "", reverse=True)  # latest first
+                if len(members) > DONE_SHOWN and not self._search:
+                    # An older one you went to (an alert, ctrl+p) shows too.
+                    chosen = self._selected.get(self.repo)
+                    members = [
+                        pr
+                        for i, pr in enumerate(members)
+                        if i < DONE_SHOWN or str(pr.ref) == chosen
+                    ]
+                    heading.append(f"  the latest {DONE_SHOWN}; / finds the others", style="dim")
             options.append(Option(heading, disabled=True))
             options += [Option(self._prompt(pr), id=str(pr.ref)) for pr in members]
             self._prs.update((str(pr.ref), pr) for pr in members)
@@ -489,9 +503,13 @@ class RepoView(PurrView):
     def select(self, pr: str, *, repo: str) -> None:
         """Select a PR, now if its repo is showing, or when it next is."""
         self._selected[repo] = pr
-        if repo == self.repo and pr in self._prs:
+        if repo != self.repo:
+            return
+        if pr in self._prs:
             option_list = self.query_one(OptionList)
             option_list.highlighted = option_list.get_option_index(pr)
+        elif any(str(listed.ref) == pr for listed in self._all):
+            self._list()  # an older done one: listed now that it's selected
 
     @on(OptionList.OptionHighlighted)
     def _show_highlighted(self) -> None:

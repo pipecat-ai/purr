@@ -96,7 +96,7 @@ Two things keep this cheap:
 | **Needs you** | Review finished (or agent is blocked) and a decision is pending: post comments, request changes, approve, merge, or answer a question. |
 | **Done** | Decision made, nothing pending. |
 
-"Needs you" is pinned to the top of the list. PRs someone else is assigned to aren't a state of their own: they sit at the end of the list as **Others reviewing**, with who has them, so you can see what's taken.
+"Needs you" is pinned to the top of the list. **Done** comes before the pool of unreviewed PRs (hundreds, in a big repo), so what you finished lately is at hand: the latest 5, by when they got there (`prs.state_at`, which moves only when the state does), with `/` finding the others; an older one you go to (an alert, `ctrl+p`, a search) shows too while it's selected. PRs someone else is assigned to aren't a state of their own: they sit at the end of the list as **Others reviewing**, with who has them, so you can see what's taken.
 
 ## Triggers
 
@@ -346,12 +346,12 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 │ ● REVIEWING (1)                                        │ Adds a message bus so workers can talk without   │
 │ ● #2850   TTS context         you        bob        1d │ knowing about each other. …                      │
 │                                                        │                                                  │
-│ ○ NOT REVIEWED (2)                                     │ 3 files changed  d full diff                     │
-│ ○ #2861   Docs typo                      carol      2h │ src/pipecat/bus/bus.py                +380 −12   │
-│ ○ #2855   Evals report                   dave       5h │ …                                                │
-│                                                        │                                                  │
-│ ✓ DONE (1)                                             │ ⏺ Clean refactor, tests pass. Concerns:          │
-│ ✓ #2833   Frame cleanup       you        erin       6d │   1. Race in bus.subscribe() on shutdown         │
+│ ✓ DONE (1)                                             │ 3 files changed  d full diff                     │
+│ ✓ #2833   Frame cleanup       you        erin       6d │ src/pipecat/bus/bus.py                +380 −12   │
+│                                                        │ …                                                │
+│ ○ NOT REVIEWED (2)                                     │ ⏺ Clean refactor, tests pass. Concerns:          │
+│ ○ #2861   Docs typo                      carol      2h │   1. Race in bus.subscribe() on shutdown         │
+│ ○ #2855   Evals report                   dave       5h │                                                  │
 │                                                        │ ┌──────────────────────────────────────────────┐ │
 │ ◌ OTHERS REVIEWING (1)                                 │ │ Post 3 comments and request changes?          │ │
 │ ◌ #2790   Krisp filter        grace      frank      2w │ │ [a] approve   [x] dismiss                     │ │
