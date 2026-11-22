@@ -13,7 +13,9 @@ from purr.messages import (
     LEAD_REVIEW,
     LEAD_WORKER,
     PERMISSION_ANSWER,
+    REPO_SKILLS,
     REVIEW_MESSAGE,
+    REVIEW_MODEL,
     REVIEW_SKILL,
     REVIEW_SKILLS,
     REVIEW_START,
@@ -768,3 +770,45 @@ async def test_always_remembers_and_answers_what_else_it_covers(make):
     # The other PR's agent was waiting for the same thing: allowed too.
     await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
     assert s.agent.answers == [True, True]
+
+
+# -- What / commands use ------------------------------------------------------------
+
+
+async def test_a_review_of_the_depth_you_ask_for_and_your_model(make, tmp_path):
+    s = await make()
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
+    await s.store.upsert_pr(make_pr())
+    s.lead.plans = {str(REF): {"depth": "full", "why": "Big change."}}
+
+    await s.client.request(LEAD_REVIEW, {"prs": [str(REF)], "depth": "quick"}, worker=LEAD_WORKER)
+    await eventually(lambda: s.client.of(ReviewFinished))
+    plan = s.agent.runs[0]["plan"]
+    assert (plan.depth, plan.why) == ("quick", "You asked for a quick review.")
+    assert s.agent.runs[0]["model"] == "quick-model"
+
+    # /model: everything in the PR's conversation uses yours, quick or not.
+    assert await s.client.request(REVIEW_MODEL, {"pr": str(REF), "model": "opus"}) == {"ok": True}
+    assert (await s.store.get_pr(REF)).model == "opus"
+    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "And the race?"})
+    await eventually(lambda: len(s.agent.runs) == 2)
+    assert s.agent.runs[1]["model"] == "opus"
+    # A poll doesn't count it as GitHub changing the PR, nor forget it.
+    from purr.sync import _same_metadata
+
+    stored = await s.store.get_pr(REF)
+    assert _same_metadata(stored, make_pr())
+    await s.client.request(REVIEW_MODEL, {"pr": str(REF), "model": None})
+    assert (await s.store.get_pr(REF)).model is None
+
+    bad = await s.client.request(
+        LEAD_REVIEW, {"prs": [str(REF)], "depth": "deep"}, worker=LEAD_WORKER
+    )
+    assert bad == {"error": "No such depth: deep"}
+
+    skills = await s.client.request(REPO_SKILLS, {"repo": REF.repo})
+    review_skill = {
+        "name": "pipecat:code-review",
+        "description": "Automated code review for pull requests",
+    }
+    assert skills == {"skills": [review_skill]}

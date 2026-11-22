@@ -83,6 +83,7 @@ class PurrApp(App):
         self.data_version = 0  # bumped whenever the store's data changes
         self.sessions: dict[str, SessionState] = {}  # per PR, see SessionState
         self.details = DetailsCache()  # PR descriptions, files and CI
+        self.repo_skills: dict[str, list[dict]] = {}  # for / commands, fetched once per repo
         # PR -> what happened since you last looked at it, newest last (from
         # the store on startup, then live).
         self.alerts: dict[str, str] = {}

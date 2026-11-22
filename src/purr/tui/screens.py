@@ -290,7 +290,7 @@ class RepoView(PurrView):
         Binding("x", "dismiss", "Dismiss"),
         Binding("d", "diff", "Diff"),
         Binding("z", "zoom", "Zoom"),
-        Binding("c", "open_claude", "Claude Code"),
+        Binding("c", "open_claude", "Claude Code", show=False),  # also /claude
         Binding("exclamation_mark", "shell", "Shell"),
     ]
 

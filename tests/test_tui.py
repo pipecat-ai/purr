@@ -636,3 +636,69 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path):
         await until(pilot, lambda: len(ran) == 2)
         command, cwd, _ = ran[-1]
         assert command[:2] == ["claude", "--resume"] and cwd == worktree
+
+
+async def test_slash_commands(tmp_path):
+    from purr.models import PRRef
+    from purr.tui.prompt import PromptArea
+
+    app, github = make_app(tmp_path)
+    agent = app.purr.agent
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    ran: list[tuple] = []
+
+    async def run_outside(command, cwd, env=None):
+        ran.append((command, cwd))
+
+    app.run_outside = run_outside
+
+    def suggested() -> list[str]:
+        box = app.main.repo.session.query_one("#suggestions", OptionList)
+        if not box.display:
+            return []
+        return [str(box.get_option_at_index(i).prompt) for i in range(box.option_count)]
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await until(pilot, lambda: home(app))
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        await pilot.press("r")
+        await until(pilot, lambda: "[a] approve" in decision(app))
+        prompt = app.main.repo.session.query_one(PromptArea)
+        prompt.focus()
+
+        # / shows what you can type; tab fills in the highlighted one, enter runs it.
+        await pilot.press("slash", "c", "o")
+        await until(pilot, lambda: len(suggested()) == 3)
+        assert suggested()[0].startswith("/cost")
+        await pilot.press("down", "tab")
+        assert prompt.text == "/compact "
+        prompt.clear()
+        await pilot.press("slash", "c", "o", "s", "enter")  # fills it in...
+        assert prompt.text == "/cost "
+        await pilot.press("enter")  # ...and runs it
+        await until(pilot, lambda: "1 runs" in transcript(app))
+        assert len(agent.runs) == 1  # Purr's own: the agent never saw it
+
+        await pilot.press(*"/model opus", "enter")
+        await until(pilot, lambda: "uses opus" in transcript(app))
+        assert (await app.purr.store.get_pr(PRRef("pipecat-ai/pipecat", 1))).model == "opus"
+
+        await pilot.press(*"/help", "enter")
+        await until(pilot, lambda: "Purr's commands" in transcript(app))
+        await pilot.press(*"/shell", "enter")
+        await until(pilot, lambda: ran)
+
+        # Anything else goes to the agent as typed.
+        await pilot.press(*"/compact", "enter")
+        await until(pilot, lambda: len(agent.runs) == 2)
+        assert agent.runs[1]["prompt"] == "/compact"
+        assert agent.runs[1]["model"] == "opus"
+
+        # /review quick starts over, quick.
+        await until(pilot, lambda: "[a] approve" in decision(app))
+        await pilot.press(*"/review quick", "enter")
+        await until(pilot, lambda: len(agent.runs) == 3)
+        assert agent.runs[2]["plan"].depth == "quick" and agent.runs[2]["resume"] is False

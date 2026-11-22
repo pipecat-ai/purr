@@ -23,7 +23,9 @@ from purr.messages import (
     RECAP_WORKER,
     REPO_ADD,
     REPO_REMOVE,
+    REPO_SKILLS,
     REVIEW_MESSAGE,
+    REVIEW_MODEL,
     REVIEW_SKILL,
     REVIEW_SKILLS,
     REVIEW_WORKER,
@@ -70,9 +72,12 @@ class UIWorker(BaseWorker):
     async def remove_repo(self, repo: str) -> None:
         await self._job(GITHUB_WORKER, REPO_REMOVE, {"repo": repo})
 
-    async def start_review(self, prs: list[PRRef]) -> dict[str, str]:
-        """Have the lead plan the PRs' reviews and start them; why some didn't, by PR."""
-        payload = {"prs": [str(pr) for pr in prs]}
+    async def start_review(self, prs: list[PRRef], depth: str | None = None) -> dict[str, str]:
+        """Have the lead plan the PRs' reviews and start them; why some didn't, by PR.
+
+        ``depth`` (quick or full) overrides the lead's.
+        """
+        payload = {"prs": [str(pr) for pr in prs], "depth": depth}
         response = await self._job(LEAD_WORKER, LEAD_REVIEW, payload, timeout=180)
         return dict(response.get("errors") or {})
 
@@ -92,6 +97,13 @@ class UIWorker(BaseWorker):
         """The PR's unified diff."""
         response = await self._job(GIT_WORKER, PR_DIFF, {"pr": str(pr)})
         return str(response.get("diff") or "")
+
+    async def set_model(self, pr: PRRef, model: str | None) -> None:
+        await self._job(REVIEW_WORKER, REVIEW_MODEL, {"pr": str(pr), "model": model})
+
+    async def repo_skills(self, repo: str) -> list[dict]:
+        response = await self._job(REVIEW_WORKER, REPO_SKILLS, {"repo": repo})
+        return list(response.get("skills") or [])
 
     async def worktree(self, pr: PRRef) -> str:
         """The PR's worktree, made again if it was removed."""

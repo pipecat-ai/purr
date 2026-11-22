@@ -14,7 +14,8 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import RichLog, Static
+from textual.widgets import OptionList, RichLog, Static, TextArea
+from textual.widgets.option_list import Option
 
 from purr.messages import PermissionRequest
 from purr.models import (
@@ -28,6 +29,14 @@ from purr.models import (
 )
 from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.bridge import RequestError
+from purr.tui.commands import (
+    PURR_NAMES,
+    Command,
+    parse,
+    render_cost,
+    render_help,
+    suggestions,
+)
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
 
@@ -195,13 +204,109 @@ class PRSession(Vertical):
         yield Static(id="pr-header")
         yield RichLog(id="transcript", wrap=True, markup=False, auto_scroll=True)
         yield Static(id="pr-decision")
+        suggestions = OptionList(id="suggestions")
+        suggestions.can_focus = False
+        yield suggestions
         yield PromptArea(
-            id="prompt", placeholder="Ask the agent about this PR…  (ctrl+j: new line)"
+            id="prompt", placeholder="Ask the agent about this PR…  (/ commands, ctrl+j: new line)"
         )
 
     def on_mount(self) -> None:
         self.border_title = "PR"
         self.query_one("#pr-decision").display = False
+        self.query_one("#suggestions").display = False
+        self.query_one(PromptArea).completer = self
+        self._suggested: list[Command] = []
+
+    # -- Slash commands (see purr.tui.commands) ----------------------------------------
+
+    def _skills(self) -> list[dict]:
+        """The repo's skills, for suggestions; fetched in the background the first time."""
+        if not self.pr:
+            return []
+        repo = self.pr.repo
+        cache = self.purr_app.repo_skills
+        if repo not in cache:
+            cache[repo] = []
+            self.run_worker(self._load_skills(repo), group="skills")
+        return cache[repo]
+
+    async def _load_skills(self, repo: str) -> list[dict]:
+        try:
+            self.purr_app.repo_skills[repo] = await self.purr_app.bus.repo_skills(repo)
+        except RequestError:
+            self.purr_app.repo_skills.pop(repo, None)  # try again next time
+            return []
+        self._suggest()
+        return self.purr_app.repo_skills[repo]
+
+    @on(TextArea.Changed, "#prompt")
+    def _suggest(self) -> None:
+        box = self.query_one("#suggestions", OptionList)
+        self._suggested = suggestions(self.query_one(PromptArea).text, self._skills())
+        box.display = bool(self._suggested)
+        if self._suggested:
+            box.set_options(
+                [
+                    Option(
+                        Text.assemble(
+                            (f"/{c.name}", "bold"), (f"  {c.args}", ""), (f"  {c.help}", "dim")
+                        )
+                    )
+                    for c in self._suggested
+                ]
+            )
+            box.highlighted = 0
+
+    def active(self) -> bool:
+        return bool(self._suggested) and self.query_one("#suggestions").display
+
+    def move(self, step: int) -> None:
+        box = self.query_one("#suggestions", OptionList)
+        box.action_cursor_down() if step > 0 else box.action_cursor_up()
+
+    def accept(self) -> str | None:
+        index = self.query_one("#suggestions", OptionList).highlighted
+        if index is None or index >= len(self._suggested):
+            return None
+        return f"/{self._suggested[index].name}"
+
+    async def _command(self, name: str, args: str) -> None:
+        """Run one of Purr's commands; its output goes in the transcript, just for you."""
+        assert self.pr
+        log, ref = self.query_one(RichLog), self.pr.ref
+        log.write(Text(f"\n> /{name} {args}".rstrip(), style="bold"))
+        if name == "help":
+            log.write(render_help(await self._load_skills(ref.repo)))
+        elif name in ("review", "clear"):
+            if args not in ("", "quick", "full"):
+                log.write(Text("Say /review, /review quick or /review full.", style="yellow"))
+                return
+            errors = await self.purr_app.bus.start_review([ref], depth=args or None)
+            for error in errors.values():
+                log.write(Text(error, style="yellow"))
+            if not errors:
+                log.write(Text("Starting over with a fresh review.", style="dim"))
+        elif name == "model":
+            if args:
+                model = None if args in ("default", "auto") else args
+                await self.purr_app.bus.set_model(ref, model)
+                self.pr = await self.purr_app.purr.store.get_pr(ref) or self.pr
+            chosen = self.pr.model
+            config = self.purr_app.purr.config
+            text = (
+                f"This PR's conversation uses {chosen}."
+                if chosen
+                else f"Purr's choice: {config.review_model or 'Claude Code’s default'}, and "
+                f"{config.quick_model or 'the same'} for quick reviews. /model <name> to choose."
+            )
+            log.write(Text(text, style="dim"))
+        elif name == "cost":
+            log.write(render_cost(await self.purr_app.purr.store.runs(ref)))
+        elif name == "shell":
+            await self.purr_app.main.repo.action_shell()
+        elif name == "claude":
+            await self.purr_app.main.repo.action_open_claude()
 
     def state(self, pr: PR | None = None) -> SessionState:
         pr = pr or self.pr
@@ -408,6 +513,15 @@ class PRSession(Vertical):
     async def send(self, event: PromptArea.Submitted) -> None:
         text = event.text.strip()
         if not text or not self.pr:
+            return
+        command = parse(text)
+        if command and command[0] in PURR_NAMES:
+            event.prompt.clear()
+            event.prompt.remember(text)
+            try:
+                await self._command(*command)
+            except RequestError as e:
+                self.notify(str(e), severity="warning")
             return
         try:
             await self.purr_app.bus.send_message(self.pr.ref, text)

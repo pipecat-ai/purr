@@ -77,7 +77,7 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
 
 def _same_metadata(old: PR, new: PR) -> bool:
     """Whether GitHub reports nothing new; Purr's own fields don't count."""
-    return replace(new, id=old.id, state=old.state) == old
+    return replace(new, id=old.id, state=old.state, model=old.model) == old
 
 
 def _assignment_change(old: PR, new: PR) -> PRChange | None:

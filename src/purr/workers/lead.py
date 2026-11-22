@@ -24,6 +24,7 @@ from purr.messages import (
 )
 from purr.models import (
     PR,
+    Depth,
     GHState,
     PRChange,
     PRDetails,
@@ -127,7 +128,13 @@ class LeadWorker(BaseWorker):
         except ValueError as e:
             await self.send_job_response(message.job_id, {"error": str(e)})
             return
-        started, errors = await self.review(refs, requested=True)
+        depth = (message.payload or {}).get("depth")
+        if depth not in (None, *Depth):
+            await self.send_job_response(message.job_id, {"error": f"No such depth: {depth}"})
+            return
+        started, errors = await self.review(
+            refs, requested=True, depth=Depth(depth) if depth else None
+        )
         response = {"started": [str(ref) for ref in started], "errors": errors}
         await self.send_job_response(message.job_id, response)
 
@@ -145,13 +152,19 @@ class LeadWorker(BaseWorker):
                 logger.exception("Couldn't plan and start reviews")
 
     async def review(
-        self, refs: list[PRRef], *, requested: bool, rereviews: list[PRRef] = ()
+        self,
+        refs: list[PRRef],
+        *,
+        requested: bool,
+        rereviews: list[PRRef] = (),
+        depth: Depth | None = None,
     ) -> tuple[list[PRRef], dict[str, str]]:
         """Plan the PRs' reviews (and re-reviews) and start them, highest priority first.
 
         Unless ``requested``, only open PRs assigned to you that were never
         reviewed. ``rereviews`` are reviewed PRs with new commits; only those
         whose review can look at them (finished, assigned to you, head moved).
+        ``depth`` overrides the lead's (you asked for a quick or full review).
         Returns what started, and why the rest didn't.
         """
         prs: list[PR] = []
@@ -184,6 +197,13 @@ class LeadWorker(BaseWorker):
                 what = "re-review" if pr.ref in rereviewing else "review"
                 await self._progress(pr.ref, f"Planning the {what}")
             plans = await self.plan(everything, requested=requested, rereviews=rereviewing)
+            if depth:
+                plans = {
+                    ref: plan
+                    if plan.depth == depth
+                    else replace(plan, depth=depth, why=f"You asked for a {depth} review.")
+                    for ref, plan in plans.items()
+                }
             for pr in sorted(everything, key=lambda pr: plans[pr.ref].priority.rank):
                 if pr.ref in rereviewing:
                     error = await self._rereview(pr.ref, plans[pr.ref])

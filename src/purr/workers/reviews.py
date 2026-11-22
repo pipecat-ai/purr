@@ -15,7 +15,9 @@ from purr.git import GitRepos
 from purr.github import GitHub, GitHubError
 from purr.messages import (
     PERMISSION_ANSWER,
+    REPO_SKILLS,
     REVIEW_MESSAGE,
+    REVIEW_MODEL,
     REVIEW_REREVIEW,
     REVIEW_SKILL,
     REVIEW_SKILLS,
@@ -58,7 +60,7 @@ from purr.review.agent import (
     review_prompt,
 )
 from purr.review.grants import Grants, rule_for
-from purr.review.skills import review_skills
+from purr.review.skills import repo_skills, review_skills
 from purr.store import Store
 from purr.workers.slots import Slots
 
@@ -307,6 +309,28 @@ class ReviewWorker(BaseWorker):
             ):
                 future.set_result(True)
 
+    @job(name=REVIEW_MODEL)
+    async def on_review_model(self, message: BusJobRequestMessage) -> None:
+        payload = message.payload or {}
+        try:
+            ref = PRRef.parse(str(payload.get("pr")))
+        except ValueError as e:
+            await self.send_job_response(message.job_id, {"error": str(e)})
+            return
+        model = str(payload["model"]).strip() if payload.get("model") else None
+        await self._store.set_pr_model(ref, model or None)
+        await self.send_job_response(message.job_id, {"ok": True})
+
+    @job(name=REPO_SKILLS)
+    async def on_repo_skills(self, message: BusJobRequestMessage) -> None:
+        repo = str((message.payload or {}).get("repo") or "")
+        if not repo:
+            await self.send_job_response(message.job_id, {"error": "Which repo?"})
+            return
+        skills = repo_skills(await self._repo_plugin(repo))
+        listed = [{"name": s.name, "description": s.description} for s in skills]
+        await self.send_job_response(message.job_id, {"skills": listed})
+
     @job(name=REVIEW_SKILLS)
     async def on_review_skills(self, message: BusJobRequestMessage) -> None:
         repo = str((message.payload or {}).get("repo") or "")
@@ -544,10 +568,7 @@ class ReviewWorker(BaseWorker):
                 plugin=plugin,
                 skill=skill,
                 plan=plan,
-                # Quick work gets the cheaper model; you asking gets the full one.
-                model=self._quick_model
-                if plan.depth == Depth.QUICK and kind != "message"
-                else None,
+                model=await self._model(ref, plan, kind),
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")
@@ -592,6 +613,16 @@ class ReviewWorker(BaseWorker):
             if slot:
                 self._slots.release()
             self._running.pop(ref, None)
+
+    async def _model(self, ref: PRRef, plan: ReviewPlan, kind: str) -> str | None:
+        """The model for a run: yours for the PR (/model), else the cheaper one for quick
+        work; you asking gets the full one. None: the agent's own."""
+        pr = await self._store.get_pr(ref)
+        if pr and pr.model:
+            return pr.model
+        if plan.depth == Depth.QUICK and kind != "message":
+            return self._quick_model
+        return None
 
     async def _settle(self, ref: PRRef, state: PRState) -> None:
         """Set the PR's state after a run: anything pending means it needs you."""

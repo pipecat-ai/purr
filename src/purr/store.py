@@ -210,6 +210,10 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE prs ADD COLUMN author_association TEXT NOT NULL DEFAULT '';
     """,
+    # The model you chose for a PR's conversation (/model); NULL: Purr's choice.
+    """
+    ALTER TABLE prs ADD COLUMN model TEXT;
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -274,6 +278,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         base=row["base"],
         author_association=row["author_association"],
         assignees=tuple(json.loads(row["assignees"])),
+        model=row["model"],
     )
 
 
@@ -474,6 +479,13 @@ class Store:
             params,
         )
         return [_pr(row) for row in rows]
+
+    async def set_pr_model(self, ref: PRRef, model: str | None) -> None:
+        """The model for everything in the PR's conversation (None: Purr's choice)."""
+        await self._db.execute(
+            "UPDATE prs SET model = ? WHERE repo = ? AND number = ?", (model, ref.repo, ref.number)
+        )
+        await self._db.commit()
 
     async def set_pr_state(self, ref: PRRef, state: PRState) -> None:
         cursor = await self._db.execute(

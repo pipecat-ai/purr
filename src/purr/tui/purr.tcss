@@ -93,6 +93,16 @@
     border: round $warning;
 }
 
+#suggestions {
+    height: auto;
+    max-height: 10;
+    margin: 0 1;
+    border: none;
+    background: $panel;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
 #prompt {
     margin: 0 1;
     height: auto;

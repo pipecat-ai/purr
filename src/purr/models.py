@@ -125,6 +125,7 @@ class PR:
     assigned_to_me: bool = False
     state: PRState = PRState.NOT_REVIEWED
     gh_state: GHState = GHState.OPEN
+    model: str | None = None  # you chose it for the PR's conversation (/model)
     id: int | None = None
 
     @property

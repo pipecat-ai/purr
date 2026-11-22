@@ -5,9 +5,13 @@ tells them apart, or a ``\\`` at the end of the line) starts a new line, and
 pasting keeps the lines. ↑/↓ on the first/last line go through what you asked on
 this PR, ctrl+r searches everything you've asked on any PR, and the usual
 readline keys move around (ctrl+a/e, ctrl+b/f, alt+b/f, ctrl+k/u/w).
+
+Typing ``/`` shows matching commands (see :mod:`purr.tui.commands`): ↑/↓ pick
+one, tab or enter fills it in, and enter again runs it.
 """
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from rich.text import Text
 from textual import events, on
@@ -22,6 +26,16 @@ from textual.widgets.option_list import Option
 from purr.models import PRRef
 
 NEWLINE_KEYS = ("ctrl+j", "shift+enter", "alt+enter")
+
+
+class Completer(Protocol):
+    """What the prompt asks while it shows suggestions (the PR session provides it)."""
+
+    def active(self) -> bool: ...
+
+    def move(self, step: int) -> None: ...
+
+    def accept(self) -> str | None: ...
 
 
 class PromptArea(TextArea):
@@ -46,8 +60,18 @@ class PromptArea(TextArea):
         self._history: list[str] = []
         self._position = 0  # len(history): the text being written
         self._draft = ""  # that text, while looking back
+        self.completer: Completer | None = None
 
     async def _on_key(self, event: events.Key) -> None:
+        if event.key in ("tab", "enter") and self.completer and self.completer.active():
+            choice = self.completer.accept()
+            # Tab fills in the highlighted command; so does enter, unless that's
+            # already what's typed (then it runs).
+            if choice and (event.key == "tab" or choice != self.text.strip()):
+                event.stop()
+                event.prevent_default()
+                self.set_text(choice + " ")
+                return
         if event.key == "enter":
             event.stop()
             event.prevent_default()
@@ -84,13 +108,17 @@ class PromptArea(TextArea):
         self._draft = ""
 
     def action_older(self) -> None:
-        if self.cursor_location[0] > 0:
+        if self.completer and self.completer.active():
+            self.completer.move(-1)
+        elif self.cursor_location[0] > 0:
             self.action_cursor_up()
         else:
             self._step(-1)
 
     def action_newer(self) -> None:
-        if self.cursor_location[0] < self.document.line_count - 1:
+        if self.completer and self.completer.active():
+            self.completer.move(1)
+        elif self.cursor_location[0] < self.document.line_count - 1:
             self.action_cursor_down()
         else:
             self._step(1)

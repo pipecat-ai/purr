@@ -30,7 +30,8 @@ LEAD_WORKER = "lead"
 # Job names handled by LEAD_WORKER, which decides what gets reviewed, how deep and
 # in what order (see purr.lead). It answers once it has the PRs; their reviews
 # start after it has planned them.
-# payload: {"prs": ["owner/repo#123", ...]} -> {"ok": true}
+# payload: {"prs": ["owner/repo#123", ...], "depth": "quick" | "full" | None}
+#   -> {"started": [...], "errors": {pr: error}}; "depth" overrides the lead's.
 LEAD_REVIEW = "lead.review"
 
 # Job names handled by RECAP_WORKER.
@@ -60,6 +61,12 @@ PR_WORKTREE = "pr.worktree"
 # Job names handled by REVIEW_WORKER.
 # payload: {"pr": "owner/repo#123", "plan": {...} (a ReviewPlan; optional)} -> {"review_id": ...}
 REVIEW_START = "review.start"
+# The model for everything in a PR's conversation, from now on (None: Purr's choice):
+# payload: {"pr": "owner/repo#123", "model": "opus" | None} -> {"ok": true}
+REVIEW_MODEL = "review.model"
+# A repo's skills and commands, as Claude Code names them (for /help and completion):
+# payload: {"repo": "owner/name"} -> {"skills": [{"name", "description"}]}
+REPO_SKILLS = "repo.skills"
 # Have a finished review look at the PR's new commits:
 # payload: {"pr": "owner/repo#123"} -> {"started": bool}
 REVIEW_REREVIEW = "review.rereview"
