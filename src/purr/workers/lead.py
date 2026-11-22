@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from itertools import batched
 
 from loguru import logger
 from pipecat.bus import BusMessage
@@ -36,6 +37,20 @@ from purr.models import (
 from purr.review.instructions import ReviewInstructions
 from purr.review.skills import repo_skills
 from purr.store import Store
+
+
+def _due_review(pr: PR) -> bool:
+    """Whether Purr reviews the PR without being asked: open, yours, never reviewed."""
+    return pr.state == PRState.NOT_REVIEWED and pr.assigned_to_me and pr.gh_state == GHState.OPEN
+
+
+def _at_depth(plans: dict[PRRef, ReviewPlan], depth: Depth) -> dict[PRRef, ReviewPlan]:
+    """The plans, at the depth you asked for."""
+    asked = f"You asked for a {depth} review."
+    return {
+        ref: plan if plan.depth == depth else replace(plan, depth=depth, why=asked)
+        for ref, plan in plans.items()
+    }
 
 
 class LeadWorker(BaseWorker):
@@ -109,9 +124,9 @@ class LeadWorker(BaseWorker):
         if not self._auto_review:
             return
         if isinstance(message, Synced):
-            for pr in await self._store.list_prs(state=PRState.NOT_REVIEWED, open_only=True):
-                if pr.assigned_to_me:
-                    self._pending.setdefault(pr.ref, "review")
+            unreviewed = await self._store.list_prs(state=PRState.NOT_REVIEWED, open_only=True)
+            for ref in (pr.ref for pr in unreviewed if pr.assigned_to_me):
+                self._pending.setdefault(ref, "review")
             self._wake.set()
         elif isinstance(message, PRChanged) and message.change == PRChange.ASSIGNED:
             self._pending.setdefault(PRRef.parse(message.pr), "review")
@@ -154,6 +169,24 @@ class LeadWorker(BaseWorker):
         ``depth`` overrides the lead's (you asked for a quick or full review).
         Returns what started, and why the rest didn't.
         """
+        prs, errors = await self._to_review(refs, requested=requested)
+        again = await self._to_rereview(rereviews)
+        everything = prs + again
+        if not everything:
+            return [], errors
+        self._planning.update(pr.ref for pr in everything)
+        try:
+            started, failed = await self._plan_and_start(
+                everything, requested=requested, rereviews={pr.ref for pr in again}, depth=depth
+            )
+        finally:
+            self._planning.difference_update(pr.ref for pr in everything)
+        return started, errors | failed
+
+    async def _to_review(
+        self, refs: list[PRRef], *, requested: bool
+    ) -> tuple[list[PR], dict[str, str]]:
+        """The PRs to review (unless ``requested``, only those due one), and why not the rest."""
         prs: list[PR] = []
         errors: dict[str, str] = {}
         for ref in dict.fromkeys(refs):
@@ -162,47 +195,41 @@ class LeadWorker(BaseWorker):
                 errors[str(ref)] = f"{ref} is already being planned"
             elif pr is None:
                 errors[str(ref)] = f"Purr doesn't know {ref}"
-            elif requested or (
-                pr.state == PRState.NOT_REVIEWED
-                and pr.assigned_to_me
-                and pr.gh_state == GHState.OPEN
-            ):
+            elif requested or _due_review(pr):
                 prs.append(pr)
-        again: list[PR] = []
-        for ref in dict.fromkeys(rereviews):
+        return prs, errors
+
+    async def _to_rereview(self, refs: list[PRRef]) -> list[PR]:
+        """The PRs whose review can look at their new commits, unless already being planned."""
+        prs: list[PR] = []
+        for ref in dict.fromkeys(refs):
             pr = await self._store.get_pr(ref)
             if pr and ref not in self._planning and await self._rereviewable(pr):
-                again.append(pr)
-        everything = prs + again
-        if not everything:
-            return [], errors
-        self._planning.update(pr.ref for pr in everything)
+                prs.append(pr)
+        return prs
+
+    async def _plan_and_start(
+        self, prs: list[PR], *, requested: bool, rereviews: set[PRRef], depth: Depth | None
+    ) -> tuple[list[PRRef], dict[str, str]]:
+        """Plan the PRs' reviews and start them, highest priority first.
+
+        Returns what started, and why the rest didn't.
+        """
+        for pr in prs:
+            what = "re-review" if pr.ref in rereviews else "review"
+            await self._progress(pr.ref, f"Planning the {what}")
+        plans = await self.plan(prs, requested=requested, rereviews=rereviews)
+        if depth:
+            plans = _at_depth(plans, depth)
         started: list[PRRef] = []
-        rereviewing = {pr.ref for pr in again}
-        try:
-            for pr in everything:
-                what = "re-review" if pr.ref in rereviewing else "review"
-                await self._progress(pr.ref, f"Planning the {what}")
-            plans = await self.plan(everything, requested=requested, rereviews=rereviewing)
-            if depth:
-                plans = {
-                    ref: plan
-                    if plan.depth == depth
-                    else replace(plan, depth=depth, why=f"You asked for a {depth} review.")
-                    for ref, plan in plans.items()
-                }
-            for pr in sorted(everything, key=lambda pr: plans[pr.ref].priority.rank):
-                if pr.ref in rereviewing:
-                    error = await self._rereview(pr.ref, plans[pr.ref])
-                else:
-                    error = await self._start(pr.ref, plans[pr.ref])
-                if error:
-                    errors[str(pr.ref)] = error
-                    await self._progress(pr.ref, "")  # nothing's happening after all
-                else:
-                    started.append(pr.ref)
-        finally:
-            self._planning.difference_update(pr.ref for pr in everything)
+        errors: dict[str, str] = {}
+        for pr in sorted(prs, key=lambda pr: plans[pr.ref].priority.rank):
+            start = self._rereview if pr.ref in rereviews else self._start
+            if error := await start(pr.ref, plans[pr.ref]):
+                errors[str(pr.ref)] = error
+                await self._progress(pr.ref, "")  # nothing's happening after all
+                continue
+            started.append(pr.ref)
         return started, errors
 
     async def _rereviewable(self, pr: PR) -> bool:
@@ -221,34 +248,36 @@ class LeadWorker(BaseWorker):
     ) -> dict[PRRef, ReviewPlan]:
         """The lead's plan for each PR; Purr's default where it has none."""
         plans: dict[PRRef, ReviewPlan] = {}
-        for start in range(0, len(prs), self._batch):
-            chunk = prs[start : start + self._batch]
-            reason = "the lead left it out"
-            try:
-                inputs, repos = await self._inputs(chunk, requested=requested, rereviews=rereviews)
-                output = await self._agent.plan(lead_notes(inputs, repos))
-                planned = plans_from(output, [pr.ref for pr in chunk])
-            except Exception as e:
-                logger.warning(f"The lead couldn't plan {len(chunk)} reviews: {e}")
-                planned, reason = {}, f"the lead couldn't plan it ({e})"
-            for pr in chunk:
-                plan = planned.get(pr.ref) or default_plan(reason, requested=requested)
-                if requested:  # you're waiting for it
-                    plan = replace(plan, priority=Priority.HIGH)
-                plans[pr.ref] = plan
+        for batch in batched(prs, self._batch):
+            plans |= await self._plan_batch(list(batch), requested=requested, rereviews=rereviews)
+        return plans
+
+    async def _plan_batch(
+        self, prs: list[PR], *, requested: bool, rereviews: set[PRRef]
+    ) -> dict[PRRef, ReviewPlan]:
+        """One planning call for the PRs; Purr's default plan where the lead has none."""
+        reason = "the lead left it out"
+        try:
+            inputs, repos = await self._inputs(prs, requested=requested, rereviews=rereviews)
+            output = await self._agent.plan(lead_notes(inputs, repos))
+            planned = plans_from(output, [pr.ref for pr in prs])
+        except Exception as e:
+            logger.warning(f"The lead couldn't plan {len(prs)} reviews: {e}")
+            planned, reason = {}, f"the lead couldn't plan it ({e})"
+        plans = {
+            pr.ref: planned.get(pr.ref) or default_plan(reason, requested=requested) for pr in prs
+        }
+        if requested:  # you're waiting for it
+            plans = {ref: replace(plan, priority=Priority.HIGH) for ref, plan in plans.items()}
         return plans
 
     async def _inputs(
         self, prs: list[PR], *, requested: bool, rereviews: set[PRRef]
     ) -> tuple[list[LeadInput], dict[str, RepoContext]]:
-        details: dict[PRRef, PRDetails] = {}
-        if self._github:
-            try:
-                details = await self._github.pr_details([pr.ref for pr in prs])
-            except Exception as e:
-                logger.warning(f"Planning without PR details: {e}")
+        details = await self._details(prs)
+        repos = {pr.repo for pr in prs}
         outcomes = {}
-        for repo in {pr.repo for pr in prs}:
+        for repo in repos:
             outcomes.update(await self._store.outcomes(repo))
         inputs = []
         for pr in prs:
@@ -260,14 +289,28 @@ class LeadWorker(BaseWorker):
                 requested=requested,
                 rereview=pr.ref in rereviews,
             )
-            since = item.previous.head_sha if item.previous else None
-            if item.rereview and self._repos and since:
-                commits = await self._repos.new_commits(pr, since)
-                if commits:
-                    item.new_commits, item.new_files = commits
+            if item.rereview:
+                await self._add_new_commits(item)
             inputs.append(item)
-        repos = {repo: await self._repo_context(repo) for repo in {pr.repo for pr in prs}}
-        return inputs, repos
+        return inputs, {repo: await self._repo_context(repo) for repo in repos}
+
+    async def _details(self, prs: list[PR]) -> dict[PRRef, PRDetails]:
+        """The PRs' descriptions, files and CI; none when GitHub can't say."""
+        if not self._github:
+            return {}
+        try:
+            return await self._github.pr_details([pr.ref for pr in prs])
+        except Exception as e:
+            logger.warning(f"Planning without PR details: {e}")
+            return {}
+
+    async def _add_new_commits(self, item: LeadInput) -> None:
+        """What a re-review's new commits say and change, when the clone can tell."""
+        since = item.previous.head_sha if item.previous else None
+        if not self._repos or not since:
+            return
+        if commits := await self._repos.new_commits(item.pr, since):
+            item.new_commits, item.new_files = commits
 
     async def _repo_context(self, repo: str) -> RepoContext:
         context = RepoContext(

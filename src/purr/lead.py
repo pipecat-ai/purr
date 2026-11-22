@@ -12,7 +12,7 @@ worker, which runs them. The rules that matter (nothing posted without you, the
 permission policy, how many reviews run at once) stay in code.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
@@ -110,26 +110,44 @@ def lead_notes(inputs: list[LeadInput], repos: dict[str, RepoContext]) -> str:
     """The lead's input: per repo, its context, then its PRs."""
     lines: list[str] = []
     for repo in dict.fromkeys(item.pr.repo for item in inputs):
-        context = repos.get(repo) or RepoContext()
-        lines.append(f"# {repo}")
-        if context.review_skill:
-            lines.append(f"Full reviews here follow the repo's /{context.review_skill} skill.")
-        loadable = [s for s in context.skills if s.model_invocable]
-        if loadable:
-            lines.append("Skills a review agent can load:")
-            lines += [f"- {s.name}: {s.description}" for s in loadable]
-        if context.instructions:
-            lines.append("The user's instructions:")
-            lines.append(context.instructions.strip()[:_MAX_INSTRUCTIONS])
-        lines.append("")
+        lines += _repo_notes(repo, repos.get(repo) or RepoContext())
         for item in (i for i in inputs if i.pr.repo == repo):
             lines += _pr_notes(item)
     return "\n".join(lines).strip()
 
 
+def _repo_notes(repo: str, context: RepoContext) -> list[str]:
+    lines = [f"# {repo}"]
+    if context.review_skill:
+        lines.append(f"Full reviews here follow the repo's /{context.review_skill} skill.")
+    loadable = [s for s in context.skills if s.model_invocable]
+    if loadable:
+        lines.append("Skills a review agent can load:")
+        lines += [f"- {s.name}: {s.description}" for s in loadable]
+    if context.instructions:
+        lines.append("The user's instructions:")
+        lines.append(context.instructions.strip()[:_MAX_INSTRUCTIONS])
+    lines.append("")
+    return lines
+
+
 def _pr_notes(item: LeadInput) -> list[str]:
+    pr = item.pr
+    lines = [f'## {pr.ref} "{pr.title}" by {pr.author}', "; ".join(_facts(item))]
+    if item.details:
+        lines += _files_and_description(item.details)
+    if item.previous and item.previous.summary:
+        found = f" ({item.outcome.text()})" if item.outcome else ""
+        lines.append(f"Reviewed before{found}: {item.previous.summary}")
+    if item.rereview:
+        lines += _new_commits_notes(item)
+    lines.append("")
+    return lines
+
+
+def _facts(item: LeadInput) -> list[str]:
+    """The PR's facts, for their one line in its notes."""
     pr, details = item.pr, item.details
-    lines = [f'## {pr.ref} "{pr.title}" by {pr.author}']
     facts = []
     if item.requested:
         facts.append("the user asked for this review now")
@@ -146,38 +164,40 @@ def _pr_notes(item: LeadInput) -> list[str]:
             facts.append(f"into {details.base}")
     if pr.created_at:
         facts.append(f"opened {pr.created_at[:10]}")
-    lines.append("; ".join(facts))
-    if details and details.files:
+    return facts
+
+
+def _files_and_description(details: PRDetails) -> list[str]:
+    lines = []
+    if details.files:
         lines.append("Files:")
-        lines += [f"  {f.path} +{f.additions} -{f.deletions}" for f in details.files[:_MAX_FILES]]
-        if len(details.files) > _MAX_FILES:
-            lines.append(f"  ... and {len(details.files) - _MAX_FILES} more")
-    if details and details.body.strip():
-        body = details.body.strip()
+        lines += _capped([f"  {f.path} +{f.additions} -{f.deletions}" for f in details.files])
+    if body := details.body.strip():
         lines.append("Description:")
         lines.append(body[:_MAX_BODY] + (" [...]" if len(body) > _MAX_BODY else ""))
-    if item.previous and item.previous.summary:
-        found = f" ({item.outcome.text()})" if item.outcome else ""
-        lines.append(f"Reviewed before{found}: {item.previous.summary}")
-    if item.rereview:
-        at = (
-            f" (which looked at {item.previous.head_sha[:7]})"
-            if item.previous and item.previous.head_sha
-            else ""
-        )
-        lines.append(f"Re-review: the author pushed new commits after the last review{at}.")
-        if item.new_commits is None:
-            lines.append("(Couldn't read the new commits.)")
-        else:
-            lines.append("New commits:")
-            lines += [f"  - {subject}" for subject in item.new_commits[:_MAX_FILES]]
-            if item.new_files:
-                lines.append("Files they change:")
-                lines += [f"  {change}" for change in item.new_files[:_MAX_FILES]]
-                if len(item.new_files) > _MAX_FILES:
-                    lines.append(f"  ... and {len(item.new_files) - _MAX_FILES} more")
-    lines.append("")
     return lines
+
+
+def _new_commits_notes(item: LeadInput) -> list[str]:
+    """For a re-review: what the author pushed since the last review."""
+    previous = item.previous
+    at = f" (which looked at {previous.head_sha[:7]})" if previous and previous.head_sha else ""
+    lines = [f"Re-review: the author pushed new commits after the last review{at}."]
+    if item.new_commits is None:
+        return [*lines, "(Couldn't read the new commits.)"]
+    lines.append("New commits:")
+    lines += [f"  - {subject}" for subject in item.new_commits[:_MAX_FILES]]
+    if item.new_files:
+        lines.append("Files they change:")
+        lines += _capped([f"  {change}" for change in item.new_files])
+    return lines
+
+
+def _capped(lines: list[str]) -> list[str]:
+    """The first ``_MAX_FILES`` lines, then how many more there are."""
+    if len(lines) <= _MAX_FILES:
+        return lines
+    return [*lines[:_MAX_FILES], f"  ... and {len(lines) - _MAX_FILES} more"]
 
 
 def plans_from(output: dict, refs: list[PRRef]) -> dict[PRRef, ReviewPlan]:
@@ -191,13 +211,7 @@ def plans_from(output: dict, refs: list[PRRef]) -> dict[PRRef, ReviewPlan]:
         if ref is None or ref in plans:
             continue
         plan = ReviewPlan.from_dict({**item, "by": "lead"})
-        plans[ref] = ReviewPlan(
-            depth=plan.depth,
-            priority=plan.priority,
-            focus=plan.focus[:_MAX_FOCUS],
-            why=plan.why,
-            by="lead",
-        )
+        plans[ref] = replace(plan, focus=plan.focus[:_MAX_FOCUS])
     return plans
 
 
