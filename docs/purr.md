@@ -218,6 +218,7 @@ Approving and merging are apart on purpose: two people may be reviewing a PR (tw
   - **concerns**, which are your call: a check that failed (a docs build failing needn't hold up a fix), one still running, an assignee who hasn't approved (or requested changes), a branch rule GitHub says isn't met (it may refuse, and says why).
 - The pane shows it: `Squash and merge #6902 into main?`, how many checks passed, then each concern. **`m` again merges anyway** (`MergePR`), with your default merge method in the repo (what GitHub's own page picks for you: merge, squash or rebase), and only at the commit you approved: GitHub refuses if the PR moved on meanwhile.
 - It's checked again just before merging. If something new came up since you looked (a check that was running failed), it doesn't merge; the pane shows how it stands now, and `m` again decides on that. Things that only got better (the check passed) don't count. Moving to another PR drops what the pane showed: `m` asks GitHub again next time.
+- While the pane says a check is still running, it stays current: Purr asks GitHub again every 10 seconds (`MERGE_RECHECK`) until none is, so a check that finishes or fails shows as it happens, without pressing anything. It stops when you move on or merge.
 - The PR shows merged at once (and its worktree goes); the next poll would only find it out. The commit an approval was of is kept when it's posted (`pending_actions.posted_head`).
 
 ## Permissions: Claude Code's own

@@ -1258,6 +1258,47 @@ def rows(view, text: str) -> list:
     return [row for row in view._rows if text in row.text.plain]
 
 
+async def test_the_merge_box_follows_checks_still_running(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from purr.messages import ApproveAction
+    from purr.models import ActionKind, Check, CheckState, MergeCheck, PRRef
+
+    monkeypatch.setattr("purr.tui.screens.MERGE_RECHECK", 0.05)
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    running = MergeCheck(
+        head_sha="abc",
+        base="main",
+        method="squash",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        checks=(Check("Unit Tests", CheckState.RUNNING),),
+        assignees=("me",),
+    )
+    github.merge_checks[ref] = running
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        approval = await app.purr.store.add_pending_action(
+            ref, kind=ActionKind.APPROVE, description="LGTM"
+        )
+        await app.bus.request(ApproveAction(action_id=approval.id))
+        await app.main.repo.session.refresh_status()
+        await until(pilot, lambda: "You approved it." in decision(app))
+
+        await pilot.press("m")
+        await until(pilot, lambda: "⚠ Unit Tests is still running" in decision(app))
+        # It finishes: the box says so, without pressing anything.
+        passed = (Check("Unit Tests", CheckState.PASSED),)
+        github.merge_checks[ref] = replace(running, checks=passed)
+        await until(pilot, lambda: "✓ 1 check passed" in decision(app))
+        assert "still running" not in decision(app) and "merge anyway" not in decision(app)
+
+
 async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
     from purr.messages import PRChanged
 

@@ -37,12 +37,13 @@ from purr.messages import (
     GetDiff,
     GetWorktree,
     MergePR,
+    MergeReadiness,
     PlanReviews,
     PostComments,
     UnwatchRepo,
     WatchRepo,
 )
-from purr.models import PR, PRRef, PRState, RepoSummary
+from purr.models import PR, CheckState, PRRef, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.review.skills import Skill
 from purr.tui.diffview import DiffScreen
@@ -380,6 +381,13 @@ class ReposView(PurrView):
             await self.purr_app.bus.request(UnwatchRepo(repo=repo))
         except PurrError as e:
             self.notify(str(e), severity="warning")
+
+
+MERGE_RECHECK = 10.0  # seconds between asking GitHub again while checks run
+
+
+def _checks_running(merge: MergeReadiness | None) -> bool:
+    return bool(merge) and any(c.state == CheckState.RUNNING for c in merge.check.checks)
 
 
 class RepoView(PurrView):
@@ -820,6 +828,21 @@ class RepoView(PurrView):
             state.merge = None
             self.notify(str(e), severity="warning")
         await self.session.refresh_status()
+        self._follow_checks(pr, state)
+
+    @work(exclusive=True, group="merge-checks")
+    async def _follow_checks(self, pr: PR, state: SessionState) -> None:
+        """While the merge box says a check is still running, it stays current: GitHub's
+        asked again every MERGE_RECHECK seconds until none is, or the box is gone."""
+        while _checks_running(state.merge):
+            await asyncio.sleep(MERGE_RECHECK)
+            if not _checks_running(state.merge):
+                return  # merged, or you moved on, meanwhile
+            try:
+                state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
+            except PurrError:
+                return  # what it said stays; m asks again
+            await self.session.refresh_status()
 
     async def _merge(self, pr: PR, state: SessionState) -> None:
         """Merge past what you saw, unless something new came up: then you see it again."""
