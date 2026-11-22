@@ -486,8 +486,8 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 19)
 
-        # Columns, and the PR someone else took goes last, in its own group.
-        assert pr_ids(app)[-1] == "pipecat-ai/pipecat#2"
+        # Columns, and the PR someone else took in its own group, before the pool.
+        assert pr_ids(app)[0] == "pipecat-ai/pipecat#2"
         lines = option_texts(app)
         assert lines[0].split() == ["#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED"]
         assert "OTHERS REVIEWING (1)" in "\n".join(lines)
@@ -517,6 +517,32 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         await pilot.press("n")
         await until(pilot, lambda: isinstance(app.screen, MainScreen))
         assert app.purr.agent.runs == []
+
+
+async def test_the_list_stops_at_its_ends_and_shows_its_headings(tmp_path):
+    app, github = make_app(tmp_path)
+    taken = [remote(n, assignees=("bob",)) for n in range(100, 140)]
+    github.open["pipecat-ai/pipecat"] = [*taken, *[remote(n) for n in range(1, 41)]]
+    async with app.run_test(size=(140, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 80)
+        prs = app.main.repo.query_one("#prs")
+        lines = prs._index_to_line
+        first = prs.highlighted
+
+        # No wrapping round: down at the bottom, and up at the top, stay put.
+        await pilot.press("end", "down")
+        assert prs.highlighted == len(prs.options) - 1 and prs.scroll_offset.y > 0
+        # Up to the pool's first PR: its heading comes into view with it.
+        heading = next(i for i, o in enumerate(prs.options) if "NOT REVIEWED" in str(o.prompt))
+        while prs.highlighted != heading + 1:
+            await pilot.press("up")
+        assert lines[heading] >= prs.scroll_offset.y
+        # And at the very top, the first group's heading and the columns.
+        await pilot.press("home", "up")
+        assert prs.highlighted == first and prs.scroll_offset.y == 0
 
 
 async def test_moving_around_and_searching(tmp_path):

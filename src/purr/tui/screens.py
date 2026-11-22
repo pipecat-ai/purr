@@ -11,11 +11,12 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from rich.table import Table
 from rich.text import Text
 from textual import on, work
+from textual._widget_navigation import find_next_enabled_no_wrap
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -59,21 +60,55 @@ OTHERS = "others"
 REQUESTED = "requested"
 # Done comes before the pool of unreviewed PRs (hundreds, in a big repo), so
 # the ones you finished lately are at hand: the latest few, search finds the rest.
-# PRs asking for your review come before both: someone's waiting on you.
+# Before both, what's under way: PRs asking for your review (someone's waiting on
+# you), then those others are reviewing.
 _GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
     (REQUESTED, "◇", "REVIEW REQUESTED", "bold magenta"),
+    (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
     (PRState.DONE, "✓", "DONE", "bold green"),
     (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
-    (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
 ]
 DONE_SHOWN = 5
 _ICONS = {key: icon for key, icon, *_ in _GROUPS}
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
 
 
-class PRList(OptionList):
+class GroupedList(OptionList):
+    """A list of things in groups under headings (PRs, repos), the headings disabled.
+
+    It stops at either end rather than wrapping round. Scrolling to the first thing
+    in a group brings its heading along, which can't be highlighted to come into view
+    itself (and, above the first group, the column headings).
+    """
+
+    def action_cursor_up(self) -> None:
+        self._step(-1)
+
+    def action_cursor_down(self) -> None:
+        self._step(1)
+
+    def _step(self, direction: Literal[-1, 1]) -> None:
+        found = find_next_enabled_no_wrap(self.options, self.highlighted, direction)
+        if found is not None:
+            self.highlighted = found
+
+    def scroll_to_highlight(self, top: bool = False) -> None:
+        super().scroll_to_highlight(top)
+        lines = getattr(self, "_index_to_line", {})  # Textual's insides: none, no harm
+        line = lines.get(self._headed(self.highlighted))
+        if line is not None and line < self.scroll_offset.y:
+            self.scroll_to(y=line, animate=False, immediate=True)
+
+    def _headed(self, index: int | None) -> int | None:
+        """The first of the headings right above ``index`` (itself, if there are none)."""
+        while index and self.get_option_at_index(index - 1).disabled:
+            index -= 1
+        return index
+
+
+class PRList(GroupedList):
     """The PR list, which can redraw one row without rebuilding the rest.
 
     ``replace_option_prompt`` lays out every row again: fine once, but a spinning
@@ -251,7 +286,7 @@ class ReposView(PurrView):
         self._watched: set[str] = set()
 
     def compose(self) -> ComposeResult:
-        yield OptionList(id="repo-list")
+        yield GroupedList(id="repo-list")
         yield Static(id="empty")
         yield Static("[yellow]●[/] something new you haven't looked at", id="legend")
 

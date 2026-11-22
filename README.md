@@ -74,8 +74,8 @@ uv run purr --no-auto-review
 1. **Home** lists the repos you watch, then the ones listed only for PRs assigned to you or
    asking for your review, with how many PRs need you in each. `enter` opens one (or press its number, `1` to `9`).
 2. **A repo** shows its PRs on the left, grouped: *Needs you*, *Reviewing*, *Review
-   requested* (asking for your review by name), *Done* (the latest 5; `/` finds the rest),
-   *Not reviewed*, and *Others reviewing*. A reviewed PR shows ✓ if the review found nothing
+   requested* (asking for your review by name), *Others reviewing*, *Done* (the latest 5;
+   `/` finds the rest), and *Not reviewed*. A reviewed PR shows ✓ if the review found nothing
    and ● if it found issues; one being reviewed spins. Only PRs assigned to you are reviewed
    on their own; a review request doesn't start one.
 3. **Pick a PR** to read its description, files and diff on the right (`o` to scroll through

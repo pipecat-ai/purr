@@ -100,7 +100,7 @@ Two things keep this cheap:
 | **Needs you** | Review finished (or agent is blocked) and a decision is pending: post comments, request changes, approve, or answer a question. Or someone answered you on GitHub since your last word there (see Replies). |
 | **Done** | Decision made, nothing pending. |
 
-"Needs you" is pinned to the top of the list. **Done** comes before the pool of unreviewed PRs (hundreds, in a big repo), so what you finished lately is at hand: the latest 5, by when they got there (`prs.state_at`, which moves only when the state does), with `/` finding the others; an older one you go to (an alert, `ctrl+p`, a search) shows too while it's selected. PRs someone else is assigned to aren't a state of their own: they sit at the end of the list as **Others reviewing**, with who has them, so you can see what's taken. PRs asking for your review by name (see Triggers) aren't a state either: not reviewed yet, they're grouped as **Review requested**, after Reviewing, apart from the pool.
+"Needs you" is pinned to the top of the list. **Done** comes before the pool of unreviewed PRs (hundreds, in a big repo), so what you finished lately is at hand: the latest 5, by when they got there (`prs.state_at`, which moves only when the state does), with `/` finding the others; an older one you go to (an alert, `ctrl+p`, a search) shows too while it's selected. PRs someone else is assigned to aren't a state of their own: they're grouped as **Others reviewing**, before Done, with who has them, so you can see what's under way and taken. PRs asking for your review by name (see Triggers) aren't a state either: not reviewed yet, they're grouped as **Review requested**, after Reviewing, apart from the pool.
 
 ## Triggers
 
@@ -412,7 +412,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 ```
 
 - **Header**: where you are (`Purr › 2 pipecat-ai/pipecat`) and the latest alert from other repos.
-- **Left pane**: the repo's PRs grouped (Needs you, Reviewing, Review requested, Done, Not reviewed, Others reviewing), newest first within each group (Done: latest done first). Columns: number (in its own color), title, who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`) against the right edge.
+- **Left pane**: the repo's PRs grouped (Needs you, Reviewing, Review requested, Others reviewing, Done, Not reviewed), newest first within each group (Done: latest done first). Columns: number (in its own color), title, who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`) against the right edge.
 - **Right pane**: the selected PR, top to bottom:
   - **Header**, which stays put: its title, then `by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · labels`, then where its review stands.
   - **What scrolls**: the PR's description, then where it changes things, then the session with the agent (Claude Code style, see PR session). A PR nobody has reviewed yet opens at its description, so you can decide whether to take it; a reviewed one opens at the end of the conversation.
@@ -449,7 +449,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `o` or `enter` open: a repo, or a PR (focus moves into its pane). In a PR's pane, `enter` goes to its prompt.
 - `tab` (or `shift+tab`) switches between the PR list and the PR's pane, from its prompt too (the prompt never takes a tab).
 - The footer shows the focused pane's keys: in the list, those for picking PRs (`o`, `/`, `r`, `space`, and the decision's `a`/`x`/`m`); in the PR's pane, those for reading and deciding (`enter` ask, `a`/`x`/`m`, `n`/`p`, `d`, `t`, `c`, `!`, `z`); in the prompt, `ctrl+r` and `esc`. Every key works from either pane, since they're about the PR (selected in the list, shown in the pane): `RepoView` binds them all, hidden, and each pane binds the ones its footer shows, running the repo view's action. One table says which (`tui/keys.py`).
-- `n` / `p` next / previous: repo, or PR. They only change which PR the PR's pane shows, never the focus, so from the pane you read PRs one after another.
+- `n` / `p` next / previous: repo, or PR. Moving stops at either end of the list rather than wrapping round, and at a group's first PR its heading shows too (it can't be selected itself). They only change which PR the PR's pane shows, never the focus, so from the pane you read PRs one after another.
 - `/` search the PR list as you type (number, title, author, assignees; every word has to match). `enter` goes back to the list, keeping the results. The search stays (shown above the list, per repo, also after leaving it) until you press `/` and delete it.
 - `esc` goes home in one step, from the list, the search box or the PR's pane. From the prompt it goes back to the PR's pane (the `/` suggestions close first), so a second `esc` goes home. Nothing's lost: the search and anything half-typed are there when you're back.
 - `page up` / `page down` scroll a page, in either pane (the transcript while typing too)
