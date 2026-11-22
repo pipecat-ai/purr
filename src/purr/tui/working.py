@@ -51,8 +51,8 @@ def elapsed_text(seconds: float) -> str:
     return f"{hours}h {minutes}m"
 
 
-def render_working(since: float, now: float, frame: int) -> Text:
-    """``✻ Prowling… (1m 12s)``, with a shine sweeping across the verb."""
+def render_working(since: float, now: float, frame: int, background: int = 0) -> Text:
+    """``✻ Prowling… (1m 12s · 2 in the background)``, with a shine sweeping across the verb."""
     elapsed = max(0.0, now - since)
     # Seeded by when the stretch began: each one starts on its own verb.
     verb = VERBS[(int(since * 10) + int(elapsed // VERB_SECONDS)) % len(VERBS)]
@@ -61,7 +61,8 @@ def render_working(since: float, now: float, frame: int) -> Text:
     lit = frame % (len(word) + 2 * _SHINE) - _SHINE
     for i, char in enumerate(word):
         text.append(char, style=SHINE_COLOR if lit <= i < lit + _SHINE else COLOR)
-    text.append(f" ({elapsed_text(elapsed)})", style="dim")
+    details = elapsed_text(elapsed) + (f" · {background} in the background" if background else "")
+    text.append(f" ({details})", style="dim")
     return text
 
 
@@ -71,6 +72,7 @@ class Working(Static):
     def on_mount(self) -> None:
         self.display = False
         self._since: float | None = None
+        self._background = 0  # tasks out in the background
         self._frame = 0
         self._timer = self.set_interval(FRAME_SECONDS, self._tick, pause=True)
 
@@ -78,11 +80,12 @@ class Working(Static):
     def since(self) -> float | None:
         return self._since
 
-    def start(self, since: float) -> None:
-        """Working since ``since`` (``time.monotonic()``)."""
+    def start(self, since: float, background: int = 0) -> None:
+        """Working since ``since`` (``time.monotonic()``), with ``background`` tasks out."""
         if self._since != since:
             self._since = since
             self._frame = 0
+        self._background = background
         self._draw()
         if not self.display:
             self.display = True
@@ -94,10 +97,16 @@ class Working(Static):
             self.display = False
             self._timer.pause()
 
+    def set_background(self, background: int) -> None:
+        self._background = background
+        self._draw()
+
     def _tick(self) -> None:
         self._frame += 1
         self._draw()
 
     def _draw(self) -> None:
         if self._since is not None:
-            self.update(render_working(self._since, time.monotonic(), self._frame))
+            self.update(
+                render_working(self._since, time.monotonic(), self._frame, self._background)
+            )

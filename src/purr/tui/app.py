@@ -11,6 +11,7 @@ from textual import events, work
 from textual.app import App
 from textual.binding import Binding
 from textual.screen import ModalScreen
+from textual.worker import NoActiveWorker, get_current_worker
 
 from purr.app import Purr
 from purr.checkout import github_repos
@@ -41,6 +42,7 @@ from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen, Revi
 from purr.tui.session import SessionState
 from purr.tui.switcher import PurrSwitcher, short_name
 from purr.tui.theme import THEME, ansi_themes
+from purr.tui.working import Working
 from purr.workers.recap import LAST_ACTIVE
 
 _NOWHERE = object()
@@ -369,19 +371,26 @@ class PurrApp(App):
         session = self.main.repo.session
         state = self.sessions.setdefault(pr, SessionState())
         if isinstance(event, SessionMessage):
+            if event.message.get("kind") == "background":  # how many tasks are out
+                state.background = int(event.message.get("running") or 0)
+                if session.pr and str(session.pr.ref) == pr:
+                    session.query_one(Working).set_background(state.background)
+                return
             session.append(pr, event.message)
             return
         if isinstance(event, ReviewStarted):
             state.entries, state.ask = [], None  # a new session
             state.progress, state.waiting, state.since = None, False, None
+            state.background = 0
         elif isinstance(event, ReviewProgress):
             state.progress, state.waiting = event.text or None, event.waiting
             if not state.progress:
-                state.since = None
+                state.since, state.background = None, 0
             elif state.since is None:
                 state.since = time.monotonic()  # the agent's working: the spinner's clock
         elif isinstance(event, (ReviewFinished, ReviewFailed)):
             state.progress, state.waiting, state.since = None, False, None
+            state.background = 0
         elif isinstance(event, PermissionRequest):
             state.ask = event
         elif isinstance(event, PermissionResolved):
@@ -448,4 +457,13 @@ class PurrApp(App):
     async def _stop_purr(self) -> None:
         if not self._stopping:
             self._stopping = True
+            # Nothing on screen needs finishing, and a worker still reading the store
+            # (a PR's details, a repo opening) would fail once it's closed.
+            try:
+                current = get_current_worker()
+            except NoActiveWorker:
+                current = None
+            for worker in list(self.workers):
+                if worker is not current:
+                    worker.cancel()
             await self.purr.stop()

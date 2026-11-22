@@ -105,6 +105,12 @@ def set_aside_note(proposals: list[str]) -> str:
 _NOTE = re.compile(r"\A\s*<purr-note>.*?</purr-note>\s*", re.DOTALL)
 
 
+def set_aside_in(message: str) -> list[str]:
+    """The proposals a message of yours set aside, from its note to the agent."""
+    note = _NOTE.match(message)
+    return re.findall(r"“(.+?)”", note.group(0)) if note else []
+
+
 RESUME_PROMPT = (
     "Purr was restarted while you were reviewing. Continue where you left off, "
     "and finish by calling submit_review and propose_action."
@@ -373,16 +379,11 @@ def history_entries(session_messages: list[Any]) -> list[dict]:
                     )
         elif item.type == "user":
             if isinstance(content, str):
+                entries += [{"kind": "set_aside", "text": p} for p in set_aside_in(content)]
                 entries.append({"kind": "user", "text": _as_typed(content)})
             elif isinstance(content, list):
                 for block in content:
-                    if block.get("type") == "tool_result" and _text(
-                        block.get("content")
-                    ).startswith(INSTEAD):
-                        # A no with what to do instead: your message, as you wrote it.
-                        instead = _text(block.get("content")).removeprefix(INSTEAD).strip()
-                        entries.append({"kind": "user", "text": instead})
-                    elif block.get("type") == "tool_result":
+                    if block.get("type") == "tool_result":
                         entries.append(
                             {
                                 "kind": "tool_result",
@@ -635,7 +636,10 @@ class ClaudeReviewAgent:
                         # Say which task it was: its report is often a note to the agent
                         # ("delivered to you as a message from ...").
                         entry["text"] = running[entry["id"]]
+                out = len(running)
                 track_tasks(message, running)
+                if len(running) != out:  # for the working line; not part of the transcript
+                    entries.append({"kind": "background", "running": len(running)})
                 for entry in entries:
                     if entry["kind"] == "result" and running:
                         continue  # a turn's end, not the run's: agents are still at work

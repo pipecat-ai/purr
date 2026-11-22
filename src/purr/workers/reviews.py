@@ -261,12 +261,12 @@ class ReviewWorker(BaseWorker):
         payload = message.payload or {}
         try:
             ref, text = PRRef.parse(str(payload.get("pr"))), str(payload.get("text", ""))
-            await self.send_followup(ref, text)
+            decided = await self.send_followup(ref, text)
         except (ReviewError, ValueError) as e:
             await self.send_job_response(message.job_id, {"error": str(e)})
             return
         await self._store.add_prompt(ref, text)  # for the prompt's history
-        await self.send_job_response(message.job_id, {"ok": True})
+        await self.send_job_response(message.job_id, {"ok": True, **decided})
 
     @job(name=PERMISSION_ANSWER)
     async def on_permission_answer(self, message: BusJobRequestMessage) -> None:
@@ -368,13 +368,16 @@ class ReviewWorker(BaseWorker):
         await self.send_bus_message(PRListUpdated(source=self.name))
         return review
 
-    async def send_followup(self, ref: PRRef, text: str) -> None:
+    async def send_followup(self, ref: PRRef, text: str) -> dict:
         """Continue a PR's session with a message from the user.
 
         Writing when the agent waits on you to decide something is deciding it,
         as in Claude Code: to a permission request, it's a no, and what to do
         instead; a proposal is set aside, and the agent proposes again if it
         still stands. A slash command (``/compact``) decides nothing.
+
+        Returns what it decided: ``{"answered": True}`` (the permission request),
+        ``{"set_aside": [proposal, ...]}``, or ``{}``.
         """
         if not text.strip():
             raise ReviewError("Nothing to send")
@@ -382,22 +385,25 @@ class ReviewWorker(BaseWorker):
         async with self._start_lock:
             if ref in self._running:
                 if not command and self._answer_instead(ref, text):
-                    return
+                    return {"answered": True}
                 raise ReviewError(f"The agent is still working on {ref}")
             review = await self._store.latest_review(ref)
             pr = await self._store.get_pr(ref)
             if review is None or pr is None or not review.session_id:
                 raise ReviewError(f"{ref} hasn't been reviewed yet")
+            decided: dict = {}
             if not command and (proposals := await self._store.pending_actions(ref)):
                 await self._dismiss_pending(ref)
                 if pr.state == PRState.NEEDS_YOU:  # nothing left to decide, as with x
                     await self._store.set_pr_state(ref, PRState.DONE)
                     pr = replace(pr, state=PRState.DONE)
-                text = set_aside_note([p.description for p in proposals]) + text
+                decided = {"set_aside": [p.description for p in proposals]}
+                text = set_aside_note(decided["set_aside"]) + text
             # You're waiting on this one: it doesn't queue behind reviews.
             self._launch(
                 pr, review, prompt=text, resume=True, followup=True, queued=False, kind="message"
             )
+            return decided
 
     def _answer_instead(self, ref: PRRef, text: str) -> bool:
         """No to what the PR's agent asks to do, with what to do instead; whether it asked."""

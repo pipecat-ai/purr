@@ -247,7 +247,7 @@ async def test_follow_up_continues_the_session(make):
     [proposal] = await s.store.pending_actions(REF)
     s.agent.gate = asyncio.Event()
     response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "Is the race real?"})
-    assert response == {"ok": True}
+    assert response == {"ok": True, "set_aside": [proposal.description]}
     await eventually(lambda: len(s.agent.runs) == 2)
     followup = s.agent.runs[1]
     assert followup["resume"] is True and followup["session_id"] == s.agent.runs[0]["session_id"]
@@ -323,14 +323,18 @@ async def test_writing_when_asked_for_permission_says_no_and_what_to_do(make):
     await eventually(lambda: s.client.of(PermissionRequest))
 
     text = "Only run tests/test_bus.py"
-    assert await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": text}) == {"ok": True}
+    response = await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": text})
+    assert response == {"ok": True, "answered": True}
     await eventually(lambda: s.client.of(ReviewFinished))
     assert (s.agent.answers, s.agent.insteads) == ([False], [text])
     assert len(s.agent.runs) == 1  # the same run carries on: no follow-up
 
 
 def test_a_no_with_what_to_do_instead_reaches_the_agent_and_the_transcript():
+    import io
     from types import SimpleNamespace
+
+    from rich.console import Console
 
     from purr.review.agent import (
         PermissionAnswer,
@@ -338,6 +342,7 @@ def test_a_no_with_what_to_do_instead_reaches_the_agent_and_the_transcript():
         permission_result,
         set_aside_note,
     )
+    from purr.tui.session import render_entry
 
     result = permission_result(PermissionAnswer(False, instead="Only bus tests"), [], "a/b", None)
     assert result.message.endswith("Only bus tests") and not result.interrupt
@@ -345,14 +350,21 @@ def test_a_no_with_what_to_do_instead_reaches_the_agent_and_the_transcript():
     def stored(type_, content):
         return SimpleNamespace(type=type_, message={"role": type_, "content": content})
 
-    denied = {"type": "tool_result", "tool_use_id": "t1", "content": result.message}
+    # Reloaded, the thread says what writing decided, and shows what you wrote as you
+    # wrote it, without Purr's note to the agent.
     asked = set_aside_note(["Approve"]) + "Is the race real?"
-    entries = history_entries([stored("user", [denied]), stored("user", asked)])
-    # As you wrote them, without what Purr told the agent.
-    assert entries == [
-        {"kind": "user", "text": "Only bus tests"},
+    assert history_entries([stored("user", asked)]) == [
+        {"kind": "set_aside", "text": "Approve"},
         {"kind": "user", "text": "Is the race real?"},
     ]
+    denied = {"type": "tool_result", "tool_use_id": "t1", "content": result.message}
+    [entry] = history_entries([stored("user", [denied])])
+    console = Console(width=80, record=True, file=io.StringIO())
+    console.print(render_entry(entry))
+    shown = console.export_text()
+    assert "⎿ Not allowed: you wrote instead" in shown and "> Only bus tests" in shown
+    console.print(render_entry({"kind": "set_aside", "text": "Approve"}))
+    assert "◼ Proposal set aside: Approve" in console.export_text()
 
 
 async def test_new_commits_get_a_rereview_in_the_same_session(make):

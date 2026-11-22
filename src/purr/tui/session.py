@@ -69,6 +69,7 @@ class SessionState:
     progress: str | None = None  # what the review's doing; None once nothing is
     waiting: bool = False  # the review waits on you (a question)
     since: float | None = None  # when the agent started working (monotonic)
+    background: int = 0  # its tasks (agents, commands) still running in the background
     ask: PermissionRequest | None = None
     details_error: str | None = None  # why the description couldn't be loaded
     diff_error: str | None = None  # why the diff couldn't be
@@ -155,6 +156,8 @@ def render_entry(
         return _bullet(Text(text, style="dim italic"), style="dim")
     if kind == "user":
         return Text(f"> {entry['text'].replace(chr(10), chr(10) + '  ')}", style="bold")
+    if kind == "set_aside":  # you wrote instead of approving it
+        return Text(f"  ◼ Proposal set aside: {_short(entry.get('text', ''))}", style="dim")
     if kind == "tool_use":
         name, tool_input = entry.get("name", ""), entry.get("input") or {}
         if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
@@ -190,8 +193,13 @@ def render_entry(
         text = entry.get("text") or ""
         if text.startswith(("Review recorded", "Proposed (action")):
             return None  # Purr's own tools; their calls already say it all
-        if text.startswith(INSTEAD):
-            return None  # you wrote instead of allowing it: your message shows as such
+        if text.startswith(INSTEAD):  # you wrote instead of allowing it
+            said = text.removeprefix(INSTEAD).strip()
+            return Group(
+                Text("  ⎿ Not allowed: you wrote instead", style="dim"),
+                Text(""),
+                render_entry({"kind": "user", "text": said}),
+            )
         lines = text.strip().splitlines() or [""]
         more = f" … +{len(lines) - 1} lines" if len(lines) > 1 else ""
         style = "red" if entry.get("is_error") else "dim"
@@ -466,7 +474,7 @@ class PRSession(Vertical):
         working = self.query_one(Working)
         if state.working:
             assert state.since is not None
-            working.start(state.since)
+            working.start(state.since, state.background)
         else:
             working.stop()
         decision = self.query_one("#pr-decision", Static)
@@ -593,10 +601,14 @@ class PRSession(Vertical):
                 self.notify(str(e), severity="warning")
             return
         try:
-            await self.purr_app.bus.send_message(self.pr.ref, text)
+            decided = await self.purr_app.bus.send_message(self.pr.ref, text)
         except RequestError as e:
             self.notify(str(e), severity="warning")
             return
         event.prompt.clear()
         event.prompt.remember(text)
-        self.append(str(self.pr.ref), {"kind": "user", "text": text})
+        ref = str(self.pr.ref)
+        for proposal in decided.get("set_aside") or []:
+            self.append(ref, {"kind": "set_aside", "text": proposal})
+        if not decided.get("answered"):  # if it did, it shows under the call it said no to
+            self.append(ref, {"kind": "user", "text": text})

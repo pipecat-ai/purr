@@ -110,8 +110,10 @@ class UIWorker(BaseWorker):
         response = await self._job(GIT_WORKER, PR_WORKTREE, {"pr": str(pr)}, timeout=120)
         return str(response["path"])
 
-    async def send_message(self, pr: PRRef, text: str) -> None:
-        await self._job(REVIEW_WORKER, REVIEW_MESSAGE, {"pr": str(pr), "text": text})
+    async def send_message(self, pr: PRRef, text: str) -> dict:
+        """Say something in the PR's conversation; what it decided, if the agent was
+        waiting on you (see ``ReviewWorker.send_followup``)."""
+        return await self._job(REVIEW_WORKER, REVIEW_MESSAGE, {"pr": str(pr), "text": text})
 
     async def approve(self, action_id: str) -> tuple[str, list[str]]:
         """Post an approved action. Returns its URL and any warnings."""

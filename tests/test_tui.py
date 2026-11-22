@@ -850,6 +850,8 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
     assert [elapsed_text(s) for s in (0, 50, 62, 3725)] == ["0s", "50s", "1m 2s", "1h 2m"]
     line = render_working(since=100.0, now=162.5, frame=3).plain
     assert line.startswith(FRAMES[3]) and line.endswith("… (1m 2s)")
+    line = render_working(since=100.0, now=162.5, frame=3, background=2).plain
+    assert line.endswith("… (1m 2s · 2 in the background)")
     assert any(verb in line for verb in VERBS)
 
     app, github = make_app(tmp_path)
@@ -873,6 +875,16 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         await until(pilot, lambda: mark() in FRAMES)
         first = mark()
         await until(pilot, lambda: mark() != first)  # it moves
+
+        # Tasks out in the background say so.
+        from purr.messages import SessionMessage
+        from purr.tui.bridge import BusEvent
+
+        ref = str(app.main.repo.session.pr.ref)
+        for running in (2, 1):
+            message = {"kind": "background", "running": running}
+            app.post_message(BusEvent(SessionMessage(source="reviews", pr=ref, message=message)))
+        await until(pilot, lambda: str(working.render()).endswith("s · 1 in the background)"))
 
         # Waiting on you: still.
         agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
@@ -989,3 +1001,23 @@ async def test_the_agents_reasoning_is_a_line_per_thought(tmp_path):
         await until(pilot, lambda: "looks deliberate" in transcript(app))
         await pilot.press("t")
         await until(pilot, lambda: "looks deliberate" not in transcript(app))
+
+
+async def test_writing_instead_of_approving_says_so_in_the_thread(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        await pilot.press("r")
+        await until(pilot, lambda: "[a] approve" in decision(app))
+        assert "or write to change it" in decision(app)
+        await until(pilot, lambda: not app.purr.runner.get_worker("reviews").running)
+        await pilot.press("enter", *"is the race real?", "enter")
+        await until(pilot, lambda: "> is the race real?" in transcript(app))
+        lines = transcript(app).splitlines()
+        [aside] = [i for i, line in enumerate(lines) if "◼ Proposal set aside:" in line]
+        assert "Post 1 comment and request changes" in lines[aside]
+        assert lines[aside + 2].startswith("> is the race real?")  # then what you wrote
