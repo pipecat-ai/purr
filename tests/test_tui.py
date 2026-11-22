@@ -19,6 +19,7 @@ from tests.fakes import (
     FakeLead,
     FakeRecapAgent,
     FakeRepos,
+    FakeSuggester,
     FakeWriter,
     remote,
 )
@@ -35,6 +36,7 @@ def make_app(tmp_path, cwd=None) -> tuple[PurrApp, FakeGitHub]:
         writer=FakeWriter(),
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
+        suggester=FakeSuggester(),
         handle_sigint=False,
     )
     return PurrApp(purr, cwd=cwd), github
@@ -182,6 +184,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         writer=writer,
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
+        suggester=FakeSuggester(),
         handle_sigint=False,
     )
     app = PurrApp(purr)
@@ -230,6 +233,15 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert focused(app) == "transcript" and session.has_focus_within
         await pilot.press("enter")
         assert focused(app) == "prompt"
+        # The agent's done: the empty prompt suggests what to ask next, and tab
+        # (or →) takes it, as in Claude Code.
+        prompt = session.query_one("#prompt")
+        await until(pilot, lambda: prompt.suggestion == "Is the race on shutdown real?")
+        assert "Is the race on shutdown real?" in str(prompt.placeholder)
+        await pilot.press("tab")
+        assert prompt.text == "Is the race on shutdown real?" and focused(app) == "prompt"
+        await pilot.press("ctrl+u")
+        assert prompt.text == ""
         await pilot.press(*"is it safe?", "enter")
         await until(pilot, lambda: agent.runs[-1]["prompt"].endswith("is it safe?"))
         assert "> is it safe?" in transcript(app)
@@ -238,7 +250,6 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
         await pilot.press(*"tests?", "enter")
         await until(pilot, lambda: agent.runs[-1]["prompt"].endswith("tests?"))
-        prompt = app.main.repo.session.query_one("#prompt")
         await pilot.press(*"draft")
         await pilot.press("up")
         assert prompt.text == "tests?"

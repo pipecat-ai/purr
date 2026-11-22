@@ -126,6 +126,7 @@ uv run purr --no-auto-review
 | | `esc` | Home, from anywhere in the repo (your search and anything typed stay); from the prompt, back to the PR |
 | The prompt | `enter` / `ctrl+j` | Send / new line |
 | | `↑` `↓` / `ctrl+r` | Earlier messages / search them |
+| | `tab` or `→` | Take the suggestion: what you might ask next, shown dim once the agent's done |
 | | `/` | Commands (below) |
 
 ### Commands

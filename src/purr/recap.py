@@ -3,9 +3,7 @@
 from datetime import datetime
 from typing import Protocol
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
-
-from purr.claude import log_stderr
+from purr.claude import structured
 from purr.models import PR, Activity, PendingAction, PRRef, PRState
 from purr.news import recap_text
 
@@ -110,19 +108,7 @@ class ClaudeRecapAgent:
         self._model = model
 
     async def summarize(self, notes: str) -> tuple[str, list[dict]]:
-        options = ClaudeAgentOptions(
-            system_prompt=INSTRUCTIONS,
-            tools=[],
-            setting_sources=[],
-            output_format={"type": "json_schema", "schema": RECAP_SCHEMA},
-            model=self._model,
-            stderr=log_stderr,
+        output = await structured(
+            notes, instructions=INSTRUCTIONS, schema=RECAP_SCHEMA, model=self._model, what="recap"
         )
-        result = None
-        async for message in query(prompt=notes, options=options):
-            if isinstance(message, ResultMessage):
-                result = message
-        if result is None or result.is_error or not isinstance(result.structured_output, dict):
-            raise RuntimeError(getattr(result, "result", None) or "no recap came back")
-        output = result.structured_output
         return str(output.get("headline", "")), list(output.get("items", []))

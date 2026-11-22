@@ -6,6 +6,7 @@ from purr.workers.github import GitHubWorker
 from purr.workers.lead import LeadWorker
 from purr.workers.recap import RecapWorker
 from purr.workers.reviews import ReviewWorker
+from purr.workers.suggestions import SuggestionWorker
 
 __all__ = [
     "ActivityWorker",
@@ -14,4 +15,5 @@ __all__ = [
     "LeadWorker",
     "RecapWorker",
     "ReviewWorker",
+    "SuggestionWorker",
 ]

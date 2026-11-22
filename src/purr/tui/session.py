@@ -26,6 +26,7 @@ from purr.messages import (
     PlanReviews,
     SendMessage,
     SetModel,
+    SuggestPrompt,
 )
 from purr.models import (
     PR,
@@ -89,6 +90,12 @@ class SessionState:
     diff_error: str | None = None  # why the diff couldn't be
     approved: str | None = None  # the commit you approved it at, through Purr
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
+    suggestion: str = ""  # what you might ask next (purr.suggest)
+    suggested_at: int | None = None  # how far the transcript was when it was asked for
+
+    def suggested(self) -> str:
+        """The suggestion, if it's still for where the conversation is."""
+        return self.suggestion if self.suggested_at == len(self.entries or []) else ""
 
     @property
     def working(self) -> bool:
@@ -502,9 +509,7 @@ class PRSession(Vertical):
         suggestions = OptionList(id="suggestions")
         suggestions.can_focus = False
         yield suggestions
-        yield PromptArea(
-            id="prompt", placeholder="Ask the agent about this PR…  (/ commands, ctrl+j: new line)"
-        )
+        yield PromptArea(id="prompt")
 
     def on_mount(self) -> None:
         self.border_title = "PR"
@@ -746,6 +751,7 @@ class PRSession(Vertical):
             self._header(pr, review, outcome, actions, state, details)
         )
         self._show_working(state)
+        self._suggest_next()
         box = self.query_one("#pr-decision", Static)
         if (decision := _decision(pr, state, actions)) is not None:
             box.update(decision)
@@ -787,6 +793,40 @@ class PRSession(Vertical):
 
     def focus_transcript(self) -> None:
         self.query_one("#transcript").focus()
+
+    # -- What you might ask next (see purr.suggest) -------------------------------------
+
+    def on_descendant_focus(self) -> None:
+        self._suggest_next()
+
+    def _suggest_next(self) -> None:
+        """Show the suggestion for where the PR's conversation is, asking for one if
+        there's none yet: only once the agent's done, and for the PR you're in."""
+        if not self.pr:
+            return
+        state = self.state()
+        self.query_one(PromptArea).suggest(state.suggested())
+        if not self._wants_suggestion(state):
+            return
+        state.suggestion, state.suggested_at = "", len(state.entries or [])
+        self.run_worker(self._fetch_suggestion(self.pr.ref, state), group="suggestion")
+
+    def _wants_suggestion(self, state: SessionState) -> bool:
+        asked = state.suggested_at == len(state.entries or [])
+        idle = not state.progress and not state.ask
+        return bool(state.entries) and idle and not asked and self.has_focus_within
+
+    async def _fetch_suggestion(self, ref: PRRef, state: SessionState) -> None:
+        at = state.suggested_at
+        try:
+            suggestion = await self.purr_app.bus.request(SuggestPrompt(pr=ref))
+        except PurrError:
+            return
+        if state.suggested_at != at:
+            return  # the conversation moved on meanwhile
+        state.suggestion = suggestion.text
+        if self.pr and self.pr.ref == ref:
+            self.query_one(PromptArea).suggest(state.suggested())
 
     def leave_prompt(self) -> bool:
         """Out of the prompt, to the PR's pane (esc); False if you weren't in it."""

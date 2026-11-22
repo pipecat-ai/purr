@@ -305,6 +305,21 @@ def make_plugin(root, skills: dict[str, str], *, name: str = "pipecat", commands
     return root
 
 
+class FakeSuggester:
+    """Stands in for purr.suggest.ClaudeSuggester: says ``text``, keeping what it read."""
+
+    def __init__(self, text: str = "Is the race on shutdown real?"):
+        self.text = text
+        self.notes: list[str] = []
+        self.fail = False
+
+    async def suggest(self, notes):
+        self.notes.append(notes)
+        if self.fail:
+            raise RuntimeError("no idea")
+        return self.text
+
+
 class FakeLead:
     """Stands in for purr.lead.ClaudeLead: plans what ``plans`` says, by PR.
 

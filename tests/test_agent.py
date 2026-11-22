@@ -119,9 +119,11 @@ async def test_claude_codes_stderr_never_reaches_your_terminal(monkeypatch, tmp_
     """Left to the SDK, it goes to the terminal under Purr's screen (and shows the cursor)."""
     import pytest
 
+    import purr.claude
     import purr.lead
     import purr.recap
     import purr.review.agent
+    import purr.suggest
     from purr.claude import log_stderr
     from purr.models import PR
 
@@ -139,8 +141,7 @@ async def test_claude_codes_stderr_never_reaches_your_terminal(monkeypatch, tmp_
             seen.append(options.stderr)
             raise Stop
 
-    monkeypatch.setattr(purr.lead, "query", query)
-    monkeypatch.setattr(purr.recap, "query", query)
+    monkeypatch.setattr(purr.claude, "query", query)
     monkeypatch.setattr(purr.review.agent, "ClaudeSDKClient", Client)
     pr = PR(repo="a/b", number=1, title="t", author="x", url="u", head_sha="h", updated_at="")
     with pytest.raises(Stop):
@@ -148,10 +149,12 @@ async def test_claude_codes_stderr_never_reaches_your_terminal(monkeypatch, tmp_
     with pytest.raises(Stop):
         await purr.recap.ClaudeRecapAgent().summarize("notes")
     with pytest.raises(Stop):
+        await purr.suggest.ClaudeSuggester(model="m").suggest("notes")
+    with pytest.raises(Stop):
         await purr.review.agent.ClaudeReviewAgent().run(
             pr=pr, worktree=tmp_path, session_id="s", resume=False, prompt="p", callbacks=None
         )
-    assert seen == [log_stderr, log_stderr, log_stderr]
+    assert seen == [log_stderr] * 4
 
 
 async def test_a_run_waits_for_its_background_agents(monkeypatch, tmp_path):

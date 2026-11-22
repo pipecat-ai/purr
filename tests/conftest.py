@@ -10,12 +10,11 @@ def _no_claude(*args, **kwargs):
 
 @pytest.fixture(autouse=True)
 def no_real_claude(monkeypatch):
-    import purr.lead
-    import purr.recap
+    import purr.claude
     import purr.review.agent
 
-    monkeypatch.setattr(purr.lead, "query", _no_claude)
-    monkeypatch.setattr(purr.recap, "query", _no_claude)
+    # The lead's plans, recaps and suggestions all go through purr.claude.structured.
+    monkeypatch.setattr(purr.claude, "query", _no_claude)
     monkeypatch.setattr(purr.review.agent, "ClaudeSDKClient", _no_claude)
 
 

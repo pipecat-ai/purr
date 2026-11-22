@@ -28,6 +28,7 @@ REVIEW_WORKER = "reviews"
 RECAP_WORKER = "recap"
 GIT_WORKER = "git"
 LEAD_WORKER = "lead"
+SUGGEST_WORKER = "suggestions"
 
 # -- Jobs (see purr.jobs): each request names the worker that handles it, and its reply.
 
@@ -67,6 +68,23 @@ class MakeRecap(Request[RecapMade]):
     worker: ClassVar[str] = RECAP_WORKER
     timeout: ClassVar[float] = 180
     since: str
+
+
+# SUGGEST_WORKER
+
+
+@dataclass(kw_only=True)
+class Suggestion:
+    text: str  # "" if nothing stands out, or suggestions are off
+
+
+@dataclass(kw_only=True)
+class SuggestPrompt(Request[Suggestion]):
+    """What you might ask next in a PR's session, now that the agent's done (purr.suggest)."""
+
+    worker: ClassVar[str] = SUGGEST_WORKER
+    timeout: ClassVar[float] = 60
+    pr: PRRef
 
 
 # GITHUB_WORKER

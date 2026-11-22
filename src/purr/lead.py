@@ -15,9 +15,7 @@ permission policy, how many reviews run at once) stay in code.
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
-
-from purr.claude import log_stderr
+from purr.claude import structured
 from purr.models import PR, Outcome, PRDetails, Priority, PRRef, Review, ReviewPlan
 from purr.review.skills import RepoSkill
 
@@ -238,18 +236,6 @@ class ClaudeLead:
         self._model = model
 
     async def plan(self, notes: str) -> dict:
-        options = ClaudeAgentOptions(
-            system_prompt=INSTRUCTIONS,
-            tools=[],
-            setting_sources=[],
-            output_format={"type": "json_schema", "schema": PLAN_SCHEMA},
-            model=self._model,
-            stderr=log_stderr,
+        return await structured(
+            notes, instructions=INSTRUCTIONS, schema=PLAN_SCHEMA, model=self._model, what="plan"
         )
-        result = None
-        async for message in query(prompt=notes, options=options):
-            if isinstance(message, ResultMessage):
-                result = message
-        if result is None or result.is_error or not isinstance(result.structured_output, dict):
-            raise RuntimeError(getattr(result, "result", None) or "no plan came back")
-        return result.structured_output

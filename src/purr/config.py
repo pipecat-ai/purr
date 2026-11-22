@@ -70,6 +70,11 @@ class Config:
         about="Model for reviews the lead planned as quick (and quick re-reviews); your own "
         "messages in a PR's session use review_model. Empty: review_model for those too.",
     )
+    suggestion_model: str | None = _setting(
+        "claude-haiku-5-5",
+        about="Model that suggests what you might ask next in a PR's session once the agent's "
+        "done, like Claude Code's prompt suggestions (tab takes it). Empty: no suggestions.",
+    )
     review_budget_usd: float | None = _setting(
         None, about="Spending cap per review run, in US dollars. Empty: none."
     )

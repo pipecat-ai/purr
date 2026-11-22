@@ -8,6 +8,9 @@ readline keys move around (ctrl+a/e, ctrl+b/f, alt+b/f, ctrl+k/u/w).
 
 Typing ``/`` shows matching commands (see :mod:`purr.tui.commands`): ↑/↓ pick
 one, tab or enter fills it in, and enter again runs it.
+
+Once the agent's done, the empty prompt shows what you might ask next, dim, as
+Claude Code does (see :mod:`purr.suggest`): tab or → takes it.
 """
 
 from dataclasses import dataclass
@@ -26,6 +29,7 @@ from textual.widgets.option_list import Option
 from purr.models import PRRef
 
 NEWLINE_KEYS = ("ctrl+j", "shift+enter", "alt+enter")
+PLACEHOLDER = "Ask the agent about this PR…  (/ commands, ctrl+j: new line)"
 
 
 class Completer(Protocol):
@@ -56,13 +60,24 @@ class PromptArea(TextArea):
     ]
 
     def __init__(self, **kwargs):
-        super().__init__(soft_wrap=True, tab_behavior="focus", show_line_numbers=False, **kwargs)
+        super().__init__(
+            soft_wrap=True,
+            tab_behavior="focus",
+            show_line_numbers=False,
+            placeholder=PLACEHOLDER,
+            **kwargs,
+        )
+        self.suggestion = ""  # what you might ask next: shown while it's empty
         self._history: list[str] = []
         self._position = 0  # len(history): the text being written
         self._draft = ""  # that text, while looking back
         self.completer: Completer | None = None
 
     async def _on_key(self, event: events.Key) -> None:
+        if event.key in ("tab", "right") and self._take_suggestion():
+            event.stop()
+            event.prevent_default()
+            return
         if event.key in ("tab", "enter") and self.completer and self.completer.active():
             choice = self.completer.accept()
             # Tab fills in the highlighted command; so does enter, unless that's
@@ -89,6 +104,18 @@ class PromptArea(TextArea):
             self.insert("\n")
             return
         await super()._on_key(event)
+
+    def suggest(self, text: str) -> None:
+        """What you might ask next, dim while the prompt's empty; "" for none."""
+        self.suggestion = text
+        self.placeholder = f"{text}   (tab)" if text else PLACEHOLDER
+
+    def _take_suggestion(self) -> bool:
+        """Tab (or →) on the empty prompt takes the suggestion, as in Claude Code."""
+        if self.text or not self.suggestion:
+            return False
+        self.set_text(self.suggestion)
+        return True
 
     def set_text(self, text: str) -> None:
         self.load_text(text)
