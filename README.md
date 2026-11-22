@@ -95,7 +95,7 @@ uv run purr --no-auto-review
 | | `ctrl+p` | Find any repo or PR by name |
 | | `w` | What happened while you were away |
 | | `i` | Your review style, code style, permissions and the repo's review skill |
-| | `q` / `ctrl+q` | Quit (`q` asks first; `ctrl+c` never quits) |
+| | `q` / `ctrl+q` | Quit (it asks first) |
 | | drag | Select text in the PR pane: it's copied |
 | Home | `enter` / `+` / `-` | Open / watch / stop watching a repo |
 | A repo | `enter` | Ask the agent about the PR: straight to its prompt |

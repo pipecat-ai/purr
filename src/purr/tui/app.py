@@ -75,7 +75,7 @@ class PurrApp(App):
     COMMANDS = {PurrSwitcher}
     ansi_theme_dark, ansi_theme_light = ansi_themes()
     BINDINGS = [
-        Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
+        Binding("ctrl+q", "request_quit", "Quit", show=False, priority=True),  # q, from anywhere
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
         Binding("ctrl+n", "next_alert", "Next alert", show=False, priority=True),
         Binding("w", "recap", "Recap", show=False),
@@ -403,7 +403,7 @@ class PurrApp(App):
 
     @work(group="quit")
     async def action_request_quit(self) -> None:
-        """q: quit, once you say so."""
+        """q or ctrl+q: quit, once you say so."""
         if self._modal_open():
             return
         running = len(getattr(self.purr.runner.get_worker(REVIEW_WORKER), "running", ()))

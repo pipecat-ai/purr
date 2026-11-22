@@ -735,10 +735,12 @@ async def test_quitting_asks_first(tmp_path):
     app.action_quit = quit_
     async with app.run_test(size=(140, 45)) as pilot:
         await until(pilot, lambda: home(app))
-        await pilot.press("q")
-        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
-        await pilot.press("n")
-        await until(pilot, lambda: home(app))
+        for key in ("q", "ctrl+q", "ctrl+c"):  # ctrl+q asks too; ctrl+c never quits
+            await pilot.press(key)
+            if key != "ctrl+c":
+                await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+                await pilot.press("n")
+            await until(pilot, lambda: home(app))
         assert quits == []
         await pilot.press("q")
         await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
