@@ -3,6 +3,10 @@
 This is the only place Purr writes to GitHub, and it only runs after the user
 approved a pending action (or, for assignment, asked for a review). Writes go
 through ``gh``, as the user.
+
+What Purr posts says so: the review's text and each reply in a thread end with
+a small signature ("Sent from Purr." by default). Inline comments don't; they
+belong to the review, whose text already says it.
 """
 
 import asyncio
@@ -43,15 +47,26 @@ class Posted:
     warnings: list[str] = field(default_factory=list)
 
 
+def signed(text: str, signature: str) -> str:
+    """``text`` with Purr's signature at the end, in small print (none: as it is)."""
+    if not signature:
+        return text
+    mark = f"<sub>{signature}</sub>"
+    return f"{text.rstrip()}\n\n{mark}" if text.strip() else mark
+
+
 def _folded(body: str, comments: list[dict]) -> str:
     """Inline comments written into the review body, for when GitHub won't place them."""
     notes = "\n".join(f"- `{c['path']}:{c['line']}`: {c['body']}" for c in comments)
     return f"{body.strip()}\n\n{notes}" if body.strip() else notes
 
 
-async def execute(writer: GitHubWriter, action: PendingAction, *, head_sha: str) -> Posted:
+async def execute(
+    writer: GitHubWriter, action: PendingAction, *, head_sha: str, signature: str = ""
+) -> Posted:
     """Post an approved action: the review, then any replies in existing threads.
 
+    The review's text and each reply end with ``signature`` (none: unsigned).
     Raises ActionError if the review itself can't be posted. A reply that fails
     after the review went up is a warning instead, so retrying can't post the
     review twice.
@@ -62,11 +77,14 @@ async def execute(writer: GitHubWriter, action: PendingAction, *, head_sha: str)
     replies = [
         r for r in action.payload.get("replies") or [] if r.get("thread_id") and r.get("body")
     ]
-    url = await _review(writer, action, event, head_sha, only_replies=bool(replies))
+    url = await _review(
+        writer, action, event, head_sha, only_replies=bool(replies), signature=signature
+    )
     warnings = []
     for reply in replies:
         try:
-            reply_url = await writer.reply_to_thread(reply["thread_id"], reply["body"])
+            body = signed(reply["body"], signature)
+            reply_url = await writer.reply_to_thread(reply["thread_id"], body)
             url = url or reply_url
         except ActionError as e:
             warnings.append(f"A reply in a review thread didn't go through: {e}")
@@ -74,7 +92,13 @@ async def execute(writer: GitHubWriter, action: PendingAction, *, head_sha: str)
 
 
 async def _review(
-    writer: GitHubWriter, action: PendingAction, event: str, head_sha: str, *, only_replies: bool
+    writer: GitHubWriter,
+    action: PendingAction,
+    event: str,
+    head_sha: str,
+    *,
+    only_replies: bool,
+    signature: str,
 ) -> str:
     body = str(action.payload.get("body") or "")
     comments = [
@@ -88,7 +112,11 @@ async def _review(
         body = action.description  # GitHub wants some text for these
     try:
         return await writer.submit_review(
-            action.pr, event=event, body=body, comments=comments, commit_id=head_sha
+            action.pr,
+            event=event,
+            body=signed(body, signature),
+            comments=comments,
+            commit_id=head_sha,
         )
     except ActionError as e:
         if not comments or "line" not in str(e).lower():
@@ -96,7 +124,11 @@ async def _review(
         # A comment pointed at a line outside the diff; post them in the body instead.
         logger.warning(f"Inline comments on {action.pr} rejected ({e}); folding them into the body")
         return await writer.submit_review(
-            action.pr, event=event, body=_folded(body, comments), comments=[], commit_id=head_sha
+            action.pr,
+            event=event,
+            body=signed(_folded(body, comments), signature),
+            comments=[],
+            commit_id=head_sha,
         )
 
 

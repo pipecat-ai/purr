@@ -73,8 +73,10 @@ class GitHubWorker(BaseWorker):
         github: GitHub,
         writer: GitHubWriter | None = None,
         interval: float = 60.0,
+        signature: str = "",
     ):
         super().__init__(name)
+        self._signature = signature  # at the end of what Purr posts (see purr.actions)
         self._store = store
         self._github = github
         self._writer = writer or GhWriter()
@@ -260,7 +262,12 @@ class GitHubWorker(BaseWorker):
             return
         pr = await self._store.get_pr(action.pr)
         try:
-            posted = await execute(self._writer, action, head_sha=pr.head_sha if pr else "")
+            posted = await execute(
+                self._writer,
+                action,
+                head_sha=pr.head_sha if pr else "",
+                signature=self._signature,
+            )
         except ActionError as e:
             # Back to pending, so it can be retried.
             await self._store.transition_action(

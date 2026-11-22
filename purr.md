@@ -228,7 +228,7 @@ Jobs:
 - `review.message {pr, text}` (send a follow-up into a PR's session)
 - `recap.create {since}` (when you come back, or on demand)
 - `repo.add {repo}` / `repo.remove {repo}` (handled by the GitHub worker; `repo` can be `owner/name` or a GitHub URL)
-- `action.approve {action_id}` / `action.dismiss {action_id}` (GitHub worker). Approving claims the action atomically (so keys and voice can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry.
+- `action.approve {action_id}` / `action.dismiss {action_id}` (GitHub worker). Approving claims the action atomically (so keys and voice can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. **What Purr posts says so:** the review's text and each reply in a thread end with `<sub>Sent from Purr.</sub>` (the `signature` setting; empty turns it off). Inline comments don't: they belong to the review, whose text already says it, and one under every comment would be noise. An approval with nothing to say is just the signature. The proposal in the PR's conversation shows it too, so `a` still posts exactly what you read.
 
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)
@@ -433,4 +433,3 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - STT/LLM/TTS choices for the voice agent.
 - How long without activity counts as "away" (default 15 minutes?).
 - Which slash commands the PR session supports at first (`/clear`, `/compact`, `/model`, ...).
-- Should comments Purr posts carry a marker saying they were written with AI? Today they're posted as the user, with no marker.

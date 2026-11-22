@@ -138,6 +138,7 @@ class Purr:
                 github=self._github,
                 writer=self._writer,
                 interval=self._config.poll_interval,
+                signature=self._config.signature,
             ),
             ReviewWorker(
                 store=store,

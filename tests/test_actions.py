@@ -162,3 +162,57 @@ async def test_assigning_yourself(setup):
     assert j.response == {"ok": True}
     assert writer.assigned == [REF]
     assert (await store.get_pr(REF)).assigned_to_me is True
+
+
+async def test_what_purr_posts_says_so():
+    sig = "Sent from Purr."
+    writer = FakeWriter()
+    replies = [{"thread_id": "T1", "body": "Fixed now, thanks."}]
+    await execute(
+        writer, action(body="Two things.", comments=COMMENTS, replies=replies),
+        head_sha="abc", signature=sig,
+    )  # fmt: skip
+    [review] = writer.reviews
+    assert review["body"] == "Two things.\n\n<sub>Sent from Purr.</sub>"
+    assert review["comments"][0]["body"] == "Race here"  # the review's text already says it
+    assert writer.replies == [("T1", "Fixed now, thanks.\n\n<sub>Sent from Purr.</sub>")]
+
+    # An approval with nothing to say still says where it came from.
+    writer = FakeWriter()
+    await execute(writer, action(ActionKind.APPROVE), head_sha="abc", signature=sig)
+    assert writer.reviews[0]["body"] == "<sub>Sent from Purr.</sub>"
+
+    # Comments folded into the text: the signature stays last.
+    writer = FakeWriter()
+    writer.fail_with = ["Unprocessable Entity: Line could not be resolved"]
+    await execute(
+        writer, action(body="Two things.", comments=COMMENTS), head_sha="abc", signature=sig
+    )
+    assert writer.reviews[0]["body"] == (
+        "Two things.\n\n- `bus.py:42`: Race here\n\n<sub>Sent from Purr.</sub>"
+    )
+
+    # No signature configured: posted as written.
+    writer = FakeWriter()
+    await execute(writer, action(body="Two things."), head_sha="abc", signature="")
+    assert writer.reviews[0]["body"] == "Two things."
+
+
+def test_the_proposal_shows_the_signature():
+    import io
+
+    from rich.console import Console
+
+    from purr.tui.session import render_proposal
+
+    proposal = {
+        "kind": "comment",
+        "description": "Comment",
+        "body": "Looks good.",
+        "replies": [{"thread_id": "T1", "body": "Done."}],
+    }
+    console = Console(width=100, record=True, file=io.StringIO())
+    console.print(render_proposal(proposal, "Sent from Purr."))
+    lines = [line.strip() for line in console.export_text().splitlines()]
+    assert lines[lines.index("Looks good.") + 1] == "Sent from Purr."
+    assert "↳ reply in thread  Done.  Sent from Purr." in lines

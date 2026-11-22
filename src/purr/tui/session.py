@@ -66,8 +66,11 @@ def _short(value: str, width: int = 100) -> str:
 _VERDICT = {"request_changes": "Request changes", "approve": "Approve", "comment": "Comment"}
 
 
-def render_proposal(proposal: dict) -> RenderableType:
-    """A proposed review, in full: what would be posted if the user approves."""
+def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
+    """A proposed review, in full: what would be posted if the user approves.
+
+    ``signature`` is the small print Purr adds to the review's text and replies.
+    """
     parts: list[RenderableType] = [
         Text(f"Proposed: {proposal.get('description', '')}", style="bold magenta")
     ]
@@ -75,6 +78,8 @@ def render_proposal(proposal: dict) -> RenderableType:
     parts.append(Text(f"{verdict}", style="magenta"))
     if body := str(proposal.get("body") or "").strip():
         parts.append(Markdown(body))
+    if signature:
+        parts.append(Text(signature, style="dim italic"))
     for comment in proposal.get("comments") or []:
         line = Text("• ")
         line.append(f"{comment.get('path')}:{comment.get('line')}", style="cyan")
@@ -83,6 +88,8 @@ def render_proposal(proposal: dict) -> RenderableType:
     for reply in proposal.get("replies") or []:
         line = Text("↳ reply in thread  ", style="dim")
         line.append(str(reply.get("body", "")))
+        if signature:
+            line.append(f"  {signature}", style="dim italic")
         parts.append(line)
     return Group(*parts)
 
@@ -92,7 +99,7 @@ def outcome_mark(outcome: Outcome) -> Text:
     return Text("●", style="bold red") if outcome.found else Text("✓", style="bold green")
 
 
-def render_entry(entry: dict) -> RenderableType | None:
+def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
     """A transcript entry as Claude Code would show it.
 
     Subagents' own steps aren't shown, only the call that started each one and
@@ -125,7 +132,7 @@ def render_entry(entry: dict) -> RenderableType | None:
                 lines.append(line)
             return _bullet(Group(*lines), style="bold green")
         if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
-            return _bullet(render_proposal(tool_input), style="magenta")
+            return _bullet(render_proposal(tool_input, signature), style="magenta")
         target = (
             tool_input.get("command")
             or tool_input.get("file_path")
@@ -256,7 +263,8 @@ class PRSession(Vertical):
             self._write(entry)
 
     def _write(self, entry: dict) -> None:
-        if (renderable := render_entry(entry)) is not None:
+        signature = self.purr_app.purr.config.signature
+        if (renderable := render_entry(entry, signature)) is not None:
             self.query_one(RichLog).write(renderable)
 
     async def refresh_status(self) -> None:

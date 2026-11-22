@@ -43,6 +43,9 @@ class Config:
         permission_wait: Seconds an agent waits for you to allow something before
             carrying on without it. Claude Code gives up on its own after about
             ten minutes, so keep this below that.
+        signature: Small print at the end of what Purr posts (a review's text,
+            each reply in a thread), so readers know it came from Purr; empty
+            for none.
         config_dir: Directory for files the user edits (review instructions).
             Defaults to ``$PURR_CONFIG_DIR``, else ``$XDG_CONFIG_HOME/purr``,
             else ``~/.config/purr``.
@@ -58,6 +61,7 @@ class Config:
     away_after: float = 15 * 60
     permission_wait: float = 5 * 60
     max_reviews: int = 3
+    signature: str = "Sent from Purr."
     config_dir: Path = field(default_factory=_default_config_dir)
 
     @classmethod
