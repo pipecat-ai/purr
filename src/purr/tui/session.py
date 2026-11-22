@@ -54,6 +54,7 @@ from purr.tui.commands import (
     render_help,
     suggestions,
 )
+from purr.tui.keys import pane_keys
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
 from purr.tui.theme import BLUE, CODE_THEME
@@ -490,7 +491,16 @@ class PRSession(Vertical):
         # The transcript, wherever the focus is in the pane, typing included.
         Binding("pageup", "page(-1)", "Page up", show=False, priority=True),
         Binding("pagedown", "page(1)", "Page down", show=False, priority=True),
-        Binding("ctrl+r", "search_history", "Search history", show=False),
+        Binding("ctrl+r", "search_history", "Search history"),
+        # In the prompt: the / suggestions close, or back to the pane. Elsewhere
+        # it's the repo's (home).
+        Binding("escape", "leave_prompt", "Back"),
+        # The repo's keys, for reading and deciding (they work from the list too).
+        *pane_keys(
+            ["approve", "dismiss", "merge", "move(1)", "move(-1)", "diff", "thinking"]
+            + ["open_claude", "shell", "zoom", "switch_pane"],
+            switch_pane="List",
+        ),
     ]
 
     def __init__(self, **kwargs):
@@ -828,16 +838,20 @@ class PRSession(Vertical):
         if self.pr and self.pr.ref == ref:
             self.query_one(PromptArea).suggest(state.suggested())
 
-    def leave_prompt(self) -> bool:
-        """Out of the prompt, to the PR's pane (esc); False if you weren't in it."""
-        if not self.query_one(PromptArea).has_focus:
-            return False
-        self.focus_transcript()
-        return True
+    def action_leave_prompt(self) -> None:
+        """esc in the prompt: the / suggestions close first, then back to the pane."""
+        if not self.close_suggestions():
+            self.focus_transcript()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # Typing a question, enter sends it.
-        return not (action == "ask" and self.query_one("#prompt").has_focus)
+        """Typing, enter sends and esc leaves; reading, enter goes to the prompt."""
+        typing = self.query_one("#prompt").has_focus
+        if action in ("search_history", "leave_prompt"):
+            return typing
+        return not (action == "ask" and typing)
+
+    async def action_repo(self, action: str) -> None:
+        await self.purr_app.main.repo.run_action(action)
 
     def action_ask(self) -> None:
         self.focus_prompt()

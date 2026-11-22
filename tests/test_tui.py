@@ -163,6 +163,11 @@ def focused(app: PurrApp) -> str | None:
     return app.focused.id if app.focused else None
 
 
+def footer(app: PurrApp) -> set[str]:
+    """What the footer's keys say they do."""
+    return {str(key.description) for key in app.screen.query("FooterKey")}
+
+
 def header(app: PurrApp) -> str:
     return str(app.main.repo.session.query_one("#pr-header").render())
 
@@ -290,15 +295,29 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: log.scroll_y < bottom)
         assert focused(app) == "prompt"
 
+        # The footer has the keys for where you are: typing, the prompt's...
+        await until(pilot, lambda: {"Back", "Search history"} <= footer(app))
+        assert not footer(app) & {"Home", "Approve", "Ask"}
+
         # esc leaves the prompt for the PR's pane; esc again goes home, and what
         # you'd typed is there when you're back.
         await pilot.press("escape")
         assert in_repo(app) and focused(app) == "transcript"
+        # ...reading the PR, the pane's...
+        await until(pilot, lambda: {"Home", "Ask", "Thinking", "Claude Code"} <= footer(app))
+        assert not footer(app) & {"Open", "Mark", "Back"}
+        await pilot.press("t")  # the pane's keys work from the list too, and back
+        assert app.full_thinking
+        await pilot.press("tab", "t", "tab")
+        assert not app.full_thinking and focused(app) == "transcript"
         await pilot.press("escape")
         await until(pilot, lambda: home(app))
         await pilot.press("o")
         await until(pilot, lambda: in_repo(app))
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
+        # ...and in the list, the list's.
+        await until(pilot, lambda: {"Home", "Open", "Search", "Mark", "Approve"} <= footer(app))
+        assert not footer(app) & {"Ask", "Thinking", "Claude Code"}
 
         # The / suggestions close first.
         await pilot.press("enter")

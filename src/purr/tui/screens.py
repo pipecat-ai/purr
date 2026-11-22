@@ -8,6 +8,7 @@ Dialogs are modal screens on top.
 
 import asyncio
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, cast
@@ -43,6 +44,7 @@ from purr.messages import (
 from purr.models import PR, PRRef, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.review.skills import Skill
+from purr.tui.keys import REPO_KEYS, pane_keys
 from purr.tui.overview import short_age
 from purr.tui.session import NUMBER_STYLE, PRSession, SessionState, outcome_mark
 from purr.tui.working import COLOR, FRAME_SECONDS, FRAMES
@@ -75,6 +77,15 @@ class PRList(OptionList):
     ``replace_option_prompt`` lays out every row again: fine once, but a spinning
     mark redraws several times a second (300 PRs: most of a CPU).
     """
+
+    BINDINGS = pane_keys(
+        ["open", "search", "review", "mark", "approve", "dismiss", "merge", "diff", "zoom"]
+        + ["shell", "switch_pane"],
+        switch_pane="PR",
+    )
+
+    async def action_repo(self, action: str) -> None:
+        await cast("PurrApp", self.app).main.repo.run_action(action)
 
     def redraw_option(self, option_id: str, prompt: Table) -> None:
         """A new look for a row of the same height."""
@@ -375,28 +386,10 @@ class RepoView(PurrView):
     One instance serves every repo; it remembers the selected PR per repo.
     """
 
+    # Its keys work from either pane; each pane's footer shows its own (pane_keys).
     BINDINGS = [
         Binding("escape", "back", "Home"),
-        Binding("o", "open", "Open"),
-        # Two panes, so either way it's the other one (typing included: tab
-        # never indents the prompt).
-        Binding("tab,shift+tab", "switch_pane", "Switch pane", key_display="tab"),
-        Binding("n", "move(1)", "Next"),
-        Binding("p", "move(-1)", "Previous"),
-        Binding("slash", "search", "Search", key_display="/"),
-        Binding("r", "review", "Review"),
-        Binding("space", "mark", "Mark"),
-        # Whatever the decision box offers: approve or dismiss a proposal,
-        # allow or deny a permission request.
-        Binding("a", "approve", "Approve"),
-        Binding("A", "always", "Always allow", show=False),
-        Binding("x", "dismiss", "Dismiss"),
-        Binding("m", "merge", "Merge"),
-        Binding("d", "diff", "Diff"),
-        Binding("t", "thinking", "Thinking", show=False),
-        Binding("z", "zoom", "Zoom"),
-        Binding("c", "open_claude", "Claude Code", show=False),  # also /claude
-        Binding("exclamation_mark", "shell", "Shell"),
+        *[replace(binding, show=False) for binding in REPO_KEYS.values()],
     ]
 
     def __init__(self, **kwargs):
@@ -692,12 +685,10 @@ class RepoView(PurrView):
     async def action_back(self) -> None:
         """Home, in one step from anywhere in the repo (tab goes between its panes).
 
-        Except from the prompt: there esc only leaves it, for the PR's pane, like
-        the / suggestions close first. Nothing's lost: the search, and anything
-        half-typed in the prompt, are there when you're back.
+        Except from the prompt: there esc leaves it, for the PR's pane (see
+        PRSession). Nothing's lost: the search, and anything half-typed in the
+        prompt, are there when you're back.
         """
-        if self.session.close_suggestions() or self.session.leave_prompt():
-            return
         if self.query_one("#search").has_focus:
             self._leave_search()
         if not self.query_one("#prs-pane").display:
