@@ -1073,8 +1073,9 @@ class AlwaysScreen(ModalScreen[str | None]):
 class InstructionsScreen(ModalScreen):
     """Which instructions to edit: how you like reviews, or how you like code.
 
-    Also your standing permissions (``permissions``), and, inside a repo, which
-    of its skills its reviews follow (``skill``).
+    Also your standing permissions (``permissions``), Purr's settings
+    (``settings``), and, inside a repo, which of its skills its reviews follow
+    (``skill``).
     """
 
     BINDINGS = [
@@ -1082,6 +1083,7 @@ class InstructionsScreen(ModalScreen):
         Binding("c", "pick('code')", "Code style"),
         Binding("p", "pick('permissions')", "Permissions"),
         Binding("s", "pick('skill')", "Review skill"),
+        Binding("o", "pick('settings')", "Settings"),
         Binding("escape", "pick('')", "Cancel", show=False),
     ]
 
@@ -1098,6 +1100,7 @@ class InstructionsScreen(ModalScreen):
             yield Label("[b]p[/b]  permissions: what agents may do without asking")
             if self._repo:
                 yield Label("[b]s[/b]  review skill: which of the repo's skills reviews follow")
+            yield Label("[b]o[/b]  Purr's settings: models, polling, signature… (all repos)")
             yield Label("Opens in $EDITOR. Repo files add to the general ones.", classes="hint")
 
     def check_action(self, action: str, parameters: tuple) -> bool:
@@ -1106,7 +1109,9 @@ class InstructionsScreen(ModalScreen):
     def action_pick(self, kind: str) -> None:
         from purr.review.instructions import Kind
 
-        self.dismiss(kind if kind in ("skill", "permissions") else Kind(kind) if kind else None)
+        self.dismiss(
+            kind if kind in ("skill", "permissions", "settings") else Kind(kind) if kind else None
+        )
 
 
 class ReviewSkillScreen(ModalScreen[str | None]):

@@ -9,7 +9,7 @@ from pathlib import Path
 from loguru import logger
 
 from purr import __version__
-from purr.config import Config
+from purr.config import Config, SettingsError
 
 
 def _setup_logging(config: Config, *, verbose: bool, stderr: bool) -> None:
@@ -22,7 +22,10 @@ def _setup_logging(config: Config, *, verbose: bool, stderr: bool) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parser().parse_args(argv)
-    config = _config(args)
+    try:
+        config = _config(args)
+    except SettingsError as e:
+        sys.exit(f"purr: {e}")
     # With the UI up, stderr belongs to the terminal UI: log to the file only.
     _setup_logging(config, verbose=args.verbose, stderr=args.headless)
 
@@ -76,7 +79,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _config(args: argparse.Namespace) -> Config:
-    """Purr's settings, with what the command line says over them."""
+    """Purr's settings (settings.toml), with what the command line says over them."""
     config = Config.load(data_dir=args.data_dir)
     if args.no_auto_review:
         config = dataclasses.replace(config, auto_review=False)

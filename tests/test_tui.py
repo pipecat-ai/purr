@@ -1148,3 +1148,30 @@ async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
                 }
             ),
         )
+
+
+async def test_editing_settings_says_what_is_wrong_at_once(tmp_path, monkeypatch):
+    from purr.config import SETTINGS_FILE
+    from purr.tui.screens import InstructionsScreen
+
+    app, github = make_app(tmp_path)
+    edited = []
+
+    async def editor(path, *, applies):  # what you'd do in $EDITOR: a typo
+        edited.append((path.read_text(), applies))
+        path.write_text(path.read_text() + "\naway_aftr = 600\n")
+
+    monkeypatch.setattr(app, "_edit", editor)
+    errors = []
+    monkeypatch.setattr(
+        app, "notify", lambda text, **kw: errors.append(text) if kw.get("severity") else None
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.press("i")
+        assert isinstance(app.screen, InstructionsScreen)
+        await pilot.press("o")
+        await until(pilot, lambda: bool(errors))
+    starter, applies = edited[0]
+    assert "# max_reviews = 3" in starter and applies == "next time Purr starts"
+    assert (app.purr.config.config_dir / SETTINGS_FILE).exists()
+    assert "unknown setting 'away_aftr'" in errors[0]

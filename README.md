@@ -106,7 +106,7 @@ uv run purr --no-auto-review
 | | `ctrl+o` | Back to where you were |
 | | `ctrl+p` | Find any repo or PR by name |
 | | `w` | What happened while you were away |
-| | `i` | Your review style, code style, permissions and the repo's review skill |
+| | `i` | Your review style, code style, permissions, the repo's review skill, and settings (`o`) |
 | | `q` / `ctrl+q` | Quit (it asks first) |
 | | drag | Select text in the PR pane: it's copied |
 | Home | `enter` / `+` / `-` | Open / watch / stop watching a repo |
@@ -184,8 +184,12 @@ its `code-review` skill is used automatically).
 - **Copying.** Selecting text with the mouse copies it. GNOME Terminal (and other terminals
   built on VTE) don't let apps copy, so there install `wl-clipboard` (or `xclip`) first;
   `shift`+drag always selects with the terminal itself.
-- **Options.** `uv run purr --help` lists them: `--no-auto-review`, `--max-reviews N`,
-  `--permission-mode MODE`, `--sandbox`, `--data-dir`, `--headless`, `-v`.
+- **Settings** are in `~/.config/purr/settings.toml`: models, how often to poll, how many
+  reviews at once, the signature on what Purr posts, and so on. `i` then `o` opens it in your
+  editor; the first time, it starts with every setting commented out at its default, with
+  what it does. Purr reads it when it starts. Some have flags too, which win:
+  `uv run purr --help` (`--no-auto-review`, `--max-reviews N`, `--permission-mode MODE`,
+  `--sandbox`, `--data-dir`, `--headless`, `-v`).
 
 ## Development
 

@@ -15,6 +15,7 @@ from textual.worker import NoActiveWorker, get_current_worker
 
 from purr.app import Purr
 from purr.checkout import github_repos
+from purr.config import SETTINGS_FILE, SettingsError, read_settings, settings_template
 from purr.jobs import PurrError
 from purr.messages import (
     REVIEW_WORKER,
@@ -189,6 +190,8 @@ class PurrApp(App):
                 # In a repo, the rules you allowed for its reviews; at home, your
                 # Claude Code settings, which every review uses.
                 await self._edit(self.purr.rules.ensure(repo) if repo else _claude_settings())
+            elif kind == "settings":
+                await self._edit_settings()
             elif isinstance(kind, Kind):
                 await self._edit(self.purr.instructions.ensure(kind, repo))
 
@@ -231,12 +234,25 @@ class PurrApp(App):
             )
             await process.wait()
 
-    async def _edit(self, path: Path) -> None:
+    async def _edit(self, path: Path, *, applies: str = "from the agents' next turn") -> None:
         editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi")
         with self.suspend():
             process = await asyncio.create_subprocess_exec(*editor, str(path))
             await process.wait()
-        self.notify(f"Saved {path}. It applies from the agents' next turn.")
+        self.notify(f"Saved {path}. It applies {applies}.")
+
+    async def _edit_settings(self) -> None:
+        """Purr's settings.toml, made with every setting commented out if it's not there yet,
+        and checked once you've saved it, so a typo shows now rather than next start."""
+        path = self.purr.config.config_dir / SETTINGS_FILE
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(settings_template())
+        await self._edit(path, applies="next time Purr starts")
+        try:
+            read_settings(path)
+        except SettingsError as e:
+            self.notify(str(e), severity="error", timeout=20)
 
     async def action_recap(self) -> None:
         if self._modal_open():

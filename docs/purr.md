@@ -445,7 +445,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `t` the agent's reasoning in full, or a line per thought again
 - `z` zoom the PR session to full screen
 - `c` open the PR's session in Claude Code, `!` a shell in its worktree
-- `i` edit your review style or code style (this repo's inside a repo, the general ones at home)
+- `i` edit your review style or code style (this repo's inside a repo, the general ones at home), your standing permissions (`p`), the repo's review skill (`s`), or Purr's settings (`o`)
 - `w` open the latest "while you were away" recap
 
 ### Fast by default
@@ -486,11 +486,14 @@ Not built yet. The design:
 
 ## Configuration
 
-There's no config file yet: settings are `Config`'s defaults (`config.py`), and some have command-line flags. `purr --help` lists them: `--data-dir` (or `PURR_DATA_DIR`), `--headless`, `--no-auto-review`, `--max-reviews`, `--permission-mode`, `--sandbox`, `-v`. The rest (`poll_interval` 60 s, `review_model` Claude Code's default, which the recap uses too, `lead_model` and `quick_model` Sonnet, `review_budget_usd` none, `away_after` 15 min, `permission_wait` 5 min, `signature`) take a code change. Your instructions and standing permissions live in the config dir (`PURR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/purr`, else `~/.config/purr`).
+Files follow the XDG convention: what you edit is in the config dir (`PURR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/purr`, else `~/.config/purr`): `settings.toml`, your instructions (`review.md`, `code.md`, per repo under `repos/`), and the standing permissions you allowed per repo. What Purr manages is in the data dir (`~/.local/share/purr`): the database, the log, its clones and worktrees.
+
+**Settings** (`config.py`) come from, each over the one before: their defaults, `settings.toml`, the environment (`PURR_DATA_DIR`), and command-line flags (`purr --help`: `--data-dir`, `--no-auto-review`, `--max-reviews`, `--permission-mode`, `--sandbox`; also `--headless`, `-v`). `settings.toml` can set any of them (but not where it is itself): `data_dir`, `poll_interval` (60 s), `auto_review`, `review_model` (Claude Code's default; the recap uses it too), `lead_model` and `quick_model` (Sonnet), `review_budget_usd` (none), `away_after` (15 min), `permission_wait` (5 min), `max_reviews` (3), `signature`, `permission_mode` (`auto`), `sandbox`. An empty value means none for those that can be none (`lead_model = ""`: Claude Code's default). It's read when Purr starts; a name it doesn't know or a value of the wrong type stops it with the file and the setting.
+
+Each setting's description is next to it in `config.py` (`_setting(..., about=...)`), and `i` then `o` makes the starter `settings.toml` from them, every setting commented out at its default, then opens it in `$EDITOR`, and checks it once you've saved it, so a typo shows at once rather than on the next start.
 
 ## Open questions
 
 - STT/LLM/TTS choices for the voice agent.
-- A config file, for the settings that have no flag.
 
 Decided along the way: the review's output is `submit_review` and `propose_action` (see Review workers), with the prompt in `review/agent.py`; the agent writes the inline comments and thread replies itself, and comments GitHub won't place go into the review body; "away" is 15 minutes without a key (`away_after`).
