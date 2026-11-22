@@ -15,7 +15,7 @@ from textual.widgets.option_list import Option
 from purr.jobs import PurrError
 from purr.messages import MakeRecap
 from purr.models import PRRef, Recap
-from purr.recap import event_text, is_notable
+from purr.news import is_notable, recap_text
 from purr.tui.switcher import short_name
 
 if TYPE_CHECKING:
@@ -70,7 +70,7 @@ class RecapScreen(ModalScreen[None]):
         lines = Text(f"{len(activities)} events\n", style="bold dim")
         for activity in activities:
             label = short_name(activity.pr) if activity.pr else ""
-            lines.append(f"{_clock(activity.at)}  {label:<16} {event_text(activity)[:90]}\n", "dim")
+            lines.append(f"{_clock(activity.at)}  {label:<16} {recap_text(activity)[:90]}\n", "dim")
         self.query_one("#recap-events", Static).update(lines)
 
     @work(exclusive=True)

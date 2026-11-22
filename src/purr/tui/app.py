@@ -27,6 +27,7 @@ from purr.messages import (
     PermissionResolved,
     PRChanged,
     PRListUpdated,
+    PurrEvent,
     ReviewFailed,
     ReviewFinished,
     ReviewProgress,
@@ -35,8 +36,10 @@ from purr.messages import (
     SkillChosen,
     SkillQuestion,
     WatchRepo,
+    payload,
 )
-from purr.models import Outcome, PRChange, PRRef
+from purr.models import PRRef
+from purr.news import news
 from purr.review.instructions import Kind
 from purr.review.rules import CLAUDE_SETTINGS
 from purr.review.skills import RepoSkill, Skill
@@ -367,9 +370,13 @@ class PurrApp(App):
         self._schedule_reload()
 
     def _pr_changed(self, event: PRChanged) -> None:
-        if event.change == PRChange.ASSIGNED:
-            self._alert(event.pr, "assigned to you")
+        self._tell(event)
         self._schedule_reload()
+
+    def _tell(self, event: PurrEvent) -> None:
+        """An event that's news to you (see purr.news): an alert, the PR's title in bold."""
+        if what := news(event.kind, payload(event)):
+            self._alert(event.pr, what)
 
     def _session_message(self, event: SessionMessage) -> None:
         """A step in a PR's session: into its transcript, or how many tasks are out."""
@@ -399,14 +406,11 @@ class PurrApp(App):
         self._session_changed(event.pr)
 
     def _review_finished(self, event: ReviewFinished) -> None:
-        issues = Outcome.of(event.findings).issues
-        plural = "s" if issues != 1 else ""
-        found = f"found {issues} issue{plural}" if issues else "nothing found"
-        self._alert(event.pr, f"review: {found}")
+        self._tell(event)
         self._review_ended(event.pr)
 
     def _review_failed(self, event: ReviewFailed) -> None:
-        self._alert(event.pr, "review failed")
+        self._tell(event)
         self._review_ended(event.pr)
 
     def _review_ended(self, pr: str) -> None:
@@ -416,7 +420,7 @@ class PurrApp(App):
         self._session_changed(pr)
 
     def _permission_asked(self, event: PermissionRequest) -> None:
-        self._alert(event.pr, "needs your OK")
+        self._tell(event)
         self._session_state(event.pr).ask = event
         self._session_changed(event.pr)
 

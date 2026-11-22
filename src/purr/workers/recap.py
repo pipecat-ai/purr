@@ -8,7 +8,8 @@ from pipecat.workers.base_worker import BaseWorker
 
 from purr.jobs import handles
 from purr.messages import RECAP_WORKER, MakeRecap, RecapMade, RecapReady, UserActive
-from purr.recap import RecapAgent, fallback_recap, is_notable, recap_notes
+from purr.news import is_notable
+from purr.recap import RecapAgent, fallback_recap, recap_notes
 from purr.store import Store
 
 LAST_ACTIVE = "last_active_at"

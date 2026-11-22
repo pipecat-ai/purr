@@ -1123,3 +1123,28 @@ async def test_merging_with_m_after_approving(tmp_path):
         # m again: merged, at the commit you approved.
         await pilot.press("m")
         await until(pilot, lambda: app.purr._writer.merges == [(ref, "squash", "abc")])
+
+
+async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
+    from purr.messages import PRChanged
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1), remote(2)]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        for number, change, by in ((1, "replied", "alice"), (2, "requested", "")):
+            event = PRChanged(
+                source="github", pr=f"pipecat-ai/pipecat#{number}", change=change, title="", by=by
+            )
+            await app.bus.send_bus_message(event)
+        await until(
+            pilot,
+            lambda: (
+                app.alerts
+                == {
+                    "pipecat-ai/pipecat#1": "alice replied",
+                    "pipecat-ai/pipecat#2": "asks for your review",
+                }
+            ),
+        )

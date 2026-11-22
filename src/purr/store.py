@@ -30,6 +30,7 @@ from purr.models import (
     ReviewStatus,
     Severity,
 )
+from purr.news import NEWS_KINDS, news
 
 # Each entry upgrades the schema by one version (tracked in PRAGMA user_version).
 # Append new migrations; never edit one that has shipped.
@@ -242,32 +243,6 @@ MIGRATIONS: list[str] = [
     ALTER TABLE pending_actions ADD COLUMN posted_head TEXT;
     """,
 ]
-
-# Activity that's news to you, and how the UI says it (see Store.unseen).
-_NEWS = """
-    CASE
-        WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'assigned'
-            THEN 'assigned to you'
-        WHEN a.kind = 'review.finished' AND (
-            SELECT COUNT(*) FROM json_each(a.data, '$.findings')
-            WHERE json_extract(value, '$.severity') = 'issue'
-        ) > 0
-            THEN 'review: found ' || (
-                SELECT COUNT(*) FROM json_each(a.data, '$.findings')
-                WHERE json_extract(value, '$.severity') = 'issue'
-            ) || ' issue' || CASE (
-                SELECT COUNT(*) FROM json_each(a.data, '$.findings')
-                WHERE json_extract(value, '$.severity') = 'issue'
-            ) WHEN 1 THEN '' ELSE 's' END
-        WHEN a.kind = 'review.finished' THEN 'review: nothing found'
-        WHEN a.kind = 'review.failed' THEN 'review failed'
-        WHEN a.kind = 'session.permission_request' THEN 'needs your OK'
-        WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'requested'
-            THEN 'asks for your review'
-        WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'replied'
-            THEN COALESCE(NULLIF(json_extract(a.data, '$.by'), ''), 'someone') || ' replied'
-    END
-"""
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
 _STATE_ORDER = """
@@ -835,24 +810,24 @@ class Store:
 
         One per PR, its latest news ("review done", ...), oldest first.
         """
+        kinds = ", ".join("?" * len(NEWS_KINDS))
         rows = await self._fetchall(
             f"""
-            SELECT repo, number, what FROM (
-                SELECT a.id, a.repo, a.number, a.at, p.seen_at, {_NEWS} AS what
-                FROM activity a JOIN prs p ON p.repo = a.repo AND p.number = a.number
-                WHERE p.gh_state = 'open'
-            )
-            WHERE what IS NOT NULL
-              AND (seen_at IS NULL OR julianday(at) > julianday(seen_at))
-            ORDER BY id
-            """
+            SELECT a.repo, a.number, a.kind, a.data
+            FROM activity a JOIN prs p ON p.repo = a.repo AND p.number = a.number
+            WHERE p.gh_state = 'open' AND a.kind IN ({kinds})
+              AND (p.seen_at IS NULL OR julianday(a.at) > julianday(p.seen_at))
+            ORDER BY a.id
+            """,
+            NEWS_KINDS,
         )
-        news: dict[PRRef, str] = {}
+        latest: dict[PRRef, str] = {}
         for row in rows:
-            ref = PRRef(row["repo"], row["number"])
-            news.pop(ref, None)  # keep each PR at its latest news
-            news[ref] = row["what"]
-        return list(news.items())
+            if what := news(row["kind"], json.loads(row["data"])):
+                ref = PRRef(row["repo"], row["number"])
+                latest.pop(ref, None)  # keep each PR at its latest news, in order
+                latest[ref] = what
+        return list(latest.items())
 
     # -- Prompt history --------------------------------------------------------
 

@@ -7,26 +7,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from purr.claude import log_stderr
 from purr.models import PR, Activity, PendingAction, PRRef, PRState
-
-# Activity worth a recap. Pool PRs leaving (taken by someone, closed unreviewed)
-# and review progress are noise.
-_NOTABLE_CHANGES = {
-    "assigned",
-    "unassigned",
-    "pooled",
-    "new_commits",
-    "closed",
-    "merged",
-    "requested",
-    "replied",
-}
-_NOTABLE_KINDS = {
-    "review.finished",
-    "review.failed",
-    "action.pending",
-    "action.resolved",
-    "session.permission_request",
-}
+from purr.news import recap_text
 
 INSTRUCTIONS = """\
 You write the "While you were away" recap in Purr, an app for reviewing GitHub
@@ -66,52 +47,6 @@ RECAP_SCHEMA = {
 }
 
 
-def is_notable(activity: Activity) -> bool:
-    if activity.kind == "pr.changed":
-        return activity.data.get("change") in _NOTABLE_CHANGES
-    if activity.kind == "session.permission_resolved":
-        return not activity.data.get("answered", True)  # nobody was there to answer
-    return activity.kind in _NOTABLE_KINDS
-
-
-def event_text(activity: Activity) -> str:
-    data = activity.data
-    match activity.kind:
-        case "pr.changed":
-            return {
-                "assigned": "assigned to the user",
-                "unassigned": "no longer assigned to the user",
-                "pooled": "new PR in the pool",
-                "new_commits": "new commits pushed",
-                "closed": "closed",
-                "merged": "merged",
-                "requested": "asks for the user's review",
-                "replied": f"{data.get('by') or 'someone'} replied to the user",
-            }.get(data.get("change", ""), str(data.get("change")))
-        case "review.finished":
-            findings = "; ".join(
-                f"{f.get('severity')}: {f.get('text')}" for f in data.get("findings", [])
-            )
-            return f"review finished: {data.get('summary', '')}" + (
-                f" Findings: {findings}" if findings else ""
-            )
-        case "review.failed":
-            return f"review failed: {data.get('error', '')}"
-        case "action.pending":
-            return f"agent proposes: {data.get('description', '')}"
-        case "action.resolved":
-            return (
-                "user approved the proposed action"
-                if data.get("approved")
-                else "proposed action dismissed"
-            )
-        case "session.permission_request":
-            return f"agent waiting for permission to: {data.get('description', '')}"
-        case "session.permission_resolved":
-            return f"nobody answered about: {data.get('description', '')}; agent carried on"
-    return activity.kind
-
-
 def recap_notes(
     activities: list[Activity], prs: dict[PRRef, PR], pending: dict[PRRef, list[PendingAction]]
 ) -> str:
@@ -121,7 +56,7 @@ def recap_notes(
         when = datetime.fromisoformat(activity.at).strftime("%H:%M")
         pr = prs.get(activity.pr) if activity.pr else None
         title = f' ("{pr.title}")' if pr else ""
-        lines.append(f"- {when} {activity.pr or ''}{title}: {event_text(activity)}")
+        lines.append(f"- {when} {activity.pr or ''}{title}: {recap_text(activity)}")
     lines.append("\nWhere each PR stands now:")
     for ref, pr in prs.items():
         state = {
@@ -147,7 +82,7 @@ def fallback_recap(activities: list[Activity]) -> tuple[str, list[dict]]:
     items = [
         {
             "pr": str(ref),
-            "text": event_text(activity).capitalize(),
+            "text": recap_text(activity).capitalize(),
             "needs_you": activity.kind
             in {"action.pending", "review.failed", "session.permission_request"},
         }

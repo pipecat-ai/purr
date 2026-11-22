@@ -9,7 +9,8 @@ from pipecat.workers.runner import WorkerRunner
 from purr.jobs import request
 from purr.messages import MakeRecap, UserActive
 from purr.models import PR, PRRef
-from purr.recap import fallback_recap, is_notable, recap_notes
+from purr.news import is_notable
+from purr.recap import fallback_recap, recap_notes
 from purr.store import Store
 from purr.workers import RecapWorker
 from purr.workers.recap import LAST_ACTIVE
