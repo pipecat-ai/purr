@@ -179,7 +179,8 @@ Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that 
 - **Deciding happens in the conversation, not in per-finding cards.** You keep digging with the agent until you agree on what to post; "drop the nit", "reword the race comment", "make it a comment instead" make it propose again, and the new proposal replaces the old one. The transcript shows each proposal in full (verdict, overall comment, every inline comment and thread reply), so `a` posts exactly what you've read.
 - Permission prompts: when Claude Code asks about a tool call, the prompt shows inline as in Claude Code (`a` allow once / `A` always / `x` deny, the same keys as approving or dismissing a proposal) and the PR moves to **Needs you**. See Permissions for `A`. Voice can answer too. The agent waits up to `permission_wait` (5 minutes) and then carries on without it, saying at the end what it wanted to run and why; the recap mentions it. The wait has to be bounded: Claude Code gives up on an unanswered permission request after about 10 minutes, and after that its session refuses every tool call.
 - The agent's reasoning shows in the transcript the way Claude Code shows it: dimmed, ahead of what it leads to. Purr asks for summarized thinking (`thinking={"type": "adaptive", "display": "summarized"}`); the SDK's default returns it empty.
-- `z` zooms the session to full screen; `esc` goes back a step: prompt → PR → list.
+- `z` zooms the session to full screen; `esc` goes home (see Repo screen).
+- **While the agent works**, a line above the prompt moves, like Claude Code's: a star that grows and shrinks, a cat verb ("Prowling…", a new one every 20 s) and how long it's been (`50s`, `1m 2s`). It sits outside the scrolling conversation, so it shows even when you've scrolled up, and goes away when the agent's done or waiting on you (a question, a proposal) or for its turn in the queue. The PR's mark in the list spins the same way. A turn that ends with agents still in the background isn't "done": only the run's last result is.
 - **Open in Claude Code** (`c`): Purr suspends its UI and runs the real `claude --resume <session_id>` in the PR's worktree, with GitHub writes disallowed via `--disallowedTools`. When you quit Claude Code, Purr comes back and picks the session up again. The PR's agent must be idle first, so two processes never drive one session. Because the transcript is the SDK's session file, what you did in Claude Code shows up in Purr's view afterwards.
 
 ## Permissions: Claude Code's own
@@ -357,7 +358,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 │                                                        │ └──────────────────────────────────────────────┘ │
 │                                                        │ > is the race reachable from user code?          │
 ├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤
-│ esc back · o open · n/p next/prev · / search · r review · a approve · x dismiss · d diff · c Claude · ! sh │
+│ esc home · o open · n/p next/prev · / search · r review · a approve · x dismiss · d diff · c Claude · ! sh │
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -369,7 +370,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
   - **The pending action box and the prompt**, which stay put too. The prompt takes several lines and grows with them (up to 10).
   - `d` opens the full diff in your pager (`gh pr diff`).
 - **Details are fetched ahead; diffs are local.** Selecting a PR fetches its details from GitHub (about 0.5 s), plus those of the 10 PRs below it in one request. Its diff comes from Purr's clone (`pr.diff` on the `git` worker, see Repos), in a few ms. Details are cached in memory and refetched when the PR is updated or after 2 minutes, since CI moves on without the PR changing; diffs are kept by head commit (the last 50).
-- **Focus**: each pane has a rounded border, and the one with the focus lights up in the accent color, with its title (`PRs`, `PR`). `o` (or `enter`) on a PR moves the focus into its pane; `esc` brings it back.
+- **Focus**: each pane has a rounded border, and the one with the focus lights up in the accent color, with its title (`PRs`, `PR`). `o` on a PR moves the focus into its pane (`enter` into its prompt); `tab` goes back and forth.
 - **Status bar**: key hints for the focused pane, and mic state.
 
 ### Alerts from other repos
@@ -395,8 +396,8 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `o` or `enter` open: a repo, or a PR (focus moves into its pane). In a PR's pane, `enter` goes to its prompt.
 - `tab` (or `shift+tab`) switches between the PR list and the PR's pane, from its prompt too (the prompt never takes a tab).
 - `n` / `p` next / previous: repo, or PR. They only change which PR the PR's pane shows, never the focus, so from the pane you read PRs one after another.
-- `/` search the PR list as you type (number, title, author, assignees; every word has to match). `enter` or `esc` goes back to the list, keeping the results. The search stays (shown above the list, per repo, also after leaving it) until you press `/` and delete it.
-- `esc` back a step: prompt → PR → PR list → repo list (out of the search box first; it never clears the search)
+- `/` search the PR list as you type (number, title, author, assignees; every word has to match). `enter` goes back to the list, keeping the results. The search stays (shown above the list, per repo, also after leaving it) until you press `/` and delete it.
+- `esc` goes home in one step, from the list, the search box, the PR or its prompt. Nothing's lost: the search and anything half-typed are there when you're back. Only the `/` suggestions close first.
 - `page up` / `page down` scroll a page, in either pane (the transcript while typing too)
 - `space` mark/unmark PR
 - `r` start review on marked PRs (or the selected one), assigning you

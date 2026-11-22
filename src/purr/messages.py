@@ -135,10 +135,16 @@ class ReviewStarted(PurrEvent):
 
 @dataclass(kw_only=True)
 class ReviewProgress(PurrEvent):
+    """What a PR's review is doing now; ``""`` once nothing is.
+
+    ``waiting``: on you, or for its turn; the agent isn't working on it yet.
+    """
+
     kind: ClassVar[str] = "review.progress"
     recorded: ClassVar[bool] = False
     pr: str
     text: str
+    waiting: bool = False
 
 
 @dataclass(kw_only=True)

@@ -101,6 +101,11 @@
     scrollbar-size-vertical: 1;
 }
 
+#working {
+    height: 1;
+    margin: 0 0 1 1;
+}
+
 #pr-decision {
     height: auto;
     margin: 0 1;

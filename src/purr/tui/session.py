@@ -40,6 +40,7 @@ from purr.tui.commands import (
 )
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
+from purr.tui.working import Working
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -55,10 +56,17 @@ class SessionState:
     """What the UI keeps about a PR's session between redraws."""
 
     entries: list[dict] | None = None  # None until the transcript is loaded
-    progress: str | None = None
+    progress: str | None = None  # what the review's doing; None once nothing is
+    waiting: bool = False  # the review waits on you (a question)
+    since: float | None = None  # when the agent started working (monotonic)
     ask: PermissionRequest | None = None
     details_error: str | None = None  # why the description couldn't be loaded
     diff_error: str | None = None  # why the diff couldn't be
+
+    @property
+    def working(self) -> bool:
+        """The agent's at it (not waiting on you, or for its turn): the spinners spin."""
+        return bool(self.progress) and self.since is not None and not self.waiting and not self.ask
 
 
 def _bullet(body: RenderableType, style: str = "") -> Table:
@@ -172,9 +180,10 @@ def render_entry(entry: dict, signature: str = "") -> RenderableType | None:
         style = "red" if entry.get("is_error") else "dim"
         return Text(f"  ⎿ {_short(lines[0], 90)}{more}", style=style)
     if kind == "result":
-        cost = entry.get("cost_usd")
-        details = f"{entry.get('turns', 0)} turns" + (f" · ${cost:.2f}" if cost else "")
-        return Text(f"  ✓ done · {details}", style="dim")
+        turns, cost = entry.get("turns") or 0, entry.get("cost_usd")
+        details = [f"{turns} turn{'s' if turns != 1 else ''}"] if turns else []
+        details += [f"${cost:.2f}"] if cost else []
+        return Text("  ✓ done" + "".join(f" · {d}" for d in details), style="dim")
     if kind == "error":
         return Text(f"✗ {entry.get('text', '')}", style="red")
     if kind == "task":  # a background agent (or command) starting or reporting back
@@ -200,7 +209,6 @@ class PRSession(Vertical):
     """
 
     BINDINGS = [
-        Binding("escape", "back", "Back"),
         Binding("enter", "ask", "Ask"),
         # The transcript, wherever the focus is in the pane, typing included.
         Binding("pageup", "page(-1)", "Page up", show=False, priority=True),
@@ -219,6 +227,7 @@ class PRSession(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(id="pr-header")
         yield RichLog(id="transcript", wrap=True, markup=False, auto_scroll=True)
+        yield Working(id="working")
         yield Static(id="pr-decision")
         suggestions = OptionList(id="suggestions")
         suggestions.can_focus = False
@@ -278,6 +287,14 @@ class PRSession(Vertical):
 
     def active(self) -> bool:
         return bool(self._suggested) and self.query_one("#suggestions").display
+
+    def close_suggestions(self) -> bool:
+        """Close the / suggestions, if they're open (esc)."""
+        if not self.active():
+            return False
+        self.query_one("#suggestions").display = False
+        self._suggested = []
+        return True
 
     def move(self, step: int) -> None:
         box = self.query_one("#suggestions", OptionList)
@@ -422,6 +439,12 @@ class PRSession(Vertical):
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details)
         )
+        working = self.query_one(Working)
+        if state.working:
+            assert state.since is not None
+            working.start(state.since)
+        else:
+            working.stop()
         decision = self.query_one("#pr-decision", Static)
         if state.ask:
             always = "   [A] always…" if state.ask.rule else ""
@@ -528,13 +551,6 @@ class PRSession(Vertical):
             prompt.focus()
 
         self.app.push_screen(HistorySearchScreen(asked, prompt.text), picked)
-
-    def action_back(self) -> None:
-        """From the prompt to the PR, from the PR to the list."""
-        if self.query_one("#prompt").has_focus:
-            self.focus_transcript()
-        elif self.screen.query_one("#prs-pane").display:
-            self.screen.query_one("#prs").focus()
 
     @on(PromptArea.Submitted)
     async def send(self, event: PromptArea.Submitted) -> None:

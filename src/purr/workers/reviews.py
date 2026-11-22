@@ -426,7 +426,9 @@ class ReviewWorker(BaseWorker):
 
     async def _report_queue(self) -> None:
         for ahead, ref in enumerate(self._slots.waiting()):
-            await self._progress(ref, f"Queued, {ahead} ahead" if ahead else "Queued, next up")
+            # Waiting for its turn: nothing's working on it yet.
+            text = f"Queued, {ahead} ahead" if ahead else "Queued, next up"
+            await self._progress(ref, text, waiting=True)
 
     # -- Running ----------------------------------------------------------------------
 
@@ -475,7 +477,9 @@ class ReviewWorker(BaseWorker):
         future, until = self._skill_asks[key]
         if future.done():
             return future.result()
-        await self._progress(ref, "Waiting for you: should reviews here follow a repo skill?")
+        await self._progress(
+            ref, "Waiting for you: should reviews here follow a repo skill?", waiting=True
+        )
         try:
             return await asyncio.wait_for(asyncio.shield(future), until - time.monotonic())
         except TimeoutError:
@@ -598,13 +602,16 @@ class ReviewWorker(BaseWorker):
 
     async def _settle(self, ref: PRRef, state: PRState) -> None:
         """Set the PR's state after a run: anything pending means it needs you."""
+        await self._progress(ref, "")  # nothing's happening any more
         if await self._store.pending_actions(ref):
             state = PRState.NEEDS_YOU
         await self._store.set_pr_state(ref, state)
         await self.send_bus_message(PRListUpdated(source=self.name))
 
-    async def _progress(self, ref: PRRef, text: str) -> None:
-        await self.send_bus_message(ReviewProgress(source=self.name, pr=str(ref), text=text))
+    async def _progress(self, ref: PRRef, text: str, *, waiting: bool = False) -> None:
+        await self.send_bus_message(
+            ReviewProgress(source=self.name, pr=str(ref), text=text, waiting=waiting)
+        )
 
     async def _dismiss_pending(self, ref: PRRef) -> None:
         for action in await self._store.pending_actions(ref):

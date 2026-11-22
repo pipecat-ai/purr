@@ -572,6 +572,8 @@ class ClaudeReviewAgent:
             async for message in client.receive_messages():
                 track_tasks(message, running)
                 for entry in transcript_entries(message):
+                    if entry["kind"] == "result" and running:
+                        continue  # a turn's end, not the run's: agents are still at work
                     await callbacks.on_message(entry)
                 if isinstance(message, ResultMessage):
                     # Figures are running totals: the last result has the whole run's.

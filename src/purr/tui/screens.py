@@ -29,6 +29,7 @@ from purr.review.agent import claude_code_command
 from purr.tui.bridge import RequestError
 from purr.tui.overview import short_age
 from purr.tui.session import NUMBER_STYLE, PRSession, SessionState, outcome_mark
+from purr.tui.working import COLOR, FRAME_SECONDS, FRAMES
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -44,6 +45,28 @@ _GROUPS = [
 _ICONS = {key: icon for key, icon, *_ in _GROUPS}
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
 DIFFS_AHEAD = 3  # of those, whose diffs too (one request each, and bigger)
+
+
+class PRList(OptionList):
+    """The PR list, which can redraw one row without rebuilding the rest.
+
+    ``replace_option_prompt`` lays out every row again: fine once, but a spinning
+    mark redraws several times a second (300 PRs: most of a CPU).
+    """
+
+    def redraw_option(self, option_id: str, prompt: Table) -> None:
+        """A new look for a row of the same height."""
+        try:
+            option = self.get_option(option_id)
+            option._set_prompt(prompt)
+            cache = self._option_render_cache
+            for key in [key for key in cache.keys() if key[0] is option]:  # noqa: SIM118 (no __iter__)
+                cache.discard(key)
+            line = self._line_cache.index_to_line.get(self.get_option_index(option_id))
+        except AttributeError:  # Textual's insides moved: the slow way, still right
+            self.replace_option_prompt(option_id, prompt)
+            return
+        self.refresh_line(line) if line is not None else self.refresh()
 
 
 def group(pr: PR) -> str:
@@ -313,7 +336,7 @@ class RepoView(PurrView):
     """
 
     BINDINGS = [
-        Binding("escape", "back", "Back"),
+        Binding("escape", "back", "Home"),
         Binding("o", "open", "Open"),
         # Two panes, so either way it's the other one (typing included: tab
         # never indents the prompt).
@@ -350,12 +373,16 @@ class RepoView(PurrView):
         with Horizontal(id="main"):
             with Vertical(id="prs-pane"):
                 yield Input(id="search", placeholder="Search: number, title, author…")
-                yield OptionList(id="prs")
+                yield PRList(id="prs")
             yield PRSession(id="session")
 
     def on_mount(self) -> None:
         self.query_one("#prs-pane").border_title = "PRs"
         self.query_one("#search").display = False
+        # PRs whose agent is at work: their mark spins, like the PR pane's line.
+        self._spinning: set[str] = set()
+        self._frame = 0
+        self._spinner = self.set_interval(FRAME_SECONDS, self._spin, pause=True)
 
     def focus_main(self) -> None:
         self.query_one(OptionList).focus()
@@ -383,6 +410,7 @@ class RepoView(PurrView):
         """Draw the list: the PRs matching the search, grouped."""
         prs = [pr for pr in self._all if matches(pr, self._search)]
         self._prs = {}
+        self._spinning = {str(pr.ref) for pr in prs if self._working(str(pr.ref))}
         options: list[Option] = [Option(_columns(self._number_width), disabled=True)] if prs else []
         if self._all and not prs:
             options.append(
@@ -399,6 +427,7 @@ class RepoView(PurrView):
             options += [Option(self._prompt(pr), id=str(pr.ref)) for pr in members]
             self._prs.update((str(pr.ref), pr) for pr in members)
         self._marked &= {str(pr.ref) for pr in self._all}
+        self._spinner.resume() if self._spinning else self._spinner.pause()
 
         option_list = self.query_one(OptionList)
         option_list.set_options(options)
@@ -410,11 +439,34 @@ class RepoView(PurrView):
             option_list.highlighted = first
         self._show_highlighted()
 
+    def _working(self, key: str) -> bool:
+        state = self.purr_app.sessions.get(key)
+        return bool(state and state.working)
+
+    def working_changed(self) -> None:
+        """Some review started or stopped working: start or stop its spinning mark."""
+        if not self.repo:
+            return
+        spinning = {key for key in self._prs if self._working(key)}
+        changed, self._spinning = spinning ^ self._spinning, spinning
+        prs = self.query_one(PRList)
+        for key in changed & self._prs.keys():
+            prs.redraw_option(key, self._prompt(self._prs[key]))
+        self._spinner.resume() if spinning else self._spinner.pause()
+
+    def _spin(self) -> None:
+        self._frame += 1
+        prs = self.query_one(PRList)
+        for key in self._spinning & self._prs.keys():
+            prs.redraw_option(key, self._prompt(self._prs[key]))
+
     def _prompt(self, pr: PR) -> Table:
         marked = str(pr.ref) in self._marked
         outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
         if marked:
             mark = Text("▪", style="bold magenta")
+        elif str(pr.ref) in self._spinning:
+            mark = Text(FRAMES[self._frame % len(FRAMES)], style=f"bold {COLOR}")
         elif outcome:
             mark = outcome_mark(outcome)
         else:
@@ -563,12 +615,19 @@ class RepoView(PurrView):
         self._leave_search()
 
     async def action_back(self) -> None:
-        """Out of the search box, then out of the repo. Neither clears the search:
-        that's / and deleting it."""
+        """Home, in one step from anywhere in the repo (tab goes between its panes).
+
+        Nothing's lost: the search, and anything half-typed in the prompt, are
+        there when you're back. Only the / suggestions close first.
+        """
+        if self.session.close_suggestions():
+            return
         if self.query_one("#search").has_focus:
             self._leave_search()
-        else:
-            await self.purr_app.action_home()
+        if not self.query_one("#prs-pane").display:
+            self.action_zoom()  # both panes again, for next time
+        self.query_one(PRList).focus()
+        await self.purr_app.action_home()
 
     # -- Keys -----------------------------------------------------------------------
 

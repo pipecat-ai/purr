@@ -278,10 +278,24 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: log.scroll_y < bottom)
         assert focused(app) == "prompt"
 
+        # esc goes home, from the prompt too (tab goes between the panes), and
+        # what you'd typed is there when you're back.
         await pilot.press("escape")
-        assert focused(app) == "transcript"
+        await until(pilot, lambda: home(app))
+        await pilot.press("o")
+        await until(pilot, lambda: in_repo(app))
+        assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
+
+        # Only the / suggestions close first.
+        await pilot.press("enter")
+        assert focused(app) == "prompt"
+        prompt.set_text("")
+        await pilot.press("slash")
+        await until(pilot, lambda: session.active())
         await pilot.press("escape")
-        assert focused(app) == "prs" and not session.has_focus_within
+        assert not session.active() and in_repo(app) and focused(app) == "prompt"
+        await pilot.press("escape")
+        await until(pilot, lambda: home(app))
 
 
 async def test_alerts_and_the_switcher(tmp_path):
@@ -516,21 +530,19 @@ async def test_moving_around_and_searching(tmp_path):
         await pilot.press("n")
         await until(pilot, lambda: shown() == 1)
 
-        # esc doesn't clear it: out of the box (enter does the same), then home,
-        # and it's still there when you're back.
+        # esc goes home, from the search box too, and doesn't clear it: it's
+        # still there when you're back.
         await pilot.press("slash", "escape")
-        assert focused(app) == "prs" and pr_ids(app) == bus
-        assert repo.query_one("#search").display
-        await pilot.press("escape")
         await until(pilot, lambda: home(app))
         await pilot.press("o")
         await until(pilot, lambda: in_repo(app))
         assert pr_ids(app) == bus and repo.query_one("#search").value == "bus"
+        assert repo.query_one("#search").display and focused(app) == "prs"
 
         # Deleting it is what clears it.
         await pilot.press("slash", "ctrl+u")
         await until(pilot, lambda: len(pr_ids(app)) == 3)
-        await pilot.press("escape")
+        await pilot.press("enter")
         assert focused(app) == "prs" and not repo.query_one("#search").display
         await pilot.press("slash", *"nothing like it")
         await until(pilot, lambda: pr_ids(app) == [])
@@ -824,3 +836,49 @@ async def test_each_step_in_the_transcript_stands_apart(tmp_path):
         assert "Read(src/bus.py)" in steps[4]
         assert "⎿ class Bus:" in steps[5]  # ...but a tool's result stays with its call
         assert steps[6] == "" and "Yes: stop() doesn't wait." in steps[7]
+
+
+async def test_a_review_at_work_keeps_moving(tmp_path):
+    """While the agent works, its PR's mark spins and the PR pane counts the time;
+    both stop when it's waiting on you, and when it's done."""
+    import re
+
+    from purr.tui.working import FRAMES, VERBS, elapsed_text, render_working
+
+    assert [elapsed_text(s) for s in (0, 50, 62, 3725)] == ["0s", "50s", "1m 2s", "1h 2m"]
+    line = render_working(since=100.0, now=162.5, frame=3).plain
+    assert line.startswith(FRAMES[3]) and line.endswith("… (1m 2s)")
+    assert any(verb in line for verb in VERBS)
+
+    app, github = make_app(tmp_path)
+    agent = app.purr.agent
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.add_repo("pipecat-ai/pipecat")
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        working = app.main.repo.session.query_one("#working")
+
+        def mark() -> str:  # the PR's row, as drawn: its first character
+            [row] = [t for t in option_texts(app) if "#1 " in t]
+            return row.strip()[0]
+
+        agent.gate = asyncio.Event()
+        await pilot.press("r")
+        await until(pilot, lambda: working.display)
+        assert re.search(r"… \(\d+s\)$", str(working.render()))
+        await until(pilot, lambda: mark() in FRAMES)
+        first = mark()
+        await until(pilot, lambda: mark() != first)  # it moves
+
+        # Waiting on you: still.
+        agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
+        agent.gate.set()
+        await until(pilot, lambda: "[a] allow" in decision(app))
+        assert not working.display and mark() not in FRAMES
+
+        # Done: still.
+        await pilot.press("a")
+        await until(pilot, lambda: "Review: found 1 issue" in header(app))
+        await until(pilot, lambda: not working.display and mark() not in FRAMES)

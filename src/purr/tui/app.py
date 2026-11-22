@@ -3,6 +3,7 @@
 import asyncio
 import os
 import shlex
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -367,17 +368,23 @@ class PurrApp(App):
             session.append(pr, event.message)
             return
         if isinstance(event, ReviewStarted):
-            state.entries, state.progress, state.ask = [], None, None  # a new session
+            state.entries, state.ask = [], None  # a new session
+            state.progress, state.waiting, state.since = None, False, None
         elif isinstance(event, ReviewProgress):
-            state.progress = event.text
+            state.progress, state.waiting = event.text or None, event.waiting
+            if not state.progress:
+                state.since = None
+            elif state.since is None:
+                state.since = time.monotonic()  # the agent's working: the spinner's clock
         elif isinstance(event, (ReviewFinished, ReviewFailed)):
-            state.progress = None
+            state.progress, state.waiting, state.since = None, False, None
         elif isinstance(event, PermissionRequest):
             state.ask = event
         elif isinstance(event, PermissionResolved):
             state.ask = None
         elif not isinstance(event, (ActionPending, ActionResolved)):
             return
+        self.main.repo.working_changed()
         if session.pr and str(session.pr.ref) == pr:
             if isinstance(event, ReviewStarted):
                 self.run_worker(session.show(session.pr), group="session-status")

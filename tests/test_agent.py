@@ -230,3 +230,5 @@ async def test_a_run_waits_for_its_background_agents(monkeypatch, tmp_path):
     kinds = [(e["kind"], e.get("event")) for e in entries if e["kind"] in ("task", "text")]
     assert kinds == [("task", "started"), ("text", None), ("task", "completed"), ("text", None)]
     assert all(e.get("text") != "never read" for e in entries)
+    # "done" once, at the end: not when the first turn ended with agents still out.
+    assert [e["cost_usd"] for e in entries if e["kind"] == "result"] == [0.40]
