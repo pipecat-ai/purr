@@ -88,10 +88,8 @@ def render_proposal(proposal: dict) -> RenderableType:
 
 
 def outcome_mark(outcome: Outcome) -> Text:
-    """What a review found, at a glance: ✓ nothing, ● something (red: issues)."""
-    if not outcome.found:
-        return Text("✓", style="bold green")
-    return Text("●", style="bold red" if outcome.issues else "bold yellow")
+    """What a review found, at a glance: ✓ nothing (nits don't count), ● issues."""
+    return Text("●", style="bold red") if outcome.found else Text("✓", style="bold green")
 
 
 def render_entry(entry: dict) -> RenderableType | None:

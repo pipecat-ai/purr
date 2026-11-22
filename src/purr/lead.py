@@ -45,6 +45,12 @@ how. For each one, decide:
 - why: one short line for the user, e.g. "New STT service, 420 lines, touches
   frame handling." or "Docstring fixes only."
 
+Some PRs are re-reviews: the author pushed new commits after an earlier
+review. Plan for what changed, not the whole PR: quick when the new commits
+are small follow-ups (addressing review comments, renames, tests), full when
+they change a lot or touch risky code. Focus on whether the earlier findings
+are resolved, and on what's new.
+
 Judge from what's given; don't invent details. The user's own instructions,
 when there are any, say what matters to them.
 """
@@ -94,6 +100,9 @@ class LeadInput:
     previous: Review | None = None  # its last review, if any
     outcome: Outcome | None = None  # what that review found
     requested: bool = False  # you asked for this review
+    rereview: bool = False  # new commits since ``previous``
+    new_commits: list[str] | None = None  # their subjects; None: couldn't tell
+    new_files: list[str] = field(default_factory=list)  # what they change: "M src/bus.py"
 
 
 def lead_notes(inputs: list[LeadInput], repos: dict[str, RepoContext]) -> str:
@@ -149,6 +158,23 @@ def _pr_notes(item: LeadInput) -> list[str]:
     if item.previous and item.previous.summary:
         found = f" ({item.outcome.text()})" if item.outcome else ""
         lines.append(f"Reviewed before{found}: {item.previous.summary}")
+    if item.rereview:
+        at = (
+            f" (which looked at {item.previous.head_sha[:7]})"
+            if item.previous and item.previous.head_sha
+            else ""
+        )
+        lines.append(f"Re-review: the author pushed new commits after the last review{at}.")
+        if item.new_commits is None:
+            lines.append("(Couldn't read the new commits.)")
+        else:
+            lines.append("New commits:")
+            lines += [f"  - {subject}" for subject in item.new_commits[:_MAX_FILES]]
+            if item.new_files:
+                lines.append("Files they change:")
+                lines += [f"  {change}" for change in item.new_files[:_MAX_FILES]]
+                if len(item.new_files) > _MAX_FILES:
+                    lines.append(f"  ... and {len(item.new_files) - _MAX_FILES} more")
     lines.append("")
     return lines
 

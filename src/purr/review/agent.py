@@ -180,6 +180,7 @@ class ReviewAgent(Protocol):
         plugin: Path | None = None,
         skill: str | None = None,
         plan: ReviewPlan | None = None,
+        model: str | None = None,
     ) -> AgentResult: ...
 
 
@@ -386,6 +387,7 @@ class ClaudeReviewAgent:
         plugin: Path | None = None,
         skill: str | None = None,
         plan: ReviewPlan | None = None,
+        model: str | None = None,
     ) -> AgentResult:
         policy = Policy(worktree, readable=[plugin] if plugin else [])
 
@@ -481,7 +483,7 @@ class ClaudeReviewAgent:
             # Summaries of the agent's reasoning, shown in the PR session like
             # Claude Code does (the default, "omitted", returns them empty).
             thinking={"type": "adaptive", "display": "summarized"},
-            model=self._model,
+            model=model or self._model,
             max_budget_usd=self._max_budget_usd,
             resume=session_id if resume else None,
             session_id=None if resume else session_id,

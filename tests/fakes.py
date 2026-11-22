@@ -85,6 +85,9 @@ class FakeRepos:
     async def diff(self, pr):
         return getattr(self, "diffs", {}).get(pr.ref)
 
+    async def new_commits(self, pr, since):
+        return getattr(self, "commits", None)
+
     async def plugin(self, repo):
         if isinstance(error := getattr(self, "plugin_error", None), Exception):
             raise error
@@ -134,6 +137,7 @@ class FakeAgent:
         plugin=None,
         skill=None,
         plan=None,
+        model=None,
     ):
         from purr.models import ActionKind, Finding, Severity
         from purr.review.agent import AgentResult
@@ -148,6 +152,7 @@ class FakeAgent:
                 "plugin": plugin,
                 "skill": skill,
                 "plan": plan,
+                "model": model,
             }
         )
         self.sessions.add(session_id)

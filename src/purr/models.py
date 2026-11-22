@@ -292,7 +292,11 @@ class ReviewPlan:
 
 @dataclass(frozen=True)
 class Outcome:
-    """What a finished review found, by severity: the one thing to know about it."""
+    """What a finished review found, by severity: the one thing to know about it.
+
+    Only issues count as having found something; suggestions and nits are
+    mentioned, but a review with nothing else found nothing.
+    """
 
     issues: int = 0
     suggestions: int = 0
@@ -309,13 +313,11 @@ class Outcome:
         return cls(counts[Severity.ISSUE], counts[Severity.SUGGESTION], counts[Severity.NIT])
 
     @property
-    def found(self) -> int:
-        return self.issues + self.suggestions + self.nits
+    def found(self) -> bool:
+        return self.issues > 0
 
     def text(self) -> str:
-        """``nothing found``, or ``found 1 issue, 2 nits``."""
-        if not self.found:
-            return "nothing found"
+        """``found 1 issue, 2 nits``, ``nothing found (1 suggestion)`` or ``nothing found``."""
         parts = [
             f"{n} {name}{'s' if n != 1 else ''}"
             for n, name in [
@@ -325,7 +327,9 @@ class Outcome:
             ]
             if n
         ]
-        return "found " + ", ".join(parts)
+        if self.found:
+            return "found " + ", ".join(parts)
+        return f"nothing found ({', '.join(parts)})" if parts else "nothing found"
 
 
 @dataclass

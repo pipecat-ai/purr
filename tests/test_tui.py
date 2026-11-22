@@ -295,7 +295,7 @@ async def test_alerts_and_the_switcher(tmp_path):
         await until(pilot, lambda: in_repo(app, "pipecat-ai/pipecat"))
 
         # The assigned PR elsewhere gets reviewed; that shows up as an alert here.
-        await until(pilot, lambda: "daily-x#7 review: found 1" in str(alert.render()))
+        await until(pilot, lambda: "daily-x#7 review: found 1 issue" in str(alert.render()))
         await pilot.press("ctrl+n")
         await until(pilot, lambda: in_repo(app, "daily-co/daily-x"))
         await until(pilot, lambda: app.main.repo.selected_pr() is not None)

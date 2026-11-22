@@ -212,8 +212,17 @@ _NEWS = """
     CASE
         WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'assigned'
             THEN 'assigned to you'
-        WHEN a.kind = 'review.finished' AND json_array_length(a.data, '$.findings') > 0
-            THEN 'review: found ' || json_array_length(a.data, '$.findings')
+        WHEN a.kind = 'review.finished' AND (
+            SELECT COUNT(*) FROM json_each(a.data, '$.findings')
+            WHERE json_extract(value, '$.severity') = 'issue'
+        ) > 0
+            THEN 'review: found ' || (
+                SELECT COUNT(*) FROM json_each(a.data, '$.findings')
+                WHERE json_extract(value, '$.severity') = 'issue'
+            ) || ' issue' || CASE (
+                SELECT COUNT(*) FROM json_each(a.data, '$.findings')
+                WHERE json_extract(value, '$.severity') = 'issue'
+            ) WHEN 1 THEN '' ELSE 's' END
         WHEN a.kind = 'review.finished' THEN 'review: nothing found'
         WHEN a.kind = 'review.failed' THEN 'review failed'
         WHEN a.kind = 'session.permission_request' THEN 'needs your OK'
@@ -833,6 +842,13 @@ class Store:
         """Remember the Agent SDK session so the review can be resumed later."""
         await self._db.execute(
             "UPDATE reviews SET session_id = ? WHERE id = ?", (session_id, review_id)
+        )
+        await self._db.commit()
+
+    async def set_review_plan(self, review_id: int, plan: ReviewPlan) -> None:
+        """What the lead planned for the review's latest round (a re-review replaces it)."""
+        await self._db.execute(
+            "UPDATE reviews SET plan = ? WHERE id = ?", (json.dumps(plan.to_dict()), review_id)
         )
         await self._db.commit()
 

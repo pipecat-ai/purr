@@ -227,3 +227,28 @@ async def test_reviews_start_from_what_the_sync_brought(tmp_path, upstream):
     upstream.rename(tmp_path / "gone")
     path = await repos.checkout(PRRef("a/b", 7), head)
     assert (path / "a.txt").read_text() == "two\n"
+
+
+async def test_new_commits_since_a_review(tmp_path, upstream):
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    reviewed = git(upstream, "rev-parse", "refs/pull/7/head")
+    await repos.checkout(PRRef("a/b", 7), reviewed)
+
+    # The author pushes two commits after the review.
+    git(upstream, "checkout", "-q", "feature")
+    (upstream / "a.txt").write_text("three\n")
+    git(upstream, "commit", "-qam", "Address review: fix the race")
+    (upstream / "b.txt").write_text("new\n")
+    git(upstream, "add", "b.txt")
+    git(upstream, "commit", "-qm", "Add a test")
+    git(upstream, "update-ref", "refs/pull/7/head", "HEAD")
+    git(upstream, "checkout", "-q", "main")
+    head = git(upstream, "rev-parse", "refs/pull/7/head")
+
+    pr = open_pr(7, head)
+    assert await repos.new_commits(pr, reviewed) == (
+        ["Add a test", "Address review: fix the race"],
+        ["M a.txt", "A b.txt"],
+    )
+    assert await repos.new_commits(open_pr(7, head), "0" * 40) is None  # unknown commit
+    assert await GitRepos(tmp_path / "other").new_commits(pr, reviewed) is None  # no clone

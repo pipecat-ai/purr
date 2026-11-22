@@ -265,6 +265,42 @@ class GitRepos:
                 stdin="\n".join(missing) + "\n",
             )
 
+    async def new_commits(self, pr: PR, since: str) -> tuple[list[str], list[str]] | None:
+        """What the PR's commits since ``since`` say and touch, for planning a re-review.
+
+        Returns their subjects (oldest last, as ``git log`` lists them) and the
+        files they change (``M src/bus.py``), or None if the clone can't tell.
+        The PR's head is fetched if the clone doesn't have it yet; only commits
+        and trees are read, so no file contents download.
+        """
+        clone = self.clone_path(pr.repo)
+        if not (clone / "HEAD").exists():
+            return None
+        async with self._locks.setdefault(pr.repo, asyncio.Lock()):
+            try:
+                if (await self._pr_heads(clone)).get(pr.number) != pr.head_sha:
+                    await self._git(
+                        clone,
+                        "fetch",
+                        "--quiet",
+                        "origin",
+                        f"+refs/pull/{pr.number}/head:{PR_REFS}/{pr.number}",
+                    )
+                span = f"{since}..{pr.head_sha}"
+                log = await self._git(clone, "log", "--format=%s", span, env=_NO_LAZY_FETCH)
+                files = await self._git(
+                    clone,
+                    "diff",
+                    "--name-status",
+                    "--no-renames",
+                    since,
+                    pr.head_sha,
+                    env=_NO_LAZY_FETCH,
+                )
+            except GitError:
+                return None
+        return log.splitlines(), [" ".join(line.split("\t", 1)) for line in files.splitlines()]
+
     async def diff(self, pr: PR) -> str | None:
         """The PR's diff from the clone; None if the clone doesn't have it (yet)."""
         clone = self.clone_path(pr.repo)

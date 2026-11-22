@@ -119,9 +119,12 @@ async def make(tmp_path):
             agent=agent,
             permission_wait=permission_wait,
             max_reviews=max_reviews,
+            quick_model="quick-model",
         )
         # The lead decides what gets reviewed (assigned PRs, new commits).
-        lead_worker = LeadWorker(store=store, agent=lead, auto_review=auto_review, settle=0.01)
+        lead_worker = LeadWorker(
+            store=store, agent=lead, repos=repos, auto_review=auto_review, settle=0.01
+        )
         runner = WorkerRunner(handle_sigint=False)
         await runner.add_workers(ActivityWorker(store=store), worker, lead_worker, client)
         task = asyncio.create_task(runner.run(auto_end=False))
@@ -661,3 +664,45 @@ async def test_reviews_you_ask_for_are_planned_at_high_priority(make):
     response = await s.client.request(LEAD_REVIEW, {"prs": [str(REF)]}, worker=LEAD_WORKER)
     assert "already being reviewed" in response["errors"][str(REF)]
     s.agent.gate.set()
+
+
+async def test_quick_reviews_use_the_quick_model_but_your_questions_dont(make):
+    s = await make()
+    s.lead.plans = {str(REF): {"depth": "quick"}}
+    await s.store.upsert_pr(make_pr(assigned_to_me=True))
+    await s.client.send_bus_message(Synced(source="github"))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["model"] == "quick-model"
+
+    await s.client.request(REVIEW_MESSAGE, {"pr": str(REF), "text": "Is the race real?"})
+    await eventually(lambda: len(s.agent.runs) == 2)
+    assert s.agent.runs[1]["model"] is None  # the agent's own, full model
+
+
+async def test_new_commits_are_planned_too(make, tmp_path):
+    s = await make()
+    s.repos.repo_plugin = make_plugin(tmp_path / "plugin", CODE_REVIEW)
+    await s.store.upsert_pr(make_pr(assigned_to_me=True))
+    await s.client.send_bus_message(Synced(source="github"))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    assert s.agent.runs[0]["skill"] == "pipecat:code-review"  # a full review
+
+    # A small follow-up push: the lead plans a quick re-review.
+    s.repos.commits = (["Address review: guard the shutdown race"], ["M src/bus.py"])
+    s.lead.plans = {str(REF): {"depth": "quick", "why": "Small fix for the race."}}
+    await s.store.upsert_pr(make_pr(assigned_to_me=True, head_sha="def456"))
+    await s.client.send_bus_message(
+        PRChanged(source="github", pr=str(REF), change="new_commits", title="Add message bus")
+    )
+    await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
+    notes = s.lead.notes[-1]
+    assert (
+        "Re-review: the author pushed new commits after the last review (which looked at abc123)"
+        in notes
+    )
+    assert "  - Address review: guard the shutdown race" in notes and "  M src/bus.py" in notes
+    run = s.agent.runs[1]
+    assert run["resume"] is True and "git diff abc123 def456" in run["prompt"]
+    assert run["plan"].why == "Small fix for the race."
+    assert run["skill"] is None and run["model"] == "quick-model"  # quick: no skill, cheaper
+    assert (await s.store.latest_review(REF)).plan.why == "Small fix for the race."

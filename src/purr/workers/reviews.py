@@ -113,6 +113,8 @@ class ReviewWorker(BaseWorker):
         repos: Clones and worktrees.
         agent: Runs the agent sessions.
         github: Reads a PR's review threads for the agent (none: no threads).
+        quick_model: Model for quick reviews and re-reviews (none: the agent's
+            own); your messages in the PR's session always use the agent's own.
         permission_wait: Seconds an agent waits for a permission answer (and a
             review for an answer about the repo's review skill) before carrying
             on without it.
@@ -128,6 +130,7 @@ class ReviewWorker(BaseWorker):
         github: GitHub | None = None,
         permission_wait: float = 300,
         max_reviews: int = 3,
+        quick_model: str | None = None,
     ):
         super().__init__(name)
         self._store = store
@@ -135,6 +138,7 @@ class ReviewWorker(BaseWorker):
         self._agent = agent
         self._github = github
         self._permission_wait = permission_wait
+        self._quick_model = quick_model
         self._running: dict[PRRef, asyncio.Task] = {}
         self._start_lock = asyncio.Lock()
         self._startup_task: asyncio.Task | None = None
@@ -182,10 +186,12 @@ class ReviewWorker(BaseWorker):
                 logger.info(f"Resuming the review of {pr.ref}")
                 self._launch(pr, review, prompt=RESUME_PROMPT, resume=True, kind="resume")
 
-    async def rereview(self, ref: PRRef) -> bool:
+    async def rereview(self, ref: PRRef, *, plan: ReviewPlan | None = None) -> bool:
         """Have a finished review look at the PR's new commits, in the same session.
 
-        Returns whether a re-review started.
+        ``plan`` is what the lead planned for it (default: the review's last
+        plan); a quick one doesn't follow the repo's review skill. Returns
+        whether a re-review started.
         """
         async with self._start_lock:
             pr = await self._store.get_pr(ref)
@@ -200,8 +206,20 @@ class ReviewWorker(BaseWorker):
                 or review.head_sha == pr.head_sha
             ):
                 return False
-            prompt = rereview_prompt(review.head_sha, pr.head_sha, review.skill)
-            self._launch(pr, review, prompt=prompt, resume=True, followup=True, kind="rereview")
+            if plan:
+                await self._store.set_review_plan(review.id, plan)
+            plan = plan or review.plan or ReviewPlan()
+            skill = review.skill if plan.depth == Depth.FULL else None
+            prompt = rereview_prompt(review.head_sha, pr.head_sha, skill)
+            self._launch(
+                pr,
+                review,
+                prompt=prompt,
+                resume=True,
+                followup=True,
+                kind="rereview",
+                plan=plan,
+            )
         await self._progress(ref, "Re-reviewing new commits")
         return True
 
@@ -220,8 +238,10 @@ class ReviewWorker(BaseWorker):
 
     @job(name=REVIEW_REREVIEW)
     async def on_rereview(self, message: BusJobRequestMessage) -> None:
+        payload = message.payload or {}
+        plan = ReviewPlan.from_dict(payload["plan"]) if payload.get("plan") else None
         try:
-            started = await self.rereview(PRRef.parse(str((message.payload or {}).get("pr"))))
+            started = await self.rereview(PRRef.parse(str(payload.get("pr"))), plan=plan)
         except ValueError as e:
             await self.send_job_response(message.job_id, {"error": str(e)})
             return
@@ -337,15 +357,23 @@ class ReviewWorker(BaseWorker):
         followup: bool = False,
         queued: bool = True,
         kind: str,
+        plan: ReviewPlan | None = None,
     ):
-        """Run the agent on ``pr`` in the background.
+        """Run the agent on ``pr`` in the background, following ``plan`` (default: the review's).
 
         ``kind`` (review, resume, rereview, message) is what the run is
         recorded as, with every message in it (see Store.start_run). A new
         review (``review``) makes its own prompt.
         """
         run = self._run(
-            pr, review, prompt=prompt, resume=resume, followup=followup, queued=queued, kind=kind
+            pr,
+            review,
+            prompt=prompt,
+            resume=resume,
+            followup=followup,
+            queued=queued,
+            kind=kind,
+            plan=plan,
         )
         self._running[pr.ref] = self.create_task(run, f"{self}::review::{pr.ref}")
 
@@ -429,10 +457,12 @@ class ReviewWorker(BaseWorker):
         followup: bool,
         queued: bool,
         kind: str,
+        plan: ReviewPlan | None = None,
     ):
         ref = pr.ref
-        skill = review.skill
-        plan = review.plan or ReviewPlan()
+        plan = plan or review.plan or ReviewPlan()
+        # A quick re-review doesn't follow the repo's review skill.
+        skill = None if kind == "rereview" and plan.depth == Depth.QUICK else review.skill
         submitted: dict = {}
         state_before = pr.state
         slot = False
@@ -476,6 +506,10 @@ class ReviewWorker(BaseWorker):
                 plugin=plugin,
                 skill=skill,
                 plan=plan,
+                # Quick work gets the cheaper model; you asking gets the full one.
+                model=self._quick_model
+                if plan.depth == Depth.QUICK and kind != "message"
+                else None,
             )
             if result.is_error:
                 raise ReviewError(result.error or "The agent session failed")

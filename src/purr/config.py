@@ -33,6 +33,9 @@ class Config:
         review_model: Model for reviews; None uses Claude Code's default.
         lead_model: Model for the lead, which plans each review (one short call
             per batch of PRs); None uses Claude Code's default.
+        quick_model: Model for reviews the lead planned as quick (and quick
+            re-reviews); your own messages in the PR's session use
+            ``review_model``. None uses ``review_model`` for those too.
         review_budget_usd: Optional spending cap per review run.
         away_after: Seconds without activity after which you count as away.
         max_reviews: Reviews running at once; the rest wait in line (your own
@@ -50,6 +53,7 @@ class Config:
     auto_review: bool = True
     review_model: str | None = None
     lead_model: str | None = "claude-sonnet-5-5"
+    quick_model: str | None = "claude-sonnet-5-5"
     review_budget_usd: float | None = None
     away_after: float = 15 * 60
     permission_wait: float = 5 * 60

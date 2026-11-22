@@ -322,6 +322,12 @@ async def test_what_reviews_found_and_how_they_were_planned(store):
     assert (await store.outcomes("other/repo")) == {}
 
     # News says it too.
-    await store.record_activity("review.finished", pr=one, data={"findings": [{}, {}]})
-    await store.record_activity("review.finished", pr=two, data={"findings": []})
-    assert await store.unseen() == [(one, "review: found 2"), (two, "review: nothing found")]
+    issue, nit = {"severity": "issue"}, {"severity": "nit"}
+    await store.record_activity("review.finished", pr=one, data={"findings": [issue, issue]})
+    await store.record_activity("review.finished", pr=two, data={"findings": [nit]})
+    await store.record_activity("review.finished", pr=three, data={"findings": [issue, nit]})
+    assert await store.unseen() == [
+        (one, "review: found 2 issues"),
+        (two, "review: nothing found"),  # nits don't count
+        (three, "review: found 1 issue"),
+    ]

@@ -28,7 +28,7 @@ from purr.messages import (
     SkillChosen,
     SkillQuestion,
 )
-from purr.models import PRChange, PRRef
+from purr.models import Outcome, PRChange, PRRef
 from purr.review.instructions import Kind
 from purr.tui.bridge import BusEvent, RequestError, UIWorker
 from purr.tui.overview import DetailsCache
@@ -312,8 +312,12 @@ class PurrApp(App):
         if isinstance(event, PRChanged) and event.change == PRChange.ASSIGNED:
             self._alert(event.pr, "assigned to you")
         elif isinstance(event, ReviewFinished):
-            found = len(event.findings)
-            self._alert(event.pr, f"review: found {found}" if found else "review: nothing found")
+            issues = Outcome.of(event.findings).issues
+            plural = "s" if issues != 1 else ""
+            self._alert(
+                event.pr,
+                f"review: found {issues} issue{plural}" if issues else "review: nothing found",
+            )
         elif isinstance(event, ReviewFailed):
             self._alert(event.pr, "review failed")
         elif isinstance(event, PermissionRequest):

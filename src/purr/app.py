@@ -146,6 +146,7 @@ class Purr:
                 github=self._github,
                 permission_wait=self._config.permission_wait,
                 max_reviews=self._config.max_reviews,
+                quick_model=self._config.quick_model,
             ),
             LeadWorker(
                 store=store,
