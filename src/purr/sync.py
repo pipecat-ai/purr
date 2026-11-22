@@ -46,19 +46,21 @@ class SyncPlan:
     def empty(self) -> bool:
         return not (self.upserts or self.deletes or self.gh_states)
 
+    def report(self, ref: PRRef, change: PRChange | None, title: str) -> None:
+        """Tell about ``change``, if there is one."""
+        if change:
+            self.changes.append(Change(ref, change, title))
+
 
 def _updated(snapshot: Snapshot) -> tuple[list, set[PRRef]]:
     """Split incremental updates into PRs now listed and refs known not to be."""
     if not snapshot.updates:
         return [], set()
     assert snapshot.viewer, "incremental updates need the viewer's login"
-    listed, out = [], set()
-    for prs in snapshot.updates.values():
-        for pr in prs:
-            if pr.listed(snapshot.viewer):
-                listed.append(pr)
-            else:
-                out.add(pr.ref)
+    me = snapshot.viewer
+    updated = [pr for prs in snapshot.updates.values() for pr in prs]
+    listed = [pr for pr in updated if pr.listed(me)]
+    out = {pr.ref for pr in updated if not pr.listed(me)}
     return listed, out
 
 
@@ -93,23 +95,23 @@ def _same_metadata(old: PR, new: PR) -> bool:
     return replace(new, **own, replies=old.replies) == old
 
 
-def _assignment_change(old: PR, new: PR) -> PRChange | None:
-    """Assigned to or unassigned from you; otherwise, joined or left the pool."""
+def _assignment_change(old: PR, new: PR, watched: bool) -> PRChange | None:
+    """Assigned to or unassigned from you; otherwise, joined or left a watched repo's pool."""
     if new.assigned_to_me != old.assigned_to_me:
         return PRChange.ASSIGNED if new.assigned_to_me else PRChange.UNASSIGNED
-    if new.in_pool != old.in_pool:
+    if new.in_pool != old.in_pool and watched:
         return PRChange.POOLED if new.in_pool else PRChange.UNPOOLED
     return None
 
 
-def _new_pr_change(pr: PR, first_sync: bool) -> PRChange | None:
+def _new_pr_change(pr: PR, first_sync: bool, watched: bool) -> PRChange | None:
     if pr.assigned_to_me:
         return PRChange.ASSIGNED
     if pr.requested_from_me:
         return PRChange.REQUESTED
-    if pr.in_pool and not first_sync:
+    if pr.in_pool and watched and not first_sync:
         return PRChange.POOLED
-    return None  # someone else's, or part of a repo's first sync
+    return None  # someone else's, not from a watched repo, or part of a repo's first sync
 
 
 def _gone_change(pr: PR, watched: bool) -> PRChange | None:
@@ -158,49 +160,51 @@ def plan_sync(
     watched, first_sync, statuses = set(watched), set(first_sync), statuses or {}
     plan = SyncPlan()
     current_by_ref = {pr.ref: pr for pr in current}
-
-    def report(ref: PRRef, change: PRChange | None, title: str) -> None:
-        if change:
-            plan.changes.append(Change(ref, change, title))
-
-    def pool(change: PRChange | None, ref: PRRef) -> PRChange | None:
-        """Only watched repos have a pool."""
-        pooling = change in (PRChange.POOLED, PRChange.UNPOOLED)
-        return None if pooling and ref.repo not in watched else change
-
     seen = _seen(snapshot)
     for ref, new in seen.items():
         old = current_by_ref.get(ref)
         if old is None:
             plan.upserts.append(new)
-            report(ref, pool(_new_pr_change(new, ref.repo in first_sync), ref), new.title)
-            continue
-        new = replace(new, involved=new.involved or old.involved)  # it sticks
-        if not _same_metadata(old, new):
-            plan.upserts.append(new)
-        report(ref, pool(_assignment_change(old, new), ref), new.title)
-        if new.requested_from_me and not old.requested_from_me and not new.assigned_to_me:
-            report(ref, PRChange.REQUESTED, new.title)
-        if new.head_sha != old.head_sha and old.state != PRState.NOT_REVIEWED:
-            report(ref, PRChange.NEW_COMMITS, new.title)
-
+            change = _new_pr_change(new, ref.repo in first_sync, ref.repo in watched)
+            plan.report(ref, change, new.title)
+        else:
+            _plan_found_again(plan, old, new, watched=ref.repo in watched)
+    me = snapshot.viewer or ""
     for ref, old in current_by_ref.items():
-        if ref in seen or not _covered(ref, snapshot, watched):
-            continue
-        if old.state == PRState.NOT_REVIEWED:
-            plan.deletes.append(ref)
-            report(ref, _gone_change(old, ref.repo in watched), old.title)
-            continue
-        status = statuses.get(ref)
-        if status is None:
-            continue  # couldn't look it up; try again next poll
-        if status.state != GHState.OPEN:
-            plan.gh_states[ref] = status.state
-            change = PRChange.MERGED if status.state == GHState.MERGED else PRChange.CLOSED
-            plan.changes.append(Change(ref, change, old.title))
-        elif old.assigned_to_me:
-            me = (snapshot.viewer or "").lower()
-            others = tuple(a for a in old.assignees if a.lower() != me)
-            plan.upserts.append(replace(old, assigned_to_me=False, assignees=others))
-            report(ref, PRChange.UNASSIGNED, old.title)
+        if ref not in seen and _covered(ref, snapshot, watched):
+            _plan_gone(plan, old, statuses.get(ref), me=me, watched=ref.repo in watched)
     return plan
+
+
+def _plan_found_again(plan: SyncPlan, old: PR, new: PR, *, watched: bool) -> None:
+    """A PR in the store that the searches found again: what's new about it, to store and tell."""
+    new = replace(new, involved=new.involved or old.involved)  # it sticks
+    if not _same_metadata(old, new):
+        plan.upserts.append(new)
+    plan.report(new.ref, _assignment_change(old, new, watched), new.title)
+    if new.requested_from_me and not old.requested_from_me and not new.assigned_to_me:
+        plan.report(new.ref, PRChange.REQUESTED, new.title)
+    if new.head_sha != old.head_sha and old.state != PRState.NOT_REVIEWED:
+        plan.report(new.ref, PRChange.NEW_COMMITS, new.title)
+
+
+def _plan_gone(plan: SyncPlan, old: PR, status: PRStatus | None, *, me: str, watched: bool) -> None:
+    """A PR in the store that dropped out of every search, for sure.
+
+    Unreviewed, it goes. Reviewed, it stays: closed or merged if its ``status``
+    says so, or no longer yours if it was assigned to you.
+    """
+    if old.state == PRState.NOT_REVIEWED:
+        plan.deletes.append(old.ref)
+        plan.report(old.ref, _gone_change(old, watched), old.title)
+        return
+    if status is None:
+        return  # couldn't look it up; try again next poll
+    if status.state != GHState.OPEN:
+        plan.gh_states[old.ref] = status.state
+        change = PRChange.MERGED if status.state == GHState.MERGED else PRChange.CLOSED
+        plan.report(old.ref, change, old.title)
+    elif old.assigned_to_me:
+        others = tuple(a for a in old.assignees if a.lower() != me.lower())
+        plan.upserts.append(replace(old, assigned_to_me=False, assignees=others))
+        plan.report(old.ref, PRChange.UNASSIGNED, old.title)

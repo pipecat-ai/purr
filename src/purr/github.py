@@ -7,8 +7,9 @@ the code that executes approved actions.
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import batched
 
 from loguru import logger
 
@@ -35,6 +36,13 @@ REVIEWED_QUERY = (
 # Every PR in a repo touched since a time, whatever its state: used between full
 # syncs. Being assigned, closed or drafted updates a PR too.
 UPDATED_QUERY = "is:pr archived:false updated:>={since} sort:updated-desc repo:{repo}"
+# The searches every snapshot runs besides the watched repos', by alias.
+_ANY_REPO_SEARCHES = {
+    "assigned": ASSIGNED_QUERY,
+    "requested": REQUESTED_QUERY,
+    "commented": COMMENTED_QUERY,
+    "reviewed": REVIEWED_QUERY,
+}
 
 _PR_FIELDS = """
     number title url state isDraft updatedAt createdAt headRefOid baseRefName
@@ -178,6 +186,82 @@ def _failed_aliases(body: dict) -> set[str]:
     return {str(error["path"][0]) for error in body.get("errors", []) if error.get("path")}
 
 
+# Gets each page of search results as it arrives: ``(what was searched, prs)``.
+type OnPage = Callable[[str, list[RemotePR]], Awaitable[None]]
+
+
+@dataclass
+class _Search:
+    """One search's progress through its pages of results."""
+
+    query: str
+    found: dict[int, RemotePR] = field(default_factory=dict)
+    total: int | None = None  # how many results GitHub says there are
+    cursor: str | None = None  # where the next page starts
+    more: bool = True  # whether there are pages left to fetch
+    failed: bool = False
+
+    def add_page(self, result: dict | None) -> list[RemotePR]:
+        """Take in a page of results (None: the search failed); returns its PRs."""
+        if result is None:
+            self.failed, self.more = True, False
+            return []
+        self.total = result["issueCount"]
+        # Non-PR results come back as empty objects.
+        prs = [_remote_pr(node) for node in result["nodes"] if node]
+        self.found.update((pr.number, pr) for pr in prs)
+        page = result["pageInfo"]
+        self.more, self.cursor = page["hasNextPage"], page["endCursor"]
+        return prs
+
+    def results(self) -> list[RemotePR] | None:
+        """Every PR found; None (and a warning) if the search failed or came back partial."""
+        if self.failed:
+            logger.warning(f"GitHub search {self.query!r} failed; skipping it this time")
+            return None
+        if len(self.found) != self.total:
+            # Search caps at 1000 results, and PRs can shift between pages.
+            logger.warning(
+                f"GitHub search {self.query!r} returned {len(self.found)} of "
+                f"{self.total} results; skipping it this time"
+            )
+            return None
+        return list(self.found.values())
+
+
+def _search_query(searches: Mapping[str, _Search]) -> tuple[str, dict[str, str | int | None]]:
+    """The query for the next page of each search, under the search's alias."""
+    declared = ", ".join(f"$q_{a}: String!, $c_{a}: String" for a in searches)
+    fields = " ".join(
+        f"{a}: search(query: $q_{a}, type: ISSUE, first: {_PAGE_SIZE}, after: $c_{a}) {{"
+        f" issueCount pageInfo {{ hasNextPage endCursor }}"
+        f" nodes {{ ... on PullRequest {{ {_PR_FIELDS} }} }} }}"
+        for a in searches
+    )
+    variables: dict[str, str | int | None] = {}
+    for alias, search in searches.items():
+        variables[f"q_{alias}"] = search.query
+        variables[f"c_{alias}"] = search.cursor
+    return f"query({declared}) {{ {fields} }}", variables
+
+
+def _pull_requests_query(
+    refs: Sequence[PRRef], fields: str
+) -> tuple[str, dict[str, str | int | None]]:
+    """The query for ``fields`` of each PR, under ``t0``, ``t1``, ... in order."""
+    declared = ", ".join(f"$o{i}: String!, $n{i}: String!, $k{i}: Int!" for i in range(len(refs)))
+    selections = " ".join(
+        f"t{i}: repository(owner: $o{i}, name: $n{i}) {{"
+        f" pullRequest(number: $k{i}) {{ {fields} }} }}"
+        for i in range(len(refs))
+    )
+    variables: dict[str, str | int | None] = {}
+    for i, ref in enumerate(refs):
+        owner, _, name = ref.repo.partition("/")
+        variables.update({f"o{i}": owner, f"n{i}": name, f"k{i}": ref.number})
+    return f"query({declared}) {{ {selections} }}", variables
+
+
 class GitHub:
     """Queries GitHub's GraphQL API via ``gh``.
 
@@ -258,7 +342,7 @@ class GitHub:
         full: Iterable[str] = (),
         incremental: Mapping[str, str] | None = None,
         *,
-        on_page: Callable[[str, list[RemotePR]], Awaitable[None]] | None = None,
+        on_page: OnPage | None = None,
     ) -> Snapshot:
         """Fetch watched repos, and the PRs assigned to you, asking for your review or that
         you've taken part in, in as few requests as possible (one per page of results, all
@@ -271,12 +355,7 @@ class GitHub:
                 arrives, so a newly added repo can show up before all pages are in.
         """
         incremental = dict(incremental or {})
-        searches = {
-            "assigned": ASSIGNED_QUERY,
-            "requested": REQUESTED_QUERY,
-            "commented": COMMENTED_QUERY,
-            "reviewed": REVIEWED_QUERY,
-        }
+        searches = dict(_ANY_REPO_SEARCHES)
         full_aliases: dict[str, str] = {}
         updated_aliases: dict[str, str] = {}
         for i, repo in enumerate(full):
@@ -292,76 +371,33 @@ class GitHub:
 
         viewer = await self.viewer_login()
         results = await self._search_all(searches, on_page=page)
-        involved = None
-        if "commented" in results and "reviewed" in results:
-            both = {pr.ref: pr for pr in [*results["commented"], *results["reviewed"]]}
-            involved = list(both.values())
         return Snapshot(
             open={full_aliases[a]: prs for a, prs in results.items() if a in full_aliases},
             assigned=results.get("assigned"),
             updates={updated_aliases[a]: prs for a, prs in results.items() if a in updated_aliases},
             viewer=viewer,
             requested=results.get("requested"),
-            involved=involved,
+            involved=_involved(results),
         )
 
     async def _search_all(
-        self,
-        searches: dict[str, str],
-        *,
-        on_page: Callable[[str, list[RemotePR]], Awaitable[None]] | None = None,
+        self, searches: dict[str, str], *, on_page: OnPage | None = None
     ) -> dict[str, list[RemotePR]]:
         """Run several searches, following pages. Returns only searches that completed."""
-        found: dict[str, dict[int, RemotePR]] = {alias: {} for alias in searches}
-        cursors: dict[str, str | None] = {alias: None for alias in searches}
-        totals: dict[str, int] = {}
-        failed: set[str] = set()
+        progress = {alias: _Search(query) for alias, query in searches.items()}
+        while pending := {alias: search for alias, search in progress.items() if search.more}:
+            await self._next_page(pending, on_page)
+        results = {alias: search.results() for alias, search in progress.items()}
+        return {alias: prs for alias, prs in results.items() if prs is not None}
 
-        while cursors:
-            declared = ", ".join(f"$q_{a}: String!, $c_{a}: String" for a in cursors)
-            fields = " ".join(
-                f"{a}: search(query: $q_{a}, type: ISSUE, first: {_PAGE_SIZE}, after: $c_{a}) {{"
-                f" issueCount pageInfo {{ hasNextPage endCursor }}"
-                f" nodes {{ ... on PullRequest {{ {_PR_FIELDS} }} }} }}"
-                for a in cursors
-            )
-            variables: dict[str, str | int | None] = {}
-            for alias, cursor in cursors.items():
-                variables[f"q_{alias}"] = searches[alias]
-                variables[f"c_{alias}"] = cursor
-            body = await self.graphql(f"query({declared}) {{ {fields} }}", variables)
-
-            errored = _failed_aliases(body)
-            next_cursors: dict[str, str | None] = {}
-            for alias in cursors:
-                result = body["data"].get(alias)
-                if alias in errored or result is None:
-                    failed.add(alias)
-                    continue
-                totals[alias] = result["issueCount"]
-                # Non-PR results come back as empty objects.
-                prs = [_remote_pr(node) for node in result["nodes"] if node]
-                found[alias].update((pr.number, pr) for pr in prs)
-                if on_page and prs:
-                    await on_page(alias, prs)
-                page = result["pageInfo"]
-                if page["hasNextPage"]:
-                    next_cursors[alias] = page["endCursor"]
-            cursors = next_cursors
-
-        complete: dict[str, list[RemotePR]] = {}
-        for alias, prs in found.items():
-            if alias in failed:
-                logger.warning(f"GitHub search {searches[alias]!r} failed; skipping it this time")
-            elif len(prs) != totals.get(alias):
-                # Search caps at 1000 results, and PRs can shift between pages.
-                logger.warning(
-                    f"GitHub search {searches[alias]!r} returned {len(prs)} of "
-                    f"{totals.get(alias)} results; skipping it this time"
-                )
-            else:
-                complete[alias] = list(prs.values())
-        return complete
+    async def _next_page(self, searches: dict[str, _Search], on_page: OnPage | None) -> None:
+        """Fetch the next page of each search, all in one request."""
+        body = await self.graphql(*_search_query(searches))
+        errored = _failed_aliases(body)
+        for alias, search in searches.items():
+            prs = search.add_page(None if alias in errored else body["data"].get(alias))
+            if on_page and prs:
+                await on_page(alias, prs)
 
     async def review_threads(self, ref: PRRef) -> list[dict]:
         """A PR's inline review threads, with their comments; ``by_user`` marks yours."""
@@ -402,30 +438,11 @@ class GitHub:
 
     async def pr_statuses(self, refs: Iterable[PRRef]) -> dict[PRRef, PRStatus]:
         """Look up specific PRs (open, closed or merged). PRs that can't be read are left out."""
-        refs = list(refs)
-        statuses: dict[PRRef, PRStatus] = {}
-        for start in range(0, len(refs), _STATUS_BATCH):
-            batch = refs[start : start + _STATUS_BATCH]
-            declared = ", ".join(
-                f"$o{i}: String!, $n{i}: String!, $k{i}: Int!" for i in range(len(batch))
-            )
-            fields = " ".join(
-                f"t{i}: repository(owner: $o{i}, name: $n{i}) {{"
-                f" pullRequest(number: $k{i}) {{ state headRefOid }} }}"
-                for i in range(len(batch))
-            )
-            variables: dict[str, str | int | None] = {}
-            for i, ref in enumerate(batch):
-                owner, _, name = ref.repo.partition("/")
-                variables.update({f"o{i}": owner, f"n{i}": name, f"k{i}": ref.number})
-            body = await self.graphql(f"query({declared}) {{ {fields} }}", variables)
-            for i, ref in enumerate(batch):
-                pr = (body["data"].get(f"t{i}") or {}).get("pullRequest")
-                if pr:
-                    statuses[ref] = PRStatus(
-                        state=GHState(pr["state"].lower()), head_sha=pr["headRefOid"]
-                    )
-        return statuses
+        found = await self._pull_requests(refs, "state headRefOid", batch_size=_STATUS_BATCH)
+        return {
+            ref: PRStatus(state=GHState(pr["state"].lower()), head_sha=pr["headRefOid"])
+            for ref, pr in found.items()
+        }
 
     async def replies(self, refs: Iterable[PRRef]) -> dict[PRRef, list[Reply]]:
         """What others said to you on these PRs since your last word (see :func:`replies_to`).
@@ -438,28 +455,18 @@ class GitHub:
             for ref, pr in (await self._pull_requests(refs, _CONVERSATION_FIELDS)).items()
         }
 
-    async def _pull_requests(self, refs: Iterable[PRRef], fields: str) -> dict[PRRef, dict]:
+    async def _pull_requests(
+        self, refs: Iterable[PRRef], fields: str, *, batch_size: int = _DETAILS_BATCH
+    ) -> dict[PRRef, dict]:
         """``fields`` of specific PRs, a batch per request. PRs that can't be read are left out."""
-        refs = list(refs)
         found: dict[PRRef, dict] = {}
-        for start in range(0, len(refs), _DETAILS_BATCH):
-            batch = refs[start : start + _DETAILS_BATCH]
-            declared = ", ".join(
-                f"$o{i}: String!, $n{i}: String!, $k{i}: Int!" for i in range(len(batch))
-            )
-            selections = " ".join(
-                f"t{i}: repository(owner: $o{i}, name: $n{i}) {{"
-                f" pullRequest(number: $k{i}) {{ {fields} }} }}"
-                for i in range(len(batch))
-            )
-            variables: dict[str, str | int | None] = {}
-            for i, ref in enumerate(batch):
-                owner, _, name = ref.repo.partition("/")
-                variables.update({f"o{i}": owner, f"n{i}": name, f"k{i}": ref.number})
-            body = await self.graphql(f"query({declared}) {{ {selections} }}", variables)
-            for i, ref in enumerate(batch):
-                if pr := (body["data"].get(f"t{i}") or {}).get("pullRequest"):
-                    found[ref] = pr
+        for batch in batched(refs, batch_size):
+            body = await self.graphql(*_pull_requests_query(batch, fields))
+            answers = [
+                (ref, (body["data"].get(f"t{i}") or {}).get("pullRequest"))
+                for i, ref in enumerate(batch)
+            ]
+            found.update((ref, pr) for ref, pr in answers if pr)
         return found
 
     async def pr_details(self, refs: Iterable[PRRef]) -> dict[PRRef, PRDetails]:
@@ -483,49 +490,69 @@ def replies_to(me: str, pr: dict) -> list[Reply]:
     Bots don't count, and nothing does until you've said something.
     """
     me = me.lower()
-
-    def by_me(node: dict) -> bool:
-        return (node.get("author") or {}).get("login", "").lower() == me
-
-    def counts(node: dict, after: str) -> bool:
-        author = node.get("author") or {}
-        return not by_me(node) and author.get("__typename") != "Bot" and node["createdAt"] > after
-
-    def reply(node: dict, where: str = "") -> Reply:
-        login = (node.get("author") or {}).get("login", "ghost")
-        return Reply(
-            login,
-            _clip(node.get("body") or "", 500),
-            node["createdAt"],
-            node.get("url") or "",
-            where,
-        )
-
     comments = _nodes(pr.get("comments"))
     threads = [
         (thread, _nodes(thread.get("comments"))) for thread in _nodes(pr.get("reviewThreads"))
     ]
-    reviews = [r for r in _nodes(pr.get("reviews")) if by_me(r) and r.get("submittedAt")]
-    on_pr = [c["createdAt"] for c in comments if by_me(c)]
+    reviews = [r for r in _nodes(pr.get("reviews")) if _by(me, r) and r.get("submittedAt")]
+    on_pr = [c["createdAt"] for c in comments if _by(me, c)]
     on_pr += [
         r["submittedAt"]
         for r in reviews
         if (r.get("body") or "").strip() or r.get("state") != "COMMENTED"
     ]
-    in_threads = [c["createdAt"] for _, nodes in threads for c in nodes if by_me(c)]
+    in_threads = [c["createdAt"] for _, nodes in threads for c in nodes if _by(me, c)]
     if not on_pr and not in_threads and not reviews:
         return []
     last_word = max([*on_pr, *in_threads, *(r["submittedAt"] for r in reviews)])
-    replies = [reply(c) for c in comments if counts(c, last_word)]
+    replies = [_reply(c) for c in comments if _replies_to_me(me, c, last_word)]
     for thread, nodes in threads:
-        mine = [c["createdAt"] for c in nodes if by_me(c)]
-        if not mine:
-            continue
-        after = max([*mine, *on_pr])
-        path, line = thread.get("path") or "", thread.get("line")
-        where = f"{path}:{line}" if path and line else path
-        replies += [reply(c, where) for c in nodes if counts(c, after)]
+        replies += _thread_replies(me, thread, nodes, on_pr)
     return sorted(replies, key=lambda r: r.at)
+
+
+def _thread_replies(me: str, thread: dict, comments: list[dict], on_pr: list[str]) -> list[Reply]:
+    """Replies to ``me`` in a review thread they're in, after their last comment in it or their
+    last word on the PR (``on_pr``: when they said something there), whichever is later."""
+    mine = [c["createdAt"] for c in comments if _by(me, c)]
+    if not mine:
+        return []
+    after = max([*mine, *on_pr])
+    path, line = thread.get("path") or "", thread.get("line")
+    where = f"{path}:{line}" if path and line else path
+    return [_reply(c, where) for c in comments if _replies_to_me(me, c, after)]
+
+
+def _by(me: str, node: dict) -> bool:
+    """Whether ``me`` (lowercase) wrote this comment or review."""
+    return (node.get("author") or {}).get("login", "").lower() == me
+
+
+def _replies_to_me(me: str, comment: dict, after: str) -> bool:
+    """Whether a comment counts as a reply: someone else's, not a bot's, and after ``after``."""
+    author = comment.get("author") or {}
+    return (
+        not _by(me, comment) and author.get("__typename") != "Bot" and comment["createdAt"] > after
+    )
+
+
+def _reply(comment: dict, where: str = "") -> Reply:
+    login = (comment.get("author") or {}).get("login", "ghost")
+    return Reply(
+        login,
+        _clip(comment.get("body") or "", 500),
+        comment["createdAt"],
+        comment.get("url") or "",
+        where,
+    )
+
+
+def _involved(results: Mapping[str, list[RemotePR]]) -> list[RemotePR] | None:
+    """PRs you commented on or reviewed, once each; None unless both searches completed."""
+    if "commented" not in results or "reviewed" not in results:
+        return None
+    both = {pr.ref: pr for pr in [*results["commented"], *results["reviewed"]]}
+    return list(both.values())
 
 
 def _details(pr: dict) -> PRDetails:

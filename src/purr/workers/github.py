@@ -10,7 +10,7 @@ from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
 from purr.actions import ActionError, GhWriter, GitHubWriter, execute
-from purr.github import GitHub, GitHubError, RemotePR
+from purr.github import GitHub, GitHubError, RemotePR, Snapshot
 from purr.jobs import Done, Failed, Invalid, NotFound, handles
 from purr.messages import (
     GITHUB_WORKER,
@@ -37,6 +37,7 @@ from purr.models import (
     PRChange,
     PRRef,
     PRState,
+    Reply,
     Repo,
     ReviewStatus,
     parse_repo_name,
@@ -55,6 +56,25 @@ def _since(synced_at: str) -> str:
     """The ``updated:>=`` bound for an incremental search, in GitHub's format."""
     start = datetime.fromisoformat(synced_at) - INCREMENTAL_OVERLAP
     return start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _changed(before: list[PR], plan: SyncPlan) -> set[PRRef]:
+    """The PRs a poll found that are new, or were updated on GitHub since the last one."""
+    updated_at = {pr.ref: pr.updated_at for pr in before}
+    return {
+        pr.ref
+        for pr in plan.upserts
+        if pr.ref not in updated_at or pr.updated_at != updated_at[pr.ref]
+    }
+
+
+def _replied(old: PR, pr: PR) -> Change | None:
+    """News of the replies ``pr`` has that ``old`` didn't, saying who replied."""
+    new = [reply for reply in pr.replies if reply not in old.replies]
+    if not new:
+        return None
+    by = ", ".join(dict.fromkeys(reply.author for reply in new))
+    return Change(pr.ref, PRChange.REPLIED, pr.title, by=by)
 
 
 class GitHubWorker(BaseWorker):
@@ -125,52 +145,8 @@ class GitHubWorker(BaseWorker):
     async def poll(self) -> SyncPlan:
         """Fetch from GitHub, update the store and broadcast what changed."""
         async with self._lock:
-            started = datetime.now(UTC).isoformat(timespec="seconds")
-            repos = await self._store.list_repos()
-            watched = [repo.name for repo in repos]
-            full = [repo.name for repo in repos if self._needs_full_sync(repo)]
-            incremental = {
-                repo.name: _since(repo.synced_at)
-                for repo in repos
-                if repo.name not in full and repo.synced_at
-            }
-            first_sync = {repo.name for repo in repos if repo.synced_at is None}
-
-            async def on_page(repo: str, prs: list[RemotePR]) -> None:
-                # Show a brand new repo's PRs as they arrive. Upserting them is
-                # safe before the poll completes; removals wait for the end.
-                if repo in first_sync:
-                    me = await self._github.viewer_login()
-                    await self._store.apply_sync(upserts=[pr.to_pr(me) for pr in prs])
-                    await self.send_bus_message(PRListUpdated(source=self.name))
-
-            snapshot = await self._github.snapshot(full, incremental, on_page=on_page)
-            current = await self._store.open_prs()
-            missing = missing_reviewed(current, snapshot, watched)
-            statuses = await self._github.pr_statuses(missing) if missing else {}
-            plan = plan_sync(
-                current,
-                snapshot,
-                watched=watched,
-                first_sync=first_sync,
-                statuses=statuses,
-            )
-            await self._store.apply_sync(
-                upserts=plan.upserts, deletes=plan.deletes, gh_states=plan.gh_states
-            )
-            now = time.monotonic()
-            for name in snapshot.open:
-                self._last_full_sync[name] = now
-            await self._store.mark_synced([*snapshot.open, *snapshot.updates], at=started)
-
-        before = {pr.ref: pr for pr in current}
-        changed = {pr.ref for pr in plan.upserts if pr.ref not in before}
-        changed |= {
-            pr.ref
-            for pr in plan.upserts
-            if pr.ref in before and pr.updated_at != before[pr.ref].updated_at
-        }
-        replied, settled = await self._read_replies(changed)
+            before, plan = await self._sync()
+        replied, replies_changed = await self._read_replies(_changed(before, plan))
         for change in [*plan.changes, *replied]:
             await self.send_bus_message(
                 PRChanged(
@@ -181,10 +157,59 @@ class GitHubWorker(BaseWorker):
                     by=change.by,
                 )
             )
-        if not plan.empty or settled:
+        if not plan.empty or replies_changed:
             await self.send_bus_message(PRListUpdated(source=self.name))
         await self.send_bus_message(Synced(source=self.name))
         return plan
+
+    async def _sync(self) -> tuple[list[PR], SyncPlan]:
+        """Bring the store's PR list in line with GitHub. Call with the lock held.
+
+        Returns the open PRs the store had before the plan was applied, and the plan.
+        """
+        started = datetime.now(UTC).isoformat(timespec="seconds")
+        repos = await self._store.list_repos()
+        watched = [repo.name for repo in repos]
+        first_sync = {repo.name for repo in repos if repo.synced_at is None}
+        snapshot = await self._snapshot(repos, first_sync)
+        current = await self._store.open_prs()
+        missing = missing_reviewed(current, snapshot, watched)
+        statuses = await self._github.pr_statuses(missing) if missing else {}
+        plan = plan_sync(
+            current,
+            snapshot,
+            watched=watched,
+            first_sync=first_sync,
+            statuses=statuses,
+        )
+        await self._store.apply_sync(
+            upserts=plan.upserts, deletes=plan.deletes, gh_states=plan.gh_states
+        )
+        now = time.monotonic()
+        for name in snapshot.open:
+            self._last_full_sync[name] = now
+        await self._store.mark_synced([*snapshot.open, *snapshot.updates], at=started)
+        return current, plan
+
+    async def _snapshot(self, repos: list[Repo], first_sync: set[str]) -> Snapshot:
+        """Search GitHub: everything in repos due a full sync, what changed in the rest."""
+        full = [repo.name for repo in repos if self._needs_full_sync(repo)]
+        incremental = {
+            repo.name: _since(repo.synced_at)
+            for repo in repos
+            if repo.name not in full and repo.synced_at
+        }
+
+        async def on_page(repo: str, prs: list[RemotePR]) -> None:
+            # Show a brand new repo's PRs as they arrive. Upserting them is
+            # safe before the poll completes; removals wait for the end.
+            if repo not in first_sync:
+                return
+            me = await self._github.viewer_login()
+            await self._store.apply_sync(upserts=[pr.to_pr(me) for pr in prs])
+            await self.send_bus_message(PRListUpdated(source=self.name))
+
+        return await self._github.snapshot(full, incremental, on_page=on_page)
 
     async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
         """Read what others said to you on PRs Purr reviewed or you took part in, that
@@ -192,39 +217,46 @@ class GitHubWorker(BaseWorker):
 
         Returns the PRs with new replies, and whether any PR's replies or state changed.
         """
-        reviewed = {
+        followed = {
             pr.ref: pr
             for pr in await self._store.open_prs()
             if pr.state != PRState.NOT_REVIEWED or pr.involved
         }
-        due = set(reviewed) if self._replies_due is None else self._replies_due | changed
-        due &= reviewed.keys()
+        due = set(followed) if self._replies_due is None else self._replies_due | changed
+        found = await self._fetch_replies(due & followed.keys())
+        news, any_changed = [], False
+        for ref, replies in found.items():
+            old = followed[ref]
+            await self._store.set_replies(ref, replies)
+            pr = await self._store.get_pr(ref)
+            if pr is None or pr.replies == old.replies:
+                continue
+            any_changed = True
+            if change := _replied(old, pr):
+                news.append(change)
+            await self._needs_you_if_replied(pr)
+        return news, any_changed
+
+    async def _fetch_replies(self, due: set[PRRef]) -> dict[PRRef, list[Reply]]:
+        """Replies to you on the PRs that are due; any GitHub didn't answer for stay due."""
         if not due:
             self._replies_due = set()
-            return [], False
+            return {}
         try:
             found = await self._github.replies(sorted(due))
         except GitHubError as e:
             logger.warning(f"Couldn't read replies on {len(due)} PRs: {e}")
             self._replies_due = due  # next time
-            return [], False
+            return {}
         self._replies_due = due - found.keys()
-        news, settled = [], False
-        for ref, replies in found.items():
-            old = reviewed[ref]
-            await self._store.set_replies(ref, replies)
-            pr = await self._store.get_pr(ref)
-            if pr is None or pr.replies == old.replies:
-                continue
-            settled = True
-            if new := [reply for reply in pr.replies if reply not in old.replies]:
-                by = ", ".join(dict.fromkeys(reply.author for reply in new))
-                news.append(Change(ref, PRChange.REPLIED, pr.title, by=by))
-            if pr.replies and pr.state in (PRState.DONE, PRState.NOT_REVIEWED):
-                await self._store.set_pr_state(ref, PRState.NEEDS_YOU)
-            elif not pr.replies:
-                await self._settle(pr)
-        return news, settled
+        return found
+
+    async def _needs_you_if_replied(self, pr: PR) -> None:
+        """A PR with replies to you needs you; once none are left, it settles back."""
+        if pr.replies and pr.state in (PRState.DONE, PRState.NOT_REVIEWED):
+            await self._store.set_pr_state(pr.ref, PRState.NEEDS_YOU)
+        elif not pr.replies:
+            await self._settle(pr)
 
     async def _settle(self, pr: PR, *, done: bool = False) -> None:
         """Back where it was, if it needed you and nothing does any more (and no agent is

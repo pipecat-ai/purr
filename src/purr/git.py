@@ -39,6 +39,7 @@ class GitError(Exception):
 BASE_REF = "refs/purr/base"
 PR_REFS = "refs/purr/pull"  # refs/purr/pull/<number>: each open PR's head
 BASE_REFS = "refs/purr/heads"  # refs/purr/heads/<branch>: the branches PRs merge into
+_BASE_REFSPEC = f"+HEAD:{BASE_REF}"
 # Fail fast on a missing object instead of fetching it on its own (blobless clones).
 _NO_LAZY_FETCH = {"GIT_NO_LAZY_FETCH": "1"}
 # How often bases are refetched when no PR moved (where a PR branched off rarely changes).
@@ -81,6 +82,23 @@ def gh_clone(repo: str, dest: Path) -> list[str]:
     return ["gh", "repo", "clone", repo, str(dest), "--", "--bare", "--filter=blob:none"]
 
 
+def _pr_refspec(number: int) -> str:
+    """Fetches a PR's head into the clone's ref for it."""
+    return f"+refs/pull/{number}/head:{PR_REFS}/{number}"
+
+
+def _blobs(raw_diff: str) -> set[str]:
+    """The files (blob ids) on both sides of each change in a ``git diff --raw``."""
+    sides = []
+    for line in raw_diff.splitlines():
+        # :<old mode> <new mode> <old blob> <new blob> <status>\t<path>
+        fields = line.partition("\t")[0].split()
+        if len(fields) >= 4:
+            sides += [(fields[0].lstrip(":"), fields[2]), (fields[1], fields[3])]
+    # Not a submodule, and not "none" (all zeros: the file was added or deleted).
+    return {oid for mode, oid in sides if mode != "160000" and oid.strip("0")}
+
+
 class GitRepos:
     """Clones and PR worktrees under ``root``.
 
@@ -102,59 +120,74 @@ class GitRepos:
     def worktree_path(self, ref: PRRef) -> Path:
         return self._root / "worktrees" / ref.repo / str(ref.number)
 
+    def _lock(self, repo: str) -> asyncio.Lock:
+        """The repo's lock: git commands on one clone mustn't overlap (index and ref locks)."""
+        return self._locks.setdefault(repo, asyncio.Lock())
+
     async def checkout(self, ref: PRRef, head_sha: str) -> Path:
         """Make the PR's worktree, detached at ``head_sha``, and return its path."""
-        # Git commands on one clone mustn't overlap (index and ref locks).
-        async with self._locks.setdefault(ref.repo, asyncio.Lock()):
+        async with self._lock(ref.repo):
             clone = await self._clone(ref.repo)
             # The PR's head, and the default branch (where trusted guidelines
             # live): usually here already, from the last sync.
             if not await self._synced(clone, ref, head_sha):
                 await self._git(
-                    clone,
-                    "fetch",
-                    "--quiet",
-                    "origin",
-                    f"+refs/pull/{ref.number}/head:{PR_REFS}/{ref.number}",
-                    f"+HEAD:{BASE_REF}",
+                    clone, "fetch", "--quiet", "origin", _pr_refspec(ref.number), _BASE_REFSPEC
                 )
             path = self.worktree_path(ref)
             if (path / ".git").exists():
-                # Already there: leave it as it is, with whatever you (or the agent)
-                # changed in it. Moving on: those changes are stashed, not lost.
-                current = (await self._git(path, "rev-parse", "HEAD")).strip()
-                if current != head_sha:
-                    if await self.has_changes(path):
-                        message = f"purr: changes in {ref} at {current[:7]}, before {head_sha[:7]}"
-                        await self._git(
-                            path,
-                            "-c",
-                            "user.name=Purr",
-                            "-c",
-                            "user.email=purr@localhost",
-                            "stash",
-                            "push",
-                            "--include-untracked",
-                            "--quiet",
-                            "-m",
-                            message,
-                        )
-                    await self._git(path, "checkout", "--quiet", "--detach", "--force", head_sha)
+                await self._move_worktree(path, ref, head_sha)
             else:
-                if path.exists():
-                    shutil.rmtree(path)  # a leftover from an interrupted checkout
-                await self._git(clone, "worktree", "prune")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                await self._git(
-                    clone, "worktree", "add", "--quiet", "--detach", str(path), head_sha
-                )
+                await self._add_worktree(clone, path, head_sha)
             return path
+
+    async def _move_worktree(self, path: Path, ref: PRRef, head_sha: str) -> None:
+        """Move the PR's existing worktree to ``head_sha``.
+
+        Already there: leave it as it is, with whatever you (or the agent)
+        changed in it. Moving on: those changes are stashed, not lost.
+        """
+        current = (await self._git(path, "rev-parse", "HEAD")).strip()
+        if current == head_sha:
+            return
+        if await self.has_changes(path):
+            message = f"purr: changes in {ref} at {current[:7]}, before {head_sha[:7]}"
+            await self._stash(path, message)
+        await self._git(path, "checkout", "--quiet", "--detach", "--force", head_sha)
+
+    async def _stash(self, path: Path, message: str) -> None:
+        """Stash a worktree's uncommitted changes, untracked files included."""
+        await self._git(
+            path,
+            "-c",
+            "user.name=Purr",
+            "-c",
+            "user.email=purr@localhost",
+            "stash",
+            "push",
+            "--include-untracked",
+            "--quiet",
+            "-m",
+            message,
+        )
+
+    async def _add_worktree(self, clone: Path, path: Path, head_sha: str) -> None:
+        """Make a new worktree at ``path``, detached at ``head_sha``."""
+        if path.exists():
+            shutil.rmtree(path)  # a leftover from an interrupted checkout
+        await self._git(clone, "worktree", "prune")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        await self._git(clone, "worktree", "add", "--quiet", "--detach", str(path), head_sha)
 
     async def _synced(self, clone: Path, ref: PRRef, head_sha: str) -> bool:
         """Whether the clone has the PR at ``head_sha`` and a recent default branch."""
-        if time.monotonic() - self._bases_fetched.get(ref.repo, -BASE_REFRESH) >= BASE_REFRESH:
+        if not self._bases_fresh(ref.repo):
             return False
         return (await self._pr_heads(clone)).get(ref.number) == head_sha
+
+    def _bases_fresh(self, repo: str) -> bool:
+        """Whether the repo's default branch and PR bases were fetched recently enough."""
+        return time.monotonic() - self._bases_fetched.get(repo, -BASE_REFRESH) < BASE_REFRESH
 
     def worktrees(self) -> list[PRRef]:
         """The PRs that have a worktree on disk."""
@@ -178,22 +211,30 @@ class GitRepos:
         path = self.worktree_path(ref)
         if not path.exists():
             return False
-        if (path / ".git").exists():
-            try:
-                if await self.has_changes(path):
-                    logger.info(f"Keeping {ref}'s worktree: it has uncommitted changes")
-                    return False
-            except GitError:
-                pass  # broken: remove it
-        async with self._locks.setdefault(ref.repo, asyncio.Lock()):
-            clone = self.clone_path(ref.repo)
-            try:
-                await self._git(clone, "worktree", "remove", "--force", str(path))
-            except GitError:
-                shutil.rmtree(path, ignore_errors=True)  # not a worktree git knows
-                if (clone / "HEAD").exists():
-                    await self._git(clone, "worktree", "prune")
+        if await self._has_changes_to_keep(path):
+            logger.info(f"Keeping {ref}'s worktree: it has uncommitted changes")
+            return False
+        async with self._lock(ref.repo):
+            await self._delete_worktree(self.clone_path(ref.repo), path)
         return True
+
+    async def _has_changes_to_keep(self, path: Path) -> bool:
+        """Whether a worktree has uncommitted changes; a broken one has none worth keeping."""
+        if not (path / ".git").exists():
+            return False
+        try:
+            return await self.has_changes(path)
+        except GitError:
+            return False  # broken: remove it
+
+    async def _delete_worktree(self, clone: Path, path: Path) -> None:
+        """Remove a worktree of ``clone``, or whatever is at its path."""
+        try:
+            await self._git(clone, "worktree", "remove", "--force", str(path))
+        except GitError:
+            shutil.rmtree(path, ignore_errors=True)  # not a worktree git knows
+            if (clone / "HEAD").exists():
+                await self._git(clone, "worktree", "prune")
 
     async def _has_ref(self, clone: Path, ref: str) -> bool:
         try:
@@ -225,18 +266,17 @@ class GitRepos:
         Only PRs that are new or have new commits are fetched, and only the
         files their diffs touch. PRs no longer open lose their refs.
         """
-        async with self._locks.setdefault(repo, asyncio.Lock()):
+        async with self._lock(repo):
             clone = await self._clone(repo)
             have = await self._pr_heads(clone)
             moved = [pr for pr in prs if have.get(pr.number) != pr.head_sha]
             gone = set(have) - {pr.number for pr in prs}
-            fresh = time.monotonic() - self._bases_fetched.get(repo, -BASE_REFRESH) < BASE_REFRESH
-            if not moved and not gone and fresh:
+            if not moved and not gone and self._bases_fresh(repo):
                 return  # nothing new: no network
             bases = sorted({pr.base for pr in prs if pr.base})
-            specs = [f"+HEAD:{BASE_REF}"]
+            specs = [_BASE_REFSPEC]
             specs += [f"+refs/heads/{base}:{BASE_REFS}/{base}" for base in bases]
-            specs += [f"+refs/pull/{pr.number}/head:{PR_REFS}/{pr.number}" for pr in moved]
+            specs += [_pr_refspec(pr.number) for pr in moved]
             await self._fetch(clone, specs)
             self._bases_fetched[repo] = time.monotonic()
             # Makes finding where each PR branched off cheap (ms instead of 50).
@@ -268,60 +308,66 @@ class GitRepos:
         except GitError as e:
             logger.warning(f"Fetching {len(specs)} refs at once failed ({e}); one by one")
             for spec in specs:
-                try:
-                    await self._git(clone, "fetch", "--quiet", "--no-tags", "origin", spec)
-                except GitError as e:
-                    logger.warning(f"Couldn't fetch {spec}: {e}")
+                await self._fetch_one(clone, spec)
+
+    async def _fetch_one(self, clone: Path, spec: str) -> None:
+        try:
+            await self._git(clone, "fetch", "--quiet", "--no-tags", "origin", spec)
+        except GitError as e:
+            logger.warning(f"Couldn't fetch {spec}: {e}")
 
     async def _fetch_blobs(self, clone: Path, prs: list[PR]) -> None:
         """Fetch the files these PRs' diffs touch that the clone doesn't have, in one go."""
         wanted: set[str] = set()
         for pr in prs:
-            try:  # trees only: no file contents needed to list what changed
-                raw = await self._git(
-                    clone,
-                    "diff",
-                    "--raw",
-                    "--no-abbrev",
-                    "--no-renames",
-                    self._range(pr),
-                    env=_NO_LAZY_FETCH,
-                )
-            except GitError as e:
-                logger.warning(f"Couldn't list what {pr.ref} changes: {e}")
-                continue
-            for line in raw.splitlines():
-                fields = line.partition("\t")[0].split()
-                if len(fields) < 4:
-                    continue
-                for mode, oid in ((fields[0].lstrip(":"), fields[2]), (fields[1], fields[3])):
-                    if mode != "160000" and oid.strip("0"):  # not a submodule, not "none"
-                        wanted.add(oid)
-        if not wanted:
+            wanted |= await self._blobs_touched(clone, pr)
+        missing = await self._missing(clone, wanted)
+        if not missing:
             return
+        await self._git(
+            clone,
+            "-c",
+            "fetch.negotiationAlgorithm=noop",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--recurse-submodules=no",
+            "--filter=blob:none",
+            "origin",
+            "--stdin",
+            stdin="\n".join(missing) + "\n",
+        )
+
+    async def _blobs_touched(self, clone: Path, pr: PR) -> set[str]:
+        """The files the PR's diff touches, before and after; none if git can't tell."""
+        try:  # trees only: no file contents needed to list what changed
+            raw = await self._git(
+                clone,
+                "diff",
+                "--raw",
+                "--no-abbrev",
+                "--no-renames",
+                self._range(pr),
+                env=_NO_LAZY_FETCH,
+            )
+        except GitError as e:
+            logger.warning(f"Couldn't list what {pr.ref} changes: {e}")
+            return set()
+        return _blobs(raw)
+
+    async def _missing(self, clone: Path, objects: set[str]) -> list[str]:
+        """Which of these objects the clone doesn't have."""
+        if not objects:
+            return []
         check = await self._git(
             clone,
             "cat-file",
             "--batch-check=%(objectname)",
-            stdin="\n".join(wanted) + "\n",
+            stdin="\n".join(objects) + "\n",
             env=_NO_LAZY_FETCH,
         )
-        missing = [line.split()[0] for line in check.splitlines() if line.endswith(" missing")]
-        if missing:
-            await self._git(
-                clone,
-                "-c",
-                "fetch.negotiationAlgorithm=noop",
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--no-write-fetch-head",
-                "--recurse-submodules=no",
-                "--filter=blob:none",
-                "origin",
-                "--stdin",
-                stdin="\n".join(missing) + "\n",
-            )
+        return [line.split()[0] for line in check.splitlines() if line.endswith(" missing")]
 
     async def new_commits(self, pr: PR, since: str) -> tuple[list[str], list[str]] | None:
         """What the PR's commits since ``since`` say and touch, for planning a re-review.
@@ -334,16 +380,9 @@ class GitRepos:
         clone = self.clone_path(pr.repo)
         if not (clone / "HEAD").exists():
             return None
-        async with self._locks.setdefault(pr.repo, asyncio.Lock()):
+        async with self._lock(pr.repo):
             try:
-                if (await self._pr_heads(clone)).get(pr.number) != pr.head_sha:
-                    await self._git(
-                        clone,
-                        "fetch",
-                        "--quiet",
-                        "origin",
-                        f"+refs/pull/{pr.number}/head:{PR_REFS}/{pr.number}",
-                    )
+                await self._fetch_head(clone, pr)
                 span = f"{since}..{pr.head_sha}"
                 log = await self._git(clone, "log", "--format=%s", span, env=_NO_LAZY_FETCH)
                 files = await self._git(
@@ -358,6 +397,11 @@ class GitRepos:
             except GitError:
                 return None
         return log.splitlines(), [" ".join(line.split("\t", 1)) for line in files.splitlines()]
+
+    async def _fetch_head(self, clone: Path, pr: PR) -> None:
+        """Fetch the PR's head, unless the clone has it already."""
+        if (await self._pr_heads(clone)).get(pr.number) != pr.head_sha:
+            await self._git(clone, "fetch", "--quiet", "origin", _pr_refspec(pr.number))
 
     async def diff(self, pr: PR) -> str | None:
         """The PR's diff from the clone; None if the clone doesn't have it (yet)."""
@@ -419,17 +463,11 @@ class GitRepos:
         change them. Built once per version of them; None if the repo has none.
         The repo is cloned first if it isn't yet.
         """
-        async with self._locks.setdefault(repo, asyncio.Lock()):
+        async with self._lock(repo):
             clone = await self._clone(repo)
             if not await self._has_ref(clone, BASE_REF):
-                await self._git(clone, "fetch", "--quiet", "origin", f"+HEAD:{BASE_REF}")
-            listing = await self._git(clone, "ls-tree", BASE_REF, ".claude/")
-            trees = {}  # .claude/skills -> its tree's hash
-            for line in listing.splitlines():
-                info, _, path = line.partition("\t")
-                _, kind, sha = info.split()
-                if kind == "tree" and path.removeprefix(".claude/") in PLUGIN_PARTS:
-                    trees[path] = sha
+                await self._git(clone, "fetch", "--quiet", "origin", _BASE_REFSPEC)
+            trees = await self._plugin_trees(clone)
             if not trees:
                 return None
             key = hashlib.sha1(" ".join(sorted(trees.values())).encode()).hexdigest()[:12]
@@ -440,10 +478,20 @@ class GitRepos:
                     clone, "archive", "--format=tar", BASE_REF, "--", *sorted(trees)
                 )
                 await asyncio.to_thread(self._unpack_plugin, repo, archive, path)
-            for old in versions.iterdir():
-                if old != path:
-                    shutil.rmtree(old, ignore_errors=True)
+            for old in [version for version in versions.iterdir() if version != path]:
+                shutil.rmtree(old, ignore_errors=True)
             return path
+
+    async def _plugin_trees(self, clone: Path) -> dict[str, str]:
+        """The plugin's parts on the default branch: ``.claude/skills`` -> its tree's hash."""
+        listing = await self._git(clone, "ls-tree", BASE_REF, ".claude/")
+        trees = {}
+        for line in listing.splitlines():
+            info, _, path = line.partition("\t")
+            _, kind, sha = info.split()
+            if kind == "tree" and path.removeprefix(".claude/") in PLUGIN_PARTS:
+                trees[path] = sha
+        return trees
 
     @staticmethod
     def _unpack_plugin(repo: str, archive: bytes, path: Path) -> None:
@@ -452,11 +500,11 @@ class GitRepos:
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(staging, filter="data")
         plugin = staging / ".claude"
-        for markdown in plugin.rglob("*.md"):
-            if markdown.is_file() and not markdown.is_symlink():
-                text = markdown.read_text(errors="replace")
-                if (safe := safe_frontmatter(text)) != text:
-                    markdown.write_text(safe)
+        markdowns = [md for md in plugin.rglob("*.md") if md.is_file() and not md.is_symlink()]
+        for markdown in markdowns:
+            text = markdown.read_text(errors="replace")
+            if (safe := safe_frontmatter(text)) != text:
+                markdown.write_text(safe)
         manifest = {
             "name": plugin_name(repo),
             "description": f"{repo}'s skills and agents, from its default branch (via Purr)",
