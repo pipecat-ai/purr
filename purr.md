@@ -395,8 +395,8 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `o` or `enter` open: a repo, or a PR (focus moves into its pane). In a PR's pane, `enter` goes to its prompt.
 - `tab` (or `shift+tab`) switches between the PR list and the PR's pane, from its prompt too (the prompt never takes a tab).
 - `n` / `p` next / previous: repo, or PR. They only change which PR the PR's pane shows, never the focus, so from the pane you read PRs one after another.
-- `/` search the PR list as you type (number, title, author, assignees; every word has to match). `enter` keeps the results and goes back to the list; `esc` clears the search.
-- `esc` back a step: prompt → PR → PR list (clearing a search first) → repo list
+- `/` search the PR list as you type (number, title, author, assignees; every word has to match). `enter` or `esc` goes back to the list, keeping the results. The search stays (shown above the list, per repo, also after leaving it) until you press `/` and delete it.
+- `esc` back a step: prompt → PR → PR list → repo list (out of the search box first; it never clears the search)
 - `page up` / `page down` scroll a page, in either pane (the transcript while typing too)
 - `space` mark/unmark PR
 - `r` start review on marked PRs (or the selected one), assigning you

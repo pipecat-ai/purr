@@ -505,22 +505,37 @@ async def test_moving_around_and_searching(tmp_path):
         await pilot.press("o")
         assert focused(app) == "transcript" and shown() == 3
 
-        # / searches the list (title, author, number), and esc clears it.
+        # / searches the list (title, author, number).
+        bus = ["pipecat-ai/pipecat#3", "pipecat-ai/pipecat#1"]
         await pilot.press("slash")
         assert focused(app) == "search"
         await pilot.press(*"bus")
-        await until(pilot, lambda: pr_ids(app) == ["pipecat-ai/pipecat#3", "pipecat-ai/pipecat#1"])
+        await until(pilot, lambda: pr_ids(app) == bus)
         await pilot.press("enter")
         assert focused(app) == "prs"
         await pilot.press("n")
         await until(pilot, lambda: shown() == 1)
+
+        # esc doesn't clear it: out of the box (enter does the same), then home,
+        # and it's still there when you're back.
+        await pilot.press("slash", "escape")
+        assert focused(app) == "prs" and pr_ids(app) == bus
+        assert repo.query_one("#search").display
         await pilot.press("escape")
+        await until(pilot, lambda: home(app))
+        await pilot.press("o")
+        await until(pilot, lambda: in_repo(app))
+        assert pr_ids(app) == bus and repo.query_one("#search").value == "bus"
+
+        # Deleting it is what clears it.
+        await pilot.press("slash", "ctrl+u")
         await until(pilot, lambda: len(pr_ids(app)) == 3)
-        assert in_repo(app) and not repo.query_one("#search").display
+        await pilot.press("escape")
+        assert focused(app) == "prs" and not repo.query_one("#search").display
         await pilot.press("slash", *"nothing like it")
         await until(pilot, lambda: pr_ids(app) == [])
         assert "No PRs match" in "\n".join(option_texts(app))
-        await pilot.press("escape")
+        await pilot.press("ctrl+u", "enter")
         await until(pilot, lambda: len(pr_ids(app)) == 3)
         await pilot.press("escape")
         await until(pilot, lambda: home(app))

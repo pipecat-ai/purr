@@ -341,6 +341,7 @@ class RepoView(PurrView):
         self._prs: dict[str, PR] = {}  # the ones listed (matching the search), in list order
         self._number_width = 5  # the widest "#6934" in the list
         self._search = ""
+        self._searches: dict[str, str] = {}  # repo -> its search, kept until you clear it
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
         self._outcomes: dict = {}  # PRRef -> what its latest review found
@@ -364,8 +365,8 @@ class RepoView(PurrView):
 
     async def show(self, repo: str) -> None:
         if repo != self.repo:
-            self._set_search("")
-        self.repo = repo
+            self.repo = repo
+            self._set_search(self._searches.get(repo, ""))
         await self.refresh_if_stale()
 
     async def reload(self) -> None:
@@ -533,9 +534,17 @@ class RepoView(PurrView):
     def _set_search(self, text: str) -> None:
         search = self.query_one("#search", Input)
         self._search = text
+        if self.repo:
+            self._searches[self.repo] = text
         if search.value != text:
             search.value = text
         search.display = bool(text) or search.has_focus
+
+    def _leave_search(self) -> None:
+        """Back to the list. The search stays, shown above it, until you clear it."""
+        self._set_search(self._search.strip())
+        self.query_one("#search").display = bool(self._search)
+        self.query_one(OptionList).focus()
 
     def action_search(self) -> None:
         search = self.query_one("#search", Input)
@@ -545,19 +554,19 @@ class RepoView(PurrView):
     @on(Input.Changed, "#search")
     def _searching(self, event: Input.Changed) -> None:
         self._search = event.value
+        if self.repo:
+            self._searches[self.repo] = event.value
         self._list()
 
     @on(Input.Submitted, "#search")
     def _searched(self) -> None:
-        self.query_one(OptionList).focus()
-        self._set_search(self._search.strip())
+        self._leave_search()
 
     async def action_back(self) -> None:
-        """Out of the search, then out of the repo."""
-        if self._search or self.query_one("#search").has_focus:
-            self._set_search("")
-            self.query_one(OptionList).focus()
-            self._list()
+        """Out of the search box, then out of the repo. Neither clears the search:
+        that's / and deleting it."""
+        if self.query_one("#search").has_focus:
+            self._leave_search()
         else:
             await self.purr_app.action_home()
 
