@@ -10,7 +10,16 @@ from purr.models import PR, Activity, PendingAction, PRRef, PRState
 
 # Activity worth a recap. Pool PRs leaving (taken by someone, closed unreviewed)
 # and review progress are noise.
-_NOTABLE_CHANGES = {"assigned", "unassigned", "pooled", "new_commits", "closed", "merged"}
+_NOTABLE_CHANGES = {
+    "assigned",
+    "unassigned",
+    "pooled",
+    "new_commits",
+    "closed",
+    "merged",
+    "requested",
+    "replied",
+}
 _NOTABLE_KINDS = {
     "review.finished",
     "review.failed",
@@ -76,6 +85,8 @@ def event_text(activity: Activity) -> str:
                 "new_commits": "new commits pushed",
                 "closed": "closed",
                 "merged": "merged",
+                "requested": "asks for the user's review",
+                "replied": f"{data.get('by') or 'someone'} replied to the user",
             }.get(data.get("change", ""), str(data.get("change")))
         case "review.finished":
             findings = "; ".join(

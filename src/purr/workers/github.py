@@ -18,6 +18,7 @@ from purr.messages import (
     ApproveAction,
     AssignMe,
     DismissAction,
+    DismissReplies,
     FetchDetails,
     FetchedDetails,
     MarkSeen,
@@ -29,9 +30,19 @@ from purr.messages import (
     Watching,
     WatchRepo,
 )
-from purr.models import ActionStatus, PRRef, PRState, Repo, parse_repo_name
+from purr.models import (
+    PR,
+    ActionStatus,
+    GHState,
+    PRChange,
+    PRRef,
+    PRState,
+    Repo,
+    ReviewStatus,
+    parse_repo_name,
+)
 from purr.store import Store
-from purr.sync import SyncPlan, missing_reviewed, plan_sync
+from purr.sync import Change, SyncPlan, missing_reviewed, plan_sync
 
 # Between full syncs, polls only fetch PRs updated since the last sync. A full
 # sync still runs on startup and this often, to catch anything search missed.
@@ -53,6 +64,10 @@ class GitHubWorker(BaseWorker):
     broadcasting a :class:`PRChanged` per change it finds and a
     :class:`PRListUpdated` when anything changed. Handles the ``repo.add`` and
     ``repo.remove`` jobs.
+
+    After a poll it reads the conversation of the reviewed PRs that changed (all
+    of them on the first poll) for replies to you since your last word there: a
+    PR with replies you haven't answered needs you.
 
     Each repo gets a full sync on its first poll after startup and every
     ``FULL_SYNC_EVERY`` seconds; polls in between only fetch PRs updated since
@@ -89,6 +104,8 @@ class GitHubWorker(BaseWorker):
         self._lock = asyncio.Lock()
         self._poll_task: asyncio.Task | None = None
         self._last_full_sync: dict[str, float] = {}  # repo -> time.monotonic()
+        # Reviewed PRs whose replies to read on the next poll; None: all of them.
+        self._replies_due: set[PRRef] | None = None
 
     async def on_activated(self, args: dict | None) -> None:
         await super().on_activated(args)
@@ -146,19 +163,76 @@ class GitHubWorker(BaseWorker):
                 self._last_full_sync[name] = now
             await self._store.mark_synced([*snapshot.open, *snapshot.updates], at=started)
 
-        for change in plan.changes:
+        before = {pr.ref: pr for pr in current}
+        changed = {pr.ref for pr in plan.upserts if pr.ref not in before}
+        changed |= {
+            pr.ref
+            for pr in plan.upserts
+            if pr.ref in before and pr.updated_at != before[pr.ref].updated_at
+        }
+        replied, settled = await self._read_replies(changed)
+        for change in [*plan.changes, *replied]:
             await self.send_bus_message(
                 PRChanged(
                     source=self.name,
                     pr=str(change.pr),
                     change=change.change.value,
                     title=change.title,
+                    by=change.by,
                 )
             )
-        if not plan.empty:
+        if not plan.empty or settled:
             await self.send_bus_message(PRListUpdated(source=self.name))
         await self.send_bus_message(Synced(source=self.name))
         return plan
+
+    async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
+        """Read what others said to you on reviewed PRs that changed (all, the first time).
+
+        Returns the PRs with new replies, and whether any PR's replies or state changed.
+        """
+        reviewed = {
+            pr.ref: pr for pr in await self._store.open_prs() if pr.state != PRState.NOT_REVIEWED
+        }
+        due = set(reviewed) if self._replies_due is None else self._replies_due | changed
+        due &= reviewed.keys()
+        if not due:
+            self._replies_due = set()
+            return [], False
+        try:
+            found = await self._github.replies(sorted(due))
+        except GitHubError as e:
+            logger.warning(f"Couldn't read replies on {len(due)} PRs: {e}")
+            self._replies_due = due  # next time
+            return [], False
+        self._replies_due = due - found.keys()
+        news, settled = [], False
+        for ref, replies in found.items():
+            old = reviewed[ref]
+            await self._store.set_replies(ref, replies)
+            pr = await self._store.get_pr(ref)
+            if pr is None or pr.replies == old.replies:
+                continue
+            settled = True
+            if new := [reply for reply in pr.replies if reply not in old.replies]:
+                by = ", ".join(dict.fromkeys(reply.author for reply in new))
+                news.append(Change(ref, PRChange.REPLIED, pr.title, by=by))
+            if pr.replies and pr.state == PRState.DONE:
+                await self._store.set_pr_state(ref, PRState.NEEDS_YOU)
+            elif not pr.replies:
+                await self._settle(pr)
+        return news, settled
+
+    async def _settle(self, pr: PR) -> None:
+        """Done, if it needed you and nothing does any more (and no agent is at it)."""
+        if pr.state != PRState.NEEDS_YOU or pr.gh_state != GHState.OPEN:
+            return
+        if await self._store.waits_on_you(pr.ref) or await self._store.running(pr.ref):
+            return
+        review = await self._store.latest_review(pr.ref)
+        if review and review.status == ReviewStatus.FAILED:
+            return  # it needs you for that
+        await self._store.set_pr_state(pr.ref, PRState.DONE)
 
     def _needs_full_sync(self, repo: Repo) -> bool:
         last = self._last_full_sync.get(repo.name)
@@ -208,6 +282,14 @@ class GitHubWorker(BaseWorker):
     @handles(MarkSeen)
     async def mark_seen(self, request: MarkSeen) -> Done:
         await self._store.mark_seen(request.pr)
+        return Done()
+
+    @handles(DismissReplies)
+    async def dismiss_replies(self, request: DismissReplies) -> Done:
+        await self._store.dismiss_replies(request.pr)
+        if pr := await self._store.get_pr(request.pr):
+            await self._settle(pr)
+        await self.send_bus_message(PRListUpdated(source=self.name))
         return Done()
 
     @handles(AssignMe)
@@ -265,6 +347,7 @@ class GitHubWorker(BaseWorker):
         await self._store.transition_action(
             action_id, expected=ActionStatus.APPROVED, new=ActionStatus.EXECUTED
         )
+        await self._store.dismiss_replies(action.pr)  # you've had your say
         await self._resolved(action.pr, action_id, approved=True)
         return Posted(url=posted.url, warnings=list(posted.warnings))
 
@@ -279,10 +362,9 @@ class GitHubWorker(BaseWorker):
         return Done()
 
     async def _resolved(self, ref: PRRef, action_id: str, *, approved: bool) -> None:
-        pr = await self._store.get_pr(ref)
-        # Nothing left to decide: the PR is done (unless a review is still running).
-        if pr and pr.state == PRState.NEEDS_YOU and not await self._store.pending_actions(ref):
-            await self._store.set_pr_state(ref, PRState.DONE)
+        # Nothing left to decide: the PR is done (unless something else needs you).
+        if pr := await self._store.get_pr(ref):
+            await self._settle(pr)
         await self.send_bus_message(
             ActionResolved(source=self.name, pr=str(ref), action_id=action_id, approved=approved)
         )

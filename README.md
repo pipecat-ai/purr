@@ -71,11 +71,13 @@ uv run purr --no-auto-review
 
 ## How to use it
 
-1. **Home** lists the repos you watch, then the ones listed only for PRs assigned to you,
-   with how many PRs need you in each. `enter` opens one (or press its number, `1` to `9`).
-2. **A repo** shows its PRs on the left, grouped: *Needs you*, *Reviewing*, *Done* (the
-   latest 5; `/` finds the rest), *Not reviewed*, and *Others reviewing*. A reviewed PR shows
-   ✓ if the review found nothing and ● if it found issues; one being reviewed spins.
+1. **Home** lists the repos you watch, then the ones listed only for PRs assigned to you or
+   asking for your review, with how many PRs need you in each. `enter` opens one (or press its number, `1` to `9`).
+2. **A repo** shows its PRs on the left, grouped: *Needs you*, *Reviewing*, *Review
+   requested* (asking for your review by name), *Done* (the latest 5; `/` finds the rest),
+   *Not reviewed*, and *Others reviewing*. A reviewed PR shows ✓ if the review found nothing
+   and ● if it found issues; one being reviewed spins. Only PRs assigned to you are reviewed
+   on their own; a review request doesn't start one.
 3. **Pick a PR** to read its description, files and diff on the right (`o` to scroll through
    it). Press `r` to review it (Purr also assigns it to you, so your teammates know). You can
    write to the agent while it works ("focus on the bus"); it reads it at its next step.
@@ -86,6 +88,9 @@ uv run purr --no-auto-review
    repo or everywhere), `x` says no. Or write what to do instead ("only run the bus tests"):
    that's a no, with directions, and the agent carries on. Claude Code decides what to ask
    about, as it does everywhere else (see below).
+6. **When someone answers you** on a PR you reviewed (a reply in your thread, a comment after
+   your review), it's back in *Needs you*, with what they said under its conversation.
+   Answer on GitHub or through the agent, or press `x` if it needs no reply.
 
 ### Keys
 
@@ -105,7 +110,7 @@ uv run purr --no-auto-review
 | | `n` / `p` | Next / previous PR |
 | | `/` | Search PRs |
 | | `r` | Review the PR (`space` marks several first) |
-| | `a` / `x` | Approve / dismiss what's proposed (or allow / deny what's asked) |
+| | `a` / `x` | Approve / dismiss what's proposed (or allow / deny what's asked); `x` also says replies need no answer |
 | | `A` | Always allow what's asked |
 | | `d` | The full diff, in your pager |
 | | `t` | The agent's reasoning in full (it's a line per thought otherwise) |

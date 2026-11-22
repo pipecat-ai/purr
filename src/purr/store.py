@@ -4,6 +4,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from purr.models import (
     PRRef,
     PRState,
     Recap,
+    Reply,
     Repo,
     RepoSummary,
     Review,
@@ -222,6 +224,14 @@ MIGRATIONS: list[str] = [
         SELECT MAX(COALESCE(finished_at, started_at)) FROM reviews WHERE pr_id = prs.id
     );
     """,
+    # Your review asked for by name, and what others said to you since your last
+    # word (see purr.github.replies_to): JSON, with when you last said they need
+    # no answer (x).
+    """
+    ALTER TABLE prs ADD COLUMN requested_from_me INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE prs ADD COLUMN replies TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE prs ADD COLUMN replies_done_at TEXT;
+    """,
 ]
 
 # Activity that's news to you, and how the UI says it (see Store.unseen).
@@ -243,6 +253,10 @@ _NEWS = """
         WHEN a.kind = 'review.finished' THEN 'review: nothing found'
         WHEN a.kind = 'review.failed' THEN 'review failed'
         WHEN a.kind = 'session.permission_request' THEN 'needs your OK'
+        WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'requested'
+            THEN 'asks for your review'
+        WHEN a.kind = 'pr.changed' AND json_extract(a.data, '$.change') = 'replied'
+            THEN COALESCE(NULLIF(json_extract(a.data, '$.by'), ''), 'someone') || ' replied'
     END
 """
 
@@ -269,6 +283,11 @@ def _now_ms() -> str:
 _AUTHORS = {"text": "agent", "thinking": "agent", "tool_use": "agent", "tool_result": "tool"}
 
 
+def _unanswered(row: aiosqlite.Row) -> tuple[Reply, ...]:
+    done = row["replies_done_at"] or ""
+    return tuple(Reply(**r) for r in json.loads(row["replies"]) if r["at"] > done)
+
+
 def _pr(row: aiosqlite.Row) -> PR:
     return PR(
         id=row["id"],
@@ -281,6 +300,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         state=PRState(row["state"]),
         gh_state=GHState(row["gh_state"]),
         assigned_to_me=bool(row["assigned_to_me"]),
+        requested_from_me=bool(row["requested_from_me"]),
         updated_at=row["updated_at"],
         created_at=row["created_at"],
         base=row["base"],
@@ -288,6 +308,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         assignees=tuple(json.loads(row["assignees"])),
         model=row["model"],
         state_at=row["state_at"],
+        replies=_unanswered(row),
     )
 
 
@@ -315,8 +336,9 @@ def _activity(row: aiosqlite.Row) -> Activity:
 
 _UPSERT_PR = """
     INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
-                     updated_at, created_at, assignees, base, author_association)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     updated_at, created_at, assignees, base, author_association,
+                     requested_from_me)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET
         title = excluded.title,
         author = excluded.author,
@@ -328,7 +350,8 @@ _UPSERT_PR = """
         created_at = excluded.created_at,
         assignees = excluded.assignees,
         base = excluded.base,
-        author_association = excluded.author_association
+        author_association = excluded.author_association,
+        requested_from_me = excluded.requested_from_me
 """
 
 
@@ -347,6 +370,7 @@ def _upsert_params(pr: PR) -> tuple:
         json.dumps(list(pr.assignees)),
         pr.base,
         pr.author_association,
+        int(pr.requested_from_me),
     )
 
 
@@ -509,6 +533,37 @@ class Store:
         if cursor.rowcount == 0:
             raise KeyError(f"unknown PR {ref}")
 
+    async def set_replies(self, ref: PRRef, replies: Iterable[Reply]) -> None:
+        """What others said to you on the PR since your last word, as GitHub has it now."""
+        data = json.dumps([asdict(reply) for reply in replies])
+        await self._db.execute(
+            "UPDATE prs SET replies = ? WHERE repo = ? AND number = ?", (data, ref.repo, ref.number)
+        )
+        await self._db.commit()
+
+    async def dismiss_replies(self, ref: PRRef) -> None:
+        """You said the PR's replies need no answer: the ones Purr has seen so far."""
+        pr = await self.get_pr(ref)
+        if pr and pr.replies:
+            await self._db.execute(
+                "UPDATE prs SET replies_done_at = ? WHERE repo = ? AND number = ?",
+                (pr.replies[-1].at, ref.repo, ref.number),
+            )
+            await self._db.commit()
+
+    async def waits_on_you(self, ref: PRRef) -> bool:
+        """Something on the PR waits for you: a proposal to decide, or replies to answer."""
+        pr = await self.get_pr(ref)
+        return bool(pr and pr.replies) or bool(await self.pending_actions(ref))
+
+    async def running(self, ref: PRRef) -> bool:
+        """An agent run on the PR is queued or under way."""
+        row = await self._fetchone(
+            "SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status IN ('queued', 'running')",
+            (ref.repo, ref.number),
+        )
+        return row is not None
+
     async def open_prs(self) -> list[PR]:
         """PRs that are open on GitHub, in no particular order."""
         rows = await self._fetchall("SELECT * FROM prs WHERE gh_state = ?", (GHState.OPEN,))
@@ -577,7 +632,8 @@ class Store:
                 COALESCE(SUM(prs.state = 'reviewing'), 0) AS reviewing,
                 COALESCE(
                     SUM(prs.state = 'not_reviewed'
-                        AND (prs.assigned_to_me OR prs.assignees = '[]')), 0
+                        AND (prs.assigned_to_me OR prs.requested_from_me
+                             OR prs.assignees = '[]')), 0
                 ) AS not_reviewed,
                 (SELECT MAX(at) FROM activity WHERE activity.repo = names.name) AS last_activity
             FROM names

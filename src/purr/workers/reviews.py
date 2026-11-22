@@ -63,6 +63,7 @@ from purr.review.agent import (
     ReviewCallbacks,
     describe_background,
     describe_tool_use,
+    replies_note,
     rereview_prompt,
     review_prompt,
     set_aside_note,
@@ -190,7 +191,7 @@ class ReviewWorker(BaseWorker):
         for pr in await self._store.list_prs(state=PRState.REVIEWING):
             review = await self._store.latest_review(pr.ref)
             if review is None or review.status != ReviewStatus.RUNNING:
-                pending = await self._store.pending_actions(pr.ref)
+                pending = await self._store.waits_on_you(pr.ref)
                 await self._store.set_pr_state(
                     pr.ref, PRState.NEEDS_YOU if pending or review is None else PRState.DONE
                 )
@@ -366,11 +367,14 @@ class ReviewWorker(BaseWorker):
             sent = MessageSent()
             if not command and (proposals := await self._store.pending_actions(ref)):
                 await self._dismiss_pending(ref)
-                if pr.state == PRState.NEEDS_YOU:  # nothing left to decide, as with x
+                # Nothing left to decide, as with x (unless there are replies to answer).
+                if pr.state == PRState.NEEDS_YOU and not await self._store.waits_on_you(ref):
                     await self._store.set_pr_state(ref, PRState.DONE)
                     pr = replace(pr, state=PRState.DONE)
                 sent.set_aside = [p.description for p in proposals]
                 text = set_aside_note(sent.set_aside) + text
+            if not command and pr.replies:  # so it can help you answer them
+                text = replies_note(pr.replies) + text
             # You're waiting on this one: it doesn't queue behind reviews.
             self._launch(
                 pr, review, prompt=text, resume=True, followup=True, queued=False, kind="message"
@@ -626,9 +630,9 @@ class ReviewWorker(BaseWorker):
         return None
 
     async def _settle(self, ref: PRRef, state: PRState) -> None:
-        """Set the PR's state after a run: anything pending means it needs you."""
+        """Set the PR's state after a run: anything waiting on you means it needs you."""
         await self._progress(ref, "")  # nothing's happening any more
-        if await self._store.pending_actions(ref):
+        if await self._store.waits_on_you(ref):
             state = PRState.NEEDS_YOU
         await self._store.set_pr_state(ref, state)
         await self.send_bus_message(PRListUpdated(source=self.name))

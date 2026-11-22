@@ -4,7 +4,8 @@ Pure functions, so the rules are easy to test without GitHub or a database:
 
 - A watched repo lists its open, non-draft PRs by other people, whoever is
   assigned. The unassigned ones are the pool.
-- PRs assigned to you are tracked from any repo.
+- PRs assigned to you, or asking for your review by name, are tracked from any
+  repo. A request is news, but only being assigned starts a review.
 - A PR that drops out of both is removed if Purr never reviewed it. If Purr did,
   it stays, and its GitHub state is looked up to tell closed/merged from
   "drafted" or "unassigned from you elsewhere".
@@ -27,6 +28,7 @@ class Change:
     pr: PRRef
     change: PRChange
     title: str
+    by: str = ""  # who, when it was someone (who replied)
 
 
 @dataclass
@@ -58,7 +60,7 @@ def _updated(snapshot: Snapshot) -> tuple[list, set[PRRef]]:
 
 def _covered(ref: PRRef, snapshot: Snapshot, watched: set[str]) -> bool:
     """Whether the snapshot says for sure that this PR is in none of the searches."""
-    if snapshot.assigned is None:
+    if snapshot.assigned is None or snapshot.requested is None:
         return False
     if ref.repo not in watched or ref.repo in snapshot.open:
         return True
@@ -70,6 +72,8 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
     listed, _ = _updated(snapshot)
     seen = {pr.ref: pr.to_pr(me) for prs in snapshot.open.values() for pr in prs}
     seen.update((pr.ref, pr.to_pr(me)) for pr in listed)
+    for pr in snapshot.requested or []:
+        seen.setdefault(pr.ref, replace(pr.to_pr(me), requested_from_me=True))
     for pr in snapshot.assigned or []:
         seen[pr.ref] = replace(pr.to_pr(me), assigned_to_me=True)
     return seen
@@ -77,7 +81,8 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
 
 def _same_metadata(old: PR, new: PR) -> bool:
     """Whether GitHub reports nothing new; Purr's own fields don't count."""
-    return replace(new, id=old.id, state=old.state, model=old.model, state_at=old.state_at) == old
+    own = {"id": old.id, "state": old.state, "model": old.model, "state_at": old.state_at}
+    return replace(new, **own, replies=old.replies) == old
 
 
 def _assignment_change(old: PR, new: PR) -> PRChange | None:
@@ -92,6 +97,8 @@ def _assignment_change(old: PR, new: PR) -> PRChange | None:
 def _new_pr_change(pr: PR, first_sync: bool) -> PRChange | None:
     if pr.assigned_to_me:
         return PRChange.ASSIGNED
+    if pr.requested_from_me:
+        return PRChange.REQUESTED
     if pr.in_pool and not first_sync:
         return PRChange.POOLED
     return None  # someone else's, or part of a repo's first sync
@@ -158,6 +165,8 @@ def plan_sync(
         if not _same_metadata(old, new):
             plan.upserts.append(new)
         report(ref, _assignment_change(old, new), new.title)
+        if new.requested_from_me and not old.requested_from_me and not new.assigned_to_me:
+            report(ref, PRChange.REQUESTED, new.title)
         if new.head_sha != old.head_sha and old.state != PRState.NOT_REVIEWED:
             report(ref, PRChange.NEW_COMMITS, new.title)
 

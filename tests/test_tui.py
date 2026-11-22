@@ -1022,3 +1022,58 @@ async def test_writing_instead_of_approving_says_so_in_the_thread(tmp_path):
         [aside] = [i for i, line in enumerate(lines) if "◼ Proposal set aside:" in line]
         assert "Post 1 comment and request changes" in lines[aside]
         assert lines[aside + 2].startswith("> is the race real?")  # then what you wrote
+
+
+async def test_requests_for_your_review_and_replies_to_you(tmp_path):
+    from purr.models import PRRef, PRState, Reply
+
+    app, github = make_app(tmp_path)
+    asks = remote(1, title="Asks you", requested=("me",))
+    github.open["pipecat-ai/pipecat"] = [
+        asks,
+        remote(2, title="In the pool"),
+        remote(3, title="Answered you"),
+    ]
+    github.requested = [asks]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        store = app.purr.store
+        answered = PRRef("pipecat-ai/pipecat", 3)
+        await store.set_pr_state(answered, PRState.NEEDS_YOU)  # as a poll leaves it
+        await store.set_replies(
+            answered,
+            [Reply("alice", "Fixed,\nsee the test.", "2026-11-21T10:00:00Z", "", "bus.py:42")],
+        )
+        await app.main.repo.reload()
+
+        # Asked of you: apart from the pool, and saying so.
+        text = "\n".join(option_texts(app))
+        assert text.index("NEEDS YOU (1)") < text.index("REVIEW REQUESTED (1)")
+        assert text.index("REVIEW REQUESTED (1)") < text.index("Asks you")
+        assert text.index("Asks you") < text.index("NOT REVIEWED (1)")
+        await app.goto_pr(PRRef("pipecat-ai/pipecat", 1))
+        await until(pilot, lambda: "asks for your review" in header(app))
+
+        # Answered: what they said, until x says it needs no reply.
+        await app.goto_pr(answered)
+        await until(pilot, lambda: "alice replied" in decision(app))
+        assert "alice · bus.py:42: Fixed, see the test." in decision(app)
+        await pilot.press("x")
+
+        async def settled() -> bool:
+            pr = await store.get_pr(answered)
+            return pr.state == PRState.DONE and not pr.replies
+
+        await until_async(settled)
+        await until(pilot, lambda: decision(app) == "")
+
+
+async def until_async(check, timeout: float = 5) -> None:
+    async def wait():
+        while not await check():
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(wait(), timeout)

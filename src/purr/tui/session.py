@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -33,6 +34,7 @@ from purr.models import (
     PRDetails,
     PRRef,
     PRState,
+    Reply,
     Review,
     ReviewStatus,
 )
@@ -136,6 +138,28 @@ def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
             line.append(f"  {signature}", style="dim italic")
         parts.append(line)
     return Group(*parts)
+
+
+def replied(replies: Sequence[Reply]) -> str:
+    """'alice replied', 'alice and bob replied (3)'."""
+    authors = list(dict.fromkeys(reply.author for reply in replies))
+    who = authors[0] if len(authors) == 1 else f"{', '.join(authors[:-1])} and {authors[-1]}"
+    return f"{who} replied" + (f" ({len(replies)})" if len(replies) > 1 else "")
+
+
+def render_replies(replies: Sequence[Reply], shown: int = 3) -> Text:
+    """What others said to you since your last word, the latest few, and what x does."""
+    text = Text(f"{replied(replies)}:", style="bold")
+    for reply in replies[-shown:]:
+        where = f" · {reply.where}" if reply.where else ""
+        body = " ".join(reply.body.split())
+        text.append(f"\n  {reply.author}{where}: ", style="cyan")
+        text.append(_short(body, 110))
+    if len(replies) > shown:
+        text.append(f"\n  and {len(replies) - shown} before", style="dim")
+    text.append("\n[x] no reply needed", style="bold")
+    text.append("   or answer: here (ask the agent) or on GitHub", style="dim")
+    return text
 
 
 def outcome_mark(outcome: Outcome) -> Text:
@@ -515,6 +539,9 @@ class PRSession(Vertical):
                 )
             )
             decision.display = True
+        elif pr.replies:
+            decision.update(render_replies(pr.replies))
+            decision.display = True
         else:
             decision.display = False
 
@@ -550,11 +577,17 @@ class PRSession(Vertical):
                 text.append(f" · {len(actions)} pending action", style="yellow")
         elif review is None and pr.others_on_it:
             text.append("◌ Not reviewed by you", style="bold")
+            if pr.requested_from_me:
+                text.append(" · asks for your review", style="magenta")
             text.append(" · r to review it too · d diff", style="dim")
         elif review is None:
             text.append("○ Not reviewed", style="bold")
+            if pr.requested_from_me:
+                text.append(" · asks for your review", style="magenta")
             hint = " · r to review it" + ("" if pr.assigned_to_me else " and take it")
             text.append(f"{hint} · d diff", style="dim")
+        if pr.replies and review is not None:
+            text.append(f" · {replied(pr.replies)}", style="yellow")
         if review and review.worktree_path:
             path = Path(review.worktree_path)
             home = str(Path.home())

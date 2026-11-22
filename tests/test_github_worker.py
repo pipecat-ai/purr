@@ -10,6 +10,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from purr.jobs import Invalid, NotFound, request
 from purr.messages import (
+    DismissReplies,
     PRChanged,
     PRListUpdated,
     PurrEvent,
@@ -18,7 +19,7 @@ from purr.messages import (
     Watching,
     WatchRepo,
 )
-from purr.models import PRChange, PRRef
+from purr.models import PRChange, PRRef, PRState, Reply
 from purr.store import Store
 from purr.workers import ActivityWorker, GitHubWorker
 from tests.fakes import FakeGitHub, remote
@@ -112,3 +113,76 @@ async def test_adding_an_unknown_repo_is_rejected(setup):
     with pytest.raises(NotFound, match="isn't being watched"):
         await request(client, UnwatchRepo(repo="nobody/nothing"))
     assert await store.list_repos() == []
+
+
+async def test_replies_to_you_need_you_until_answered(setup):
+    store, github, worker, client = setup
+    await client.next_event(Synced)  # the first poll, with nothing reviewed
+    ref = PRRef("pipecat-ai/pipecat", 1)
+    github.assigned = [remote(1, assignees=("me",))]
+    await worker.poll()
+    assert (await client.next_event(PRChanged)).change == PRChange.ASSIGNED
+    await store.set_pr_state(ref, PRState.DONE)  # reviewed, nothing left to decide
+
+    # Someone answers you: it changed on GitHub, so its conversation is read.
+    alice = Reply("alice", "Fixed it.", "2026-11-21T10:00:00Z", "u1", "bus.py:42")
+    github.conversations[ref] = [alice]
+    github.assigned = [remote(1, assignees=("me",), updated_at="2026-11-21T10:00:00Z")]
+    await worker.poll()
+    event = await client.next_event(PRChanged)
+    assert (event.change, event.by) == (PRChange.REPLIED, "alice")
+    pr = await store.get_pr(ref)
+    assert (pr.state, pr.replies) == (PRState.NEEDS_YOU, (alice,))
+
+    async def news():
+        return await store.unseen() == [(ref, "alice replied")]
+
+    await eventually(news)
+
+    # Nothing changed on GitHub: nothing to read.
+    calls = len(github.replies_calls)
+    await worker.poll()
+    assert len(github.replies_calls) == calls
+
+    # x: no reply needed.
+    await request(client, DismissReplies(pr=ref))
+    pr = await store.get_pr(ref)
+    assert (pr.state, pr.replies) == (PRState.DONE, ())
+
+    # Another one, then you answer it on GitHub.
+    bob = Reply("bob", "Why?", "2026-11-21T11:00:00Z")
+    github.conversations[ref] = [alice, bob]
+    github.assigned = [remote(1, assignees=("me",), updated_at="2026-11-21T11:00:00Z")]
+    await worker.poll()
+    assert (await store.get_pr(ref)).replies == (bob,)
+    assert (await store.get_pr(ref)).state == PRState.NEEDS_YOU
+    github.conversations[ref] = []
+    github.assigned = [remote(1, assignees=("me",), updated_at="2026-11-21T12:00:00Z")]
+    await worker.poll()
+    pr = await store.get_pr(ref)
+    assert (pr.state, pr.replies) == (PRState.DONE, ())
+
+
+async def test_replies_are_read_for_every_reviewed_pr_on_startup():
+    async with Store.connect(":memory:") as store:
+        ref = PRRef("other/repo", 3)
+        github = FakeGitHub()
+        github.assigned = [remote(3, "other/repo", assignees=("me",))]
+        await store.apply_sync(upserts=[github.assigned[0].to_pr("me")])
+        await store.set_pr_state(ref, PRState.DONE)
+        github.conversations[ref] = [Reply("alice", "Thoughts?", "2026-11-21T10:00:00Z")]
+        worker = GitHubWorker(store=store, github=github, interval=3600)
+        runner = WorkerRunner(handle_sigint=False)
+        await runner.add_workers(worker)
+        task = asyncio.create_task(runner.run(auto_end=False))
+        try:
+
+            async def read():
+                pr = await store.get_pr(ref)
+                return pr.state == PRState.NEEDS_YOU and len(pr.replies) == 1
+
+            await eventually(read)
+            assert github.replies_calls == [[ref]]
+        finally:
+            await runner.end()
+            await asyncio.wait_for(task, 5)

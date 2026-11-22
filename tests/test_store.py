@@ -11,6 +11,7 @@ from purr.models import (
     GHState,
     PRRef,
     PRState,
+    Reply,
     ReviewStatus,
     Severity,
 )
@@ -341,3 +342,44 @@ async def test_what_reviews_found_and_how_they_were_planned(store):
         (two, "review: nothing found"),  # nits don't count
         (three, "review: found 1 issue"),
     ]
+
+
+async def test_replies_to_you(store):
+    ref = PRRef("pipecat-ai/pipecat", 1)
+    await store.upsert_pr(make_pr(1))
+    assert (await store.get_pr(ref)).replies == ()
+    assert not await store.waits_on_you(ref)
+
+    alice = Reply("alice", "Fixed.", "2026-11-22T10:00:00Z", "u1", "bus.py:42")
+    bob = Reply("bob", "Why?", "2026-11-22T11:00:00Z")
+    await store.set_replies(ref, [alice])
+    assert (await store.get_pr(ref)).replies == (alice,)
+    assert await store.waits_on_you(ref)
+    # GitHub's metadata changing leaves them.
+    await store.upsert_pr(make_pr(1, title="Renamed"))
+    assert (await store.get_pr(ref)).replies == (alice,)
+
+    # x: they need no answer, the ones seen so far; a later one does.
+    await store.dismiss_replies(ref)
+    assert (await store.get_pr(ref)).replies == ()
+    assert not await store.waits_on_you(ref)
+    await store.set_replies(ref, [alice, bob])
+    assert (await store.get_pr(ref)).replies == (bob,)
+    # You answered on GitHub: none since your last word.
+    await store.set_replies(ref, [])
+    assert (await store.get_pr(ref)).replies == ()
+
+
+async def test_review_requests_and_runs(store):
+    ref = PRRef("pipecat-ai/pipecat", 1)
+    await store.upsert_pr(make_pr(1, requested_from_me=True, assignees=("alice",)))
+    assert (await store.get_pr(ref)).requested_from_me
+    # Asked of you, though someone else has it: still one for you to look at.
+    [summary] = await store.repo_summaries()
+    assert summary.not_reviewed == 1
+
+    assert not await store.running(ref)
+    run = await store.start_run(ref, kind="review", review_id=None, session_id=None)
+    assert await store.running(ref)
+    await store.finish_run(run)
+    assert not await store.running(ref)

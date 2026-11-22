@@ -30,6 +30,7 @@ from purr.messages import (
     ApproveAction,
     AssignMe,
     DismissAction,
+    DismissReplies,
     FetchDetails,
     GetDiff,
     GetWorktree,
@@ -48,11 +49,14 @@ if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
 OTHERS = "others"
+REQUESTED = "requested"
 # Done comes before the pool of unreviewed PRs (hundreds, in a big repo), so
 # the ones you finished lately are at hand: the latest few, search finds the rest.
+# PRs asking for your review come before both: someone's waiting on you.
 _GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
+    (REQUESTED, "◇", "REVIEW REQUESTED", "bold magenta"),
     (PRState.DONE, "✓", "DONE", "bold green"),
     (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
     (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
@@ -86,7 +90,10 @@ class PRList(OptionList):
 
 
 def group(pr: PR) -> str:
-    """Where a PR goes in the list: its review state, or "others" if someone else took it."""
+    """Where a PR goes in the list: its review state; or, not reviewed, "requested" if it
+    asks for your review, "others" if someone else took it."""
+    if pr.state == PRState.NOT_REVIEWED and pr.requested_from_me and not pr.assigned_to_me:
+        return REQUESTED
     if pr.state == PRState.NOT_REVIEWED and pr.others_on_it:
         return OTHERS
     return pr.state
@@ -747,12 +754,17 @@ class RepoView(PurrView):
             await self._answer(state, False)
             return
         pr = self.selected_pr()
-        actions = await self.purr_app.purr.store.pending_actions(pr.ref) if pr else []
-        if actions:
-            try:
+        if pr is None:
+            return
+        store = self.purr_app.purr.store
+        actions = await store.pending_actions(pr.ref)
+        try:
+            if actions:
                 await self.purr_app.bus.request(DismissAction(action_id=actions[0].id))
-            except PurrError as e:
-                self.notify(str(e), severity="warning")
+            elif (current := await store.get_pr(pr.ref)) and current.replies:
+                await self.purr_app.bus.request(DismissReplies(pr=pr.ref))  # no reply needed
+        except PurrError as e:
+            self.notify(str(e), severity="warning")
 
     @work(group="keys")
     async def action_always(self) -> None:

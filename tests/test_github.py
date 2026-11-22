@@ -2,8 +2,17 @@
 
 import pytest
 
-from purr.github import ASSIGNED_QUERY, OPEN_QUERY, UPDATED_QUERY, GitHub, GitHubError, PRStatus
-from purr.models import FileChange, GHState, PRDetails, PRRef
+from purr.github import (
+    ASSIGNED_QUERY,
+    OPEN_QUERY,
+    REQUESTED_QUERY,
+    UPDATED_QUERY,
+    GitHub,
+    GitHubError,
+    PRStatus,
+    replies_to,
+)
+from purr.models import FileChange, GHState, PRDetails, PRRef, Reply
 
 
 def node(number: int, repo: str = "pipecat-ai/pipecat", **overrides) -> dict:
@@ -38,7 +47,7 @@ class FakeGitHub(GitHub):
         self.calls: list[dict] = []
 
     async def graphql(self, query, variables):
-        if "viewer" in query:
+        if query.startswith("query { viewer"):
             return {"data": {"viewer": {"login": "me"}}}
         self.calls.append(variables)
         data, errors = {}, []
@@ -61,9 +70,17 @@ def open_query(repo: str) -> str:
 
 
 async def test_snapshot_follows_pages():
+    requests = {
+        "nodes": [
+            {"requestedReviewer": {"login": "teammate"}},
+            {"requestedReviewer": {}},  # a team
+            {"requestedReviewer": {"login": "Me"}},
+        ]
+    }
     github = FakeGitHub(
         {
             ASSIGNED_QUERY: [page([node(9, "other/repo")], total=1)],
+            REQUESTED_QUERY: [page([node(8, "other/repo", reviewRequests=requests)], total=1)],
             open_query("pipecat-ai/pipecat"): [
                 page([node(1), node(2)], total=3, cursor="1"),
                 page([node(3)], total=3),
@@ -76,6 +93,10 @@ async def test_snapshot_follows_pages():
     assert [pr.number for pr in snapshot.open["pipecat-ai/pipecat"]] == [1, 2, 3]
     assert snapshot.open["pipecat-ai/whisker"] == []
     assert [pr.ref for pr in snapshot.assigned] == [PRRef("other/repo", 9)]
+    [requested] = snapshot.requested
+    assert requested.requested == ("teammate", "Me")  # teams aren't listed
+    assert requested.to_pr("me").requested_from_me
+    assert not snapshot.assigned[0].to_pr("me").requested_from_me
     # One request for the first pages, a second only for the repo with more.
     assert len(github.calls) == 2
     assert [k for k in github.calls[1] if k.startswith("q_")] == ["q_r0"]
@@ -85,11 +106,13 @@ async def test_snapshot_drops_failed_and_incomplete_searches():
     github = FakeGitHub(
         {
             ASSIGNED_QUERY: "rate limited",
+            REQUESTED_QUERY: [page([], total=0)],
             open_query("pipecat-ai/pipecat"): [page([node(1)], total=2)],  # one missing
         }
     )
     snapshot = await github.snapshot(["pipecat-ai/pipecat"])
     assert snapshot.assigned is None
+    assert snapshot.requested == []
     assert snapshot.open == {}
 
 
@@ -127,6 +150,7 @@ async def test_snapshot_incremental_and_pages():
     github = FakeGitHub(
         {
             ASSIGNED_QUERY: [page([], total=0)],
+            REQUESTED_QUERY: [page([], total=0)],
             open_query("a/full"): [
                 page([node(1, "a/full")], total=2, cursor="1"),
                 page([node(2, "a/full")], total=2),
@@ -163,7 +187,7 @@ async def test_snapshot_incremental_and_pages():
 async def test_review_threads():
     class Threads(GitHub):
         async def graphql(self, query, variables):
-            if "viewer" in query:
+            if query.startswith("query { viewer"):
                 return {"data": {"viewer": {"login": "Me"}}}
             comment = {"author": {"login": "me"}, "body": "Race?", "createdAt": "t"}
             thread = {
@@ -226,3 +250,64 @@ async def test_pr_diff(tmp_path):
     assert await github.pr_diff(PRRef("a/b", 2)) == "diff --git a/x b/x\n"
     with pytest.raises(GitHubError, match="^Sorry, the diff exceeded"):
         await github.pr_diff(PRRef("a/b", 3))
+
+
+def said(login: str, at: str, body: str = "", bot: bool = False) -> dict:
+    author = {"login": login, "__typename": "Bot" if bot else "User"}
+    return {"author": author, "createdAt": at, "body": body or f"{login} at {at}", "url": f"u{at}"}
+
+
+def conversation(comments=(), reviews=(), threads=()) -> dict:
+    return {
+        "comments": {"nodes": list(comments)},
+        "reviews": {"nodes": list(reviews)},
+        "reviewThreads": {
+            "nodes": [
+                {"path": path, "line": line, "comments": {"nodes": list(nodes)}}
+                for path, line, nodes in threads
+            ]
+        },
+    }
+
+
+def review(login: str, at: str, state: str = "COMMENTED", body: str = "") -> dict:
+    return {"author": {"login": login}, "submittedAt": at, "state": state, "body": body}
+
+
+def test_replies_to_you_since_your_last_word():
+    pr = conversation(
+        comments=[
+            said("alice", "t1"),  # before you said anything
+            said("Me", "t2"),
+            said("alice", "t3"),
+            said("codecov", "t4", bot=True),
+        ],
+        threads=[
+            ("bus.py", 42, [said("me", "t2"), said("alice", "t5", "Fixed\n  it.")]),
+            ("other.py", 7, [said("bob", "t1"), said("bob", "t6")]),  # not yours
+        ],
+    )
+    assert replies_to("me", pr) == [
+        Reply("alice", "alice at t3", "t3", "ut3"),
+        Reply("alice", "Fixed\n  it.", "t5", "ut5", "bus.py:42"),
+    ]
+
+
+def test_nothing_is_a_reply_until_you_say_something():
+    pr = conversation(comments=[said("alice", "t1")], threads=[("a.py", 1, [said("bob", "t2")])])
+    assert replies_to("me", pr) == []
+
+
+def test_saying_something_on_the_pr_answers_everything_before():
+    threads = [("bus.py", 42, [said("me", "t1"), said("alice", "t2")])]
+    # A review that says something (or decides) answers the threads too.
+    approved = conversation(threads=threads, reviews=[review("me", "t3", "APPROVED")])
+    assert replies_to("me", approved) == []
+    commented = conversation(threads=threads, comments=[said("me", "t3")])
+    assert replies_to("me", commented) == []
+    # Only replying in another thread doesn't (GitHub makes that a review too).
+    elsewhere = conversation(
+        threads=[*threads, ("other.py", 1, [said("bob", "t0"), said("me", "t3")])],
+        reviews=[review("me", "t3")],
+    )
+    assert [reply.at for reply in replies_to("me", elsewhere)] == ["t2"]

@@ -17,6 +17,7 @@ def remote(number: int, repo: str = "pipecat-ai/pipecat", **kwargs) -> RemotePR:
         head_sha=kwargs.get("head_sha", "aaa"),
         updated_at="2026-11-20T10:00:00Z",
         assignees=kwargs.get("assignees", ()),
+        requested=kwargs.get("requested", ()),
     )
 
 
@@ -190,3 +191,36 @@ def test_closed_prs_someone_else_had_go_quietly():
     plan = plan_sync([stored(1, assignees=("alice",))], snapshot, watched=WATCHED)
     assert [ref.number for ref in plan.deletes] == [1]
     assert plan.changes == []
+
+
+def test_review_requests_are_listed_and_news_but_start_nothing():
+    asked = remote(5, repo="other/repo", requested=("me",))
+    pool = remote(1, requested=("Me", "teammate"))
+    snapshot = Snapshot(
+        open={"pipecat-ai/pipecat": [pool]}, assigned=[], requested=[asked, pool], viewer="me"
+    )
+    plan = plan_sync([], snapshot, watched=WATCHED)
+    assert {(pr.number, pr.requested_from_me, pr.assigned_to_me) for pr in plan.upserts} == {
+        (1, True, False),
+        (5, True, False),
+    }
+    assert sorted(changes(plan)) == [(1, PRChange.REQUESTED), (5, PRChange.REQUESTED)]
+
+    # Asked on a PR already listed: news once.
+    snapshot = Snapshot(
+        open={"pipecat-ai/pipecat": [pool]}, assigned=[], requested=[pool], viewer="me"
+    )
+    assert changes(plan_sync([stored(1)], snapshot, watched=WATCHED)) == [(1, PRChange.REQUESTED)]
+    already = [stored(1, requested_from_me=True)]
+    assert plan_sync(already, snapshot, watched=WATCHED).changes == []
+
+
+def test_review_requests_from_other_repos_come_and_go():
+    current = [stored(5, repo="other/repo", requested_from_me=True)]
+    # The requests search failed: nothing to conclude.
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": []}, assigned=[], requested=None)
+    assert plan_sync(current, snapshot, watched=WATCHED).deletes == []
+    # It's no longer asked for (you reviewed it on GitHub, say), and Purr never did.
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": []}, assigned=[], requested=[])
+    plan = plan_sync(current, snapshot, watched=WATCHED)
+    assert plan.deletes == [PRRef("other/repo", 5)]

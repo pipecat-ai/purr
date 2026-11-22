@@ -110,6 +110,14 @@ class DismissAction(Request[Done]):
 
 
 @dataclass(kw_only=True)
+class DismissReplies(Request[Done]):
+    """The PR's replies to you need no answer (the ones Purr has seen)."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class AssignMe(Request[Done]):
     worker: ClassVar[str] = GITHUB_WORKER
     pr: PRRef
@@ -305,12 +313,16 @@ class Synced(PurrEvent):
 
 @dataclass(kw_only=True)
 class PRChanged(PurrEvent):
-    """The poller noticed something about a PR (see :class:`purr.models.PRChange`)."""
+    """The poller noticed something about a PR (see :class:`purr.models.PRChange`).
+
+    ``by`` says who, when it was someone: who replied to you ("alice, bob").
+    """
 
     kind: ClassVar[str] = "pr.changed"
     pr: str
     change: str
     title: str
+    by: str = ""
 
 
 @dataclass(kw_only=True)

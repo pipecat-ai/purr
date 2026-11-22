@@ -12,13 +12,18 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
-from purr.models import PR, FileChange, GHState, PRDetails, PRRef
+from purr.models import PR, FileChange, GHState, PRDetails, PRRef, Reply
 
 # Searches are sorted by creation so that pages stay stable while PRs get updated.
 # A repo's list is every open PR by other people, whoever is assigned: the
 # unassigned ones are the pool, the rest show who's on them.
 OPEN_QUERY = "is:pr is:open archived:false draft:false -author:@me sort:created-desc repo:{repo}"
 ASSIGNED_QUERY = "is:pr is:open archived:false assignee:@me sort:created-desc"
+# PRs asking for your review by name (not through a team), in any repo. Shown,
+# never reviewed on their own: only being assigned starts a review.
+REQUESTED_QUERY = (
+    "is:pr is:open archived:false draft:false user-review-requested:@me sort:created-desc"
+)
 # Every PR in a repo touched since a time, whatever its state: used between full
 # syncs. Being assigned, closed or drafted updates a PR too.
 UPDATED_QUERY = "is:pr archived:false updated:>={since} sort:updated-desc repo:{repo}"
@@ -27,6 +32,7 @@ _PR_FIELDS = """
     number title url state isDraft updatedAt createdAt headRefOid baseRefName
     author { login } authorAssociation
     assignees(first: 20) { nodes { login } }
+    reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }
     repository { nameWithOwner }
 """
 _DETAILS_FIELDS = """
@@ -34,6 +40,13 @@ _DETAILS_FIELDS = """
     labels(first: 10) { nodes { name } }
     files(first: 100) { nodes { path additions deletions } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+"""
+# Who said what on a PR, for replies to you (see replies_to).
+_CONVERSATION_FIELDS = """
+    comments(last: 50) { nodes { author { login __typename } createdAt body url } }
+    reviews(last: 50) { nodes { author { login __typename } submittedAt state body url } }
+    reviewThreads(last: 50) { nodes { path line
+        comments(last: 30) { nodes { author { login __typename } createdAt body url } } } }
 """
 _PAGE_SIZE = 100
 _STATUS_BATCH = 50
@@ -59,6 +72,7 @@ class RemotePR:
     is_draft: bool = False
     state: GHState = GHState.OPEN
     assignees: tuple[str, ...] = ()
+    requested: tuple[str, ...] = ()  # people asked to review it (teams aren't listed)
     base: str = ""  # the branch it merges into
     author_association: str = ""  # OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...
 
@@ -91,6 +105,7 @@ class RemotePR:
             author_association=self.author_association,
             assignees=self.assignees,
             assigned_to_me=me.lower() in {a.lower() for a in self.assignees},
+            requested_from_me=me.lower() in {r.lower() for r in self.requested},
         )
 
 
@@ -102,19 +117,22 @@ class Snapshot:
         open: Fully synced repos: every listed PR in each (open, not a draft,
             not yours), whoever is assigned.
         assigned: Every open PR assigned to you, in any repo.
+        requested: Every open PR asking for your review by name, in any repo.
         updates: Incrementally synced repos: every PR touched since the last
             sync, whatever its state. Absence means "unchanged".
         viewer: Your GitHub login.
 
     Only complete results are included: a repo whose search failed or came back
     partial is missing from ``open``/``updates``, and ``assigned`` is None if
-    that search did. Absence from an incomplete result says nothing about a PR.
+    that search did (``requested`` likewise). Absence from an incomplete result
+    says nothing about a PR.
     """
 
     open: dict[str, list[RemotePR]]
     assigned: list[RemotePR] | None
     updates: dict[str, list[RemotePR]] = field(default_factory=dict)
     viewer: str | None = None
+    requested: list[RemotePR] | None = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -136,6 +154,11 @@ def _remote_pr(node: dict) -> RemotePR:
         is_draft=node["isDraft"],
         state=GHState(node.get("state", "OPEN").lower()),
         assignees=tuple(a["login"] for a in (node.get("assignees") or {}).get("nodes", [])),
+        requested=tuple(
+            login
+            for request in _nodes(node.get("reviewRequests"))
+            if (login := (request.get("requestedReviewer") or {}).get("login"))
+        ),
         base=node.get("baseRefName") or "",
         author_association=node.get("authorAssociation") or "",
     )
@@ -227,8 +250,8 @@ class GitHub:
         *,
         on_page: Callable[[str, list[RemotePR]], Awaitable[None]] | None = None,
     ) -> Snapshot:
-        """Fetch watched repos and the PRs assigned to you, in as few requests as possible
-        (one per page of results, all searches batched together).
+        """Fetch watched repos and the PRs assigned to you or asking for your review, in as
+        few requests as possible (one per page of results, all searches batched together).
 
         Args:
             full: Repos to fetch every listed PR of.
@@ -237,7 +260,7 @@ class GitHub:
                 arrives, so a newly added repo can show up before all pages are in.
         """
         incremental = dict(incremental or {})
-        searches = {"assigned": ASSIGNED_QUERY}
+        searches = {"assigned": ASSIGNED_QUERY, "requested": REQUESTED_QUERY}
         full_aliases: dict[str, str] = {}
         updated_aliases: dict[str, str] = {}
         for i, repo in enumerate(full):
@@ -258,6 +281,7 @@ class GitHub:
             assigned=results.get("assigned"),
             updates={updated_aliases[a]: prs for a, prs in results.items() if a in updated_aliases},
             viewer=viewer,
+            requested=results.get("requested"),
         )
 
     async def _search_all(
@@ -382,33 +406,105 @@ class GitHub:
                     )
         return statuses
 
-    async def pr_details(self, refs: Iterable[PRRef]) -> dict[PRRef, PRDetails]:
-        """Description, files and CI state of specific PRs. PRs that can't be read are left out."""
+    async def replies(self, refs: Iterable[PRRef]) -> dict[PRRef, list[Reply]]:
+        """What others said to you on these PRs since your last word (see :func:`replies_to`).
+
+        PRs that can't be read are left out.
+        """
+        me = await self.viewer_login()
+        return {
+            ref: replies_to(me, pr)
+            for ref, pr in (await self._pull_requests(refs, _CONVERSATION_FIELDS)).items()
+        }
+
+    async def _pull_requests(self, refs: Iterable[PRRef], fields: str) -> dict[PRRef, dict]:
+        """``fields`` of specific PRs, a batch per request. PRs that can't be read are left out."""
         refs = list(refs)
-        details: dict[PRRef, PRDetails] = {}
+        found: dict[PRRef, dict] = {}
         for start in range(0, len(refs), _DETAILS_BATCH):
             batch = refs[start : start + _DETAILS_BATCH]
             declared = ", ".join(
                 f"$o{i}: String!, $n{i}: String!, $k{i}: Int!" for i in range(len(batch))
             )
-            fields = " ".join(
+            selections = " ".join(
                 f"t{i}: repository(owner: $o{i}, name: $n{i}) {{"
-                f" pullRequest(number: $k{i}) {{ {_DETAILS_FIELDS} }} }}"
+                f" pullRequest(number: $k{i}) {{ {fields} }} }}"
                 for i in range(len(batch))
             )
             variables: dict[str, str | int | None] = {}
             for i, ref in enumerate(batch):
                 owner, _, name = ref.repo.partition("/")
                 variables.update({f"o{i}": owner, f"n{i}": name, f"k{i}": ref.number})
-            body = await self.graphql(f"query({declared}) {{ {fields} }}", variables)
+            body = await self.graphql(f"query({declared}) {{ {selections} }}", variables)
             for i, ref in enumerate(batch):
                 if pr := (body["data"].get(f"t{i}") or {}).get("pullRequest"):
-                    details[ref] = _details(pr)
-        return details
+                    found[ref] = pr
+        return found
+
+    async def pr_details(self, refs: Iterable[PRRef]) -> dict[PRRef, PRDetails]:
+        """Description, files and CI state of specific PRs. PRs that can't be read are left out."""
+        found = await self._pull_requests(refs, _DETAILS_FIELDS)
+        return {ref: _details(pr) for ref, pr in found.items()}
 
 
 def _nodes(connection: dict | None) -> list[dict]:
     return [node for node in (connection or {}).get("nodes") or [] if node]
+
+
+def replies_to(me: str, pr: dict) -> list[Reply]:
+    """What others said to ``me`` on a PR (its GraphQL node) after their last word, oldest first.
+
+    - On the PR itself: anyone's comments after anything you said there.
+    - In a review thread you're in: anyone's comments after your last one in it, or
+      your last word on the PR (a comment, or a review that says something: one
+      that's only thread comments doesn't answer the other threads).
+
+    Bots don't count, and nothing does until you've said something.
+    """
+    me = me.lower()
+
+    def by_me(node: dict) -> bool:
+        return (node.get("author") or {}).get("login", "").lower() == me
+
+    def counts(node: dict, after: str) -> bool:
+        author = node.get("author") or {}
+        return not by_me(node) and author.get("__typename") != "Bot" and node["createdAt"] > after
+
+    def reply(node: dict, where: str = "") -> Reply:
+        login = (node.get("author") or {}).get("login", "ghost")
+        return Reply(
+            login,
+            _clip(node.get("body") or "", 500),
+            node["createdAt"],
+            node.get("url") or "",
+            where,
+        )
+
+    comments = _nodes(pr.get("comments"))
+    threads = [
+        (thread, _nodes(thread.get("comments"))) for thread in _nodes(pr.get("reviewThreads"))
+    ]
+    reviews = [r for r in _nodes(pr.get("reviews")) if by_me(r) and r.get("submittedAt")]
+    on_pr = [c["createdAt"] for c in comments if by_me(c)]
+    on_pr += [
+        r["submittedAt"]
+        for r in reviews
+        if (r.get("body") or "").strip() or r.get("state") != "COMMENTED"
+    ]
+    in_threads = [c["createdAt"] for _, nodes in threads for c in nodes if by_me(c)]
+    if not on_pr and not in_threads and not reviews:
+        return []
+    last_word = max([*on_pr, *in_threads, *(r["submittedAt"] for r in reviews)])
+    replies = [reply(c) for c in comments if counts(c, last_word)]
+    for thread, nodes in threads:
+        mine = [c["createdAt"] for c in nodes if by_me(c)]
+        if not mine:
+            continue
+        after = max([*mine, *on_pr])
+        path, line = thread.get("path") or "", thread.get("line")
+        where = f"{path}:{line}" if path and line else path
+        replies += [reply(c, where) for c in nodes if counts(c, after)]
+    return sorted(replies, key=lambda r: r.at)
 
 
 def _details(pr: dict) -> PRDetails:

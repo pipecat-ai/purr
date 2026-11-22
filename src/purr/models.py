@@ -50,6 +50,8 @@ class PRChange(StrEnum):
     NEW_COMMITS = "new_commits"  # head moved on a PR Purr has reviewed
     CLOSED = "closed"
     MERGED = "merged"
+    REQUESTED = "requested"  # someone asked for your review (doesn't start one)
+    REPLIED = "replied"  # someone answered you on a PR you reviewed
 
 
 class ActionKind(StrEnum):
@@ -104,6 +106,20 @@ class PRRef:
         return cls(repo=match["repo"], number=int(match["number"]))
 
 
+@dataclass(frozen=True)
+class Reply:
+    """Something said to you on a PR after your last word there (see ``GitHub.replies``).
+
+    ``where`` is ``path:line`` for a reply in a review thread, "" on the PR itself.
+    """
+
+    author: str
+    body: str
+    at: str
+    url: str = ""
+    where: str = ""
+
+
 @dataclass
 class PR:
     repo: str
@@ -120,10 +136,13 @@ class PR:
     author_association: str = ""
     assignees: tuple[str, ...] = ()
     assigned_to_me: bool = False
+    requested_from_me: bool = False  # your review is requested (by name, not as a team)
     state: PRState = PRState.NOT_REVIEWED
     gh_state: GHState = GHState.OPEN
     model: str | None = None  # you chose it for the PR's conversation (/model)
     state_at: str | None = None  # when it got to its state (done: when you finished)
+    # Replies to you you haven't answered (or said need no answer), oldest first.
+    replies: tuple[Reply, ...] = ()
     id: int | None = None
 
     @property

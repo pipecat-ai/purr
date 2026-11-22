@@ -10,7 +10,7 @@ from the TUI, or in Claude Code itself (``claude --resume``).
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -43,7 +43,7 @@ from claude_agent_sdk.types import (
 )
 
 from purr.claude import log_stderr
-from purr.models import PR, ActionKind, Finding, ReviewPlan, Severity
+from purr.models import PR, ActionKind, Finding, Reply, ReviewPlan, Severity
 from purr.review.instructions import ReviewInstructions
 from purr.review.plan import plan_section
 from purr.review.policy import GITHUB_DENY_RULES, github_write
@@ -105,13 +105,33 @@ def set_aside_note(proposals: list[str]) -> str:
     )
 
 
-_NOTE = re.compile(r"\A\s*<purr-note>.*?</purr-note>\s*", re.DOTALL)
+def replies_note(replies: Sequence[Reply]) -> str:
+    """For the agent, ahead of your message: what others said to you on GitHub since your
+    last word there, so it can help you answer (it's in no review thread it can read)."""
+
+    def said(reply: Reply) -> str:
+        where = f"on {reply.where}" if reply.where else "on the PR"
+        body = reply.body.replace("purr-note>", "purr-note]")  # can't end the note early
+        return f"- {reply.author}, {where} ({reply.at}): {body}"
+
+    return (
+        "<purr-note>Since the user's last word on GitHub, others said this to them there, "
+        "still unanswered:\n" + "\n".join(said(reply) for reply in replies) + "\nTo answer "
+        "one, propose it (propose_action): a reply in its thread (get_review_threads has the "
+        "ids), or a comment for one on the PR.</purr-note>\n\n"
+    )
+
+
+# Purr's notes ahead of a message of yours (the transcript leaves them out).
+_NOTE = re.compile(r"\A(?:\s*<purr-note>.*?</purr-note>)+\s*", re.DOTALL)
+_SET_ASIDE = re.compile(r"<purr-note>The user wrote instead of approving.*?</purr-note>", re.DOTALL)
 
 
 def set_aside_in(message: str) -> list[str]:
     """The proposals a message of yours set aside, from its note to the agent."""
-    note = _NOTE.match(message)
-    return re.findall(r"“(.+?)”", note.group(0)) if note else []
+    notes = _NOTE.match(message)
+    aside = _SET_ASIDE.search(notes.group(0)) if notes else None
+    return re.findall(r"“(.+?)”", aside.group(0)) if aside else []
 
 
 RESUME_PROMPT = (

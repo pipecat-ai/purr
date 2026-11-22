@@ -93,10 +93,10 @@ Two things keep this cheap:
 |---|---|
 | **Not reviewed** | The pool: open PRs in watched repos that nobody is reviewing (no assignee). Also PRs assigned to you that haven't been reviewed yet (with auto-review off). |
 | **Reviewing** | A review session is running. |
-| **Needs you** | Review finished (or agent is blocked) and a decision is pending: post comments, request changes, approve, merge, or answer a question. |
+| **Needs you** | Review finished (or agent is blocked) and a decision is pending: post comments, request changes, approve, merge, or answer a question. Or someone answered you on GitHub since your last word there (see Replies). |
 | **Done** | Decision made, nothing pending. |
 
-"Needs you" is pinned to the top of the list. **Done** comes before the pool of unreviewed PRs (hundreds, in a big repo), so what you finished lately is at hand: the latest 5, by when they got there (`prs.state_at`, which moves only when the state does), with `/` finding the others; an older one you go to (an alert, `ctrl+p`, a search) shows too while it's selected. PRs someone else is assigned to aren't a state of their own: they sit at the end of the list as **Others reviewing**, with who has them, so you can see what's taken.
+"Needs you" is pinned to the top of the list. **Done** comes before the pool of unreviewed PRs (hundreds, in a big repo), so what you finished lately is at hand: the latest 5, by when they got there (`prs.state_at`, which moves only when the state does), with `/` finding the others; an older one you go to (an alert, `ctrl+p`, a search) shows too while it's selected. PRs someone else is assigned to aren't a state of their own: they sit at the end of the list as **Others reviewing**, with who has them, so you can see what's taken. PRs asking for your review by name (see Triggers) aren't a state either: not reviewed yet, they're grouped as **Review requested**, after Reviewing, apart from the pool.
 
 ## Triggers
 
@@ -105,11 +105,20 @@ Two ways in, same result:
 1. **From GitHub**: assign yourself to a PR on the web, in any repo (watched or not). The poller (every ~60s, via the GitHub API or `gh`) detects open PRs assigned to you that have no review yet and dispatches a review job automatically. Polling, not webhooks, because the app runs locally.
 2. **From the app**: select a PR to read its description, files and CI first, then press `r` (or mark several and press `r`). The app dispatches review jobs **and assigns you on GitHub**, so teammates see you've taken it. On a PR someone else has, `r` asks first and adds you next to them.
 
-Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs explicitly assigned to you (avoids burning tokens on PRs others handle). How deep each review goes, what it focuses on and what goes first is up to the lead (see The lead); both ways in go through it.
+Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs explicitly assigned to you (avoids burning tokens on PRs others handle).
+
+**Review requests don't start a review**, only assignment does; otherwise Purr would review far too much. They're shown, though: requests for your review by name (GitHub's `user-review-requested:@me`, in any repo; team requests don't count) are news ("asks for your review") and sit in their own group, **Review requested**, so the PRs the core team was asked to look at stand apart from the rest of the pool. `r` reviews one and assigns you, as anywhere. How deep each review goes, what it focuses on and what goes first is up to the lead (see The lead); both ways in go through it.
 
 **The pool** ("Not reviewed") is the open PRs in the watched repos that nobody is reviewing. Starting a review assigns you, and teammates assign themselves when they review, so "nobody is reviewing it" simply means "no assignee". A PR leaves the pool as soon as someone is assigned (it moves to "Others reviewing") or it's closed. Drafts and your own PRs aren't listed.
 
-**Polling** uses GitHub's GraphQL search through `gh`, batching every search into one request per page. Each watched repo has one search: its open, non-draft PRs by other people, with author, opened date and assignees, which splits into the pool and "Others reviewing". It stays lean on purpose (pipecat: 337 PRs in 4 pages). Adding descriptions and file lists made a 100-PR page take 5.8 s instead of about 2 s, so those are fetched when you look at a PR (see Repo screen). A search takes 1-2 s regardless of size, and a big repo's pool is several pages (pipecat: 4), so a repo is fully synced only on startup, when added, and every 15 minutes. Polls in between fetch just the PRs updated since the last sync (5 minutes of overlap for search-index lag), which is usually one request of about a second. A newly added repo's pool is shown page by page as it arrives. A search that fails or comes back incomplete never removes anything.
+**Polling** uses GitHub's GraphQL search through `gh`, batching every search into one request per page. Each watched repo has one search: its open, non-draft PRs by other people, with author, opened date and assignees, which splits into the pool and "Others reviewing". It stays lean on purpose (pipecat: 337 PRs in 4 pages). Adding descriptions and file lists made a 100-PR page take 5.8 s instead of about 2 s, so those are fetched when you look at a PR (see Repo screen). A search takes 1-2 s regardless of size, and a big repo's pool is several pages (pipecat: 4), so a repo is fully synced only on startup, when added, and every 15 minutes. Polls in between fetch just the PRs updated since the last sync (5 minutes of overlap for search-index lag), which is usually one request of about a second. A newly added repo's pool is shown page by page as it arrives. A search that fails or comes back incomplete never removes anything. Besides the repos' searches, every poll runs two across all repos: PRs assigned to you, and PRs asking for your review (each PR's search result carries its review requests, so a request made or withdrawn shows up in the incremental updates too).
+
+**Replies.** Once you've reviewed a PR, Purr keeps an eye on the other side of the conversation: after a poll, it reads the comments on the reviewed PRs that changed on GitHub (on the first poll after startup, all of them; one batched request, about half a second), and works out what was said to you since your last word there (`replies_to` in `github.py`):
+
+- on the PR itself, anyone's comments after anything you said on it;
+- in a review thread you're in, anyone's comments after your last one in it, or after your last word on the PR (a comment, or a review that says something or decides; one that's only replies in other threads doesn't answer this one).
+
+Bots (Codecov, CI) don't count, and nothing does until you've said something. A PR with replies you haven't answered **needs you**: it moves from Done to Needs you, it's news ("alice replied"), and its pane shows them, the latest three, under the transcript where proposals go: who, where (`bus.py:42`) and what. `x` says they need no answer (the ones seen so far: `prs.replies_done_at`); answering on GitHub, or posting a proposal through Purr, answers them. Either way the PR goes back to Done, unless something else needs you (a proposal, a failed review, an agent at work). Replies are kept per PR (`prs.replies`, JSON), and the next read replaces them. Writing to the PR's agent while replies wait carries them along in a note (a `<purr-note>`, which the transcript leaves out), since a comment on the PR is in no review thread it can read, so "answer alice" works.
 
 ## The lead
 
@@ -257,11 +266,12 @@ Jobs:
 - `FetchDetails {prs}` (GitHub worker): description, base and head branches, +/- lines, files, labels, review decision and CI state of some PRs, batched 20 to a request.
 - `GetDiff {pr}` (git worker): the PR's unified diff, from Purr's clone, or from GitHub if the clone doesn't have the PR's head yet.
 - `GetWorktree {pr}` (git worker): the PR's worktree, made again if it was removed (for `c`).
+- `DismissReplies {pr}` (GitHub worker): the PR's replies to you need no answer (`x`).
 - `ApproveAction {action_id}` / `DismissAction {action_id}` (GitHub worker). Approving claims the action atomically (so keys and voice can't post it twice), posts the GitHub review with its inline comments, and marks the PR Done once nothing is pending. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. **What Purr posts says so:** the review's text and each reply in a thread end with `<sub>Sent from Purr.</sub>` (the `signature` setting; empty turns it off). Inline comments don't: they belong to the review, whose text already says it, and one under every comment would be noise. An approval with nothing to say is just the signature. The proposal in the PR's conversation shows it too, so `a` still posts exactly what you read.
 
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)
-- `pr.changed {pr, change, title}` (from the poller: assigned, unassigned, pooled, unpooled, new_commits, closed, merged)
+- `pr.changed {pr, change, title, by}` (from the poller: assigned, unassigned, pooled, unpooled, new_commits, closed, merged, requested, replied; `by` says who replied)
 - `review.started {pr, plan}`
 - `review.progress {pr, ...}`
 - `review.finished {pr, summary, findings}`
@@ -380,7 +390,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 
 ### Alerts from other repos
 
-News is something you'd want to know that happened since you last looked at a PR: it was assigned to you, its review finished or failed, or its agent needs your OK. Review progress doesn't count.
+News is something you'd want to know that happened since you last looked at a PR: it was assigned to you, someone asked for your review, its review finished or failed, its agent needs your OK, or someone replied to you. Review progress doesn't count.
 
 - **The top bar says one short thing about other repos**, on every screen, so you know to go and look: the latest news there if there's any (`🔔 2 · whisker#112 review: found 2 issues  (ctrl+n)`), otherwise how many PRs need you there (`⚠ 3 need you in other repos  (0)`). `0` goes to the repo list, which says where: a ● after each repo with news, and its NEEDS YOU count.
 - **In a repo, PRs with news have their title in bold**, like unread mail, until you look at them. News about the PR you're looking at isn't news.
@@ -407,7 +417,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `space` mark/unmark PR
 - `r` start review on marked PRs (or the selected one), assigning you
 - `d` the selected PR's full diff in your pager
-- `a` / `x` answer the box under the transcript: approve or dismiss a pending action, allow or deny a permission request
+- `a` / `x` answer the box under the transcript: approve or dismiss a pending action, allow or deny a permission request; `x` also says replies to you need no answer
 - `z` zoom the PR session to full screen
 - `c` open the PR's session in Claude Code
 - `i` edit your review style or code style (this repo's inside a repo, the general ones at home)

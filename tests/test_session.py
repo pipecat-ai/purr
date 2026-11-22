@@ -1,6 +1,7 @@
 from rich.console import Console
 
-from purr.tui.session import render_entry
+from purr.models import Reply
+from purr.tui.session import render_entry, render_replies, replied
 
 
 def rendered(entry) -> str:
@@ -45,3 +46,31 @@ def test_reasoning_is_shown():
     assert "Check the lock file first." in rendered(
         {"kind": "thinking", "text": "Check the lock file first."}
     )
+
+
+def test_replies_say_who_and_where():
+    alice = Reply("alice", "Fixed it,\n  see the test.", "t1", where="bus.py:42")
+    bob = Reply("bob", "Why?", "t2")
+    assert replied([alice]) == "alice replied"
+    assert replied([alice, bob, Reply("alice", "Ping", "t3")]) == "alice and bob replied (3)"
+    text = render_replies([alice, bob]).plain
+    assert text.splitlines() == [
+        "alice and bob replied (2):",
+        "  alice · bus.py:42: Fixed it, see the test.",
+        "  bob: Why?",
+        "[x] no reply needed   or answer: here (ask the agent) or on GitHub",
+    ]
+
+
+def test_prs_asking_for_your_review_have_their_own_group():
+    from dataclasses import replace
+
+    from purr.models import PR, PRState
+    from purr.tui.screens import OTHERS, REQUESTED, group
+
+    pr = PR("a/b", 1, "Fix", "someone", "u", "abc", "t", requested_from_me=True)
+    assert group(pr) == REQUESTED
+    assert group(replace(pr, assignees=("alice",))) == REQUESTED  # asked of you all the same
+    assert group(replace(pr, requested_from_me=False, assignees=("alice",))) == OTHERS
+    assert group(replace(pr, assigned_to_me=True, assignees=("me",))) == PRState.NOT_REVIEWED
+    assert group(replace(pr, state=PRState.DONE)) == PRState.DONE

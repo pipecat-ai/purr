@@ -29,6 +29,9 @@ class FakeGitHub:
         self.diff_calls: list = []
         self.updates: dict[str, list[RemotePR]] = {}
         self.assigned: list[RemotePR] = []
+        self.requested: list[RemotePR] = []
+        self.conversations: dict = {}  # PRRef -> [Reply], what replies() answers
+        self.replies_calls: list[list] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
 
     async def repo_name(self, name: str) -> str | None:
@@ -45,6 +48,7 @@ class FakeGitHub:
             assigned=list(self.assigned),
             updates={r: list(self.updates.get(r, [])) for r in incremental},
             viewer="me",
+            requested=list(self.requested),
         )
 
     async def viewer_login(self):
@@ -61,6 +65,11 @@ class FakeGitHub:
     async def pr_diff(self, ref):
         self.diff_calls.append(ref)
         return self.diffs.get(ref, "")
+
+    async def replies(self, refs):
+        refs = list(refs)
+        self.replies_calls.append(refs)
+        return {ref: list(self.conversations.get(ref, [])) for ref in refs}
 
     async def review_threads(self, ref):
         return list(getattr(self, "threads", []))
