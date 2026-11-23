@@ -86,6 +86,7 @@ def test_a_box_for_each_comment_under_its_line():
         "            │ Race here                        │",
         "            ╰──────────────────────────────────╯",
         "            ╶─ ▸ carol · resolved ─ Typo ─╴",  # shut: its top line, and how it starts
+        "            ⋯ the rest of the file (tab)",  # after the last hunk
         "            ╭─ ▾ dave · outdated ──────────────╮",  # on no line of this diff: last
         "            │ Old code                         │",
         "            ╰──────────────────────────────────╯",
@@ -201,4 +202,37 @@ def test_code_in_no_known_language_is_plain():
         "            @@ -1 +1 @@",
         "    1       -a",
         "         1  +b",
+        "            ⋯ the rest of the file (tab)",
     ]
+
+
+def test_lines_left_out_around_the_hunks_shown_from_the_file():
+    [file] = parse("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -4,2 +4,2 @@ def f():\n"
+                   " x\n-y\n+Y\n")  # fmt: skip
+    hunk = ["    4    4   x", "    5       -y", "         5  +Y"]
+    header = "  @@ -4,2 +4,2 @@ def f():"
+    # Before the file's read: its hunk's header says what's above it; after the last
+    # hunk, there's the rest of the file.
+    assert plain(rows([file], {0}, [])) == [
+        "▾ a.py  +1 −1",
+        "            ⋯ 3 lines (tab)" + header,
+        *hunk,
+        "            ⋯ the rest of the file (tab)",
+    ]
+    # Shown: above the header, and below the row after the last hunk.
+    source = "l1\nl2\nl3\nx\nY\nl6\n"
+    shown = rows([file], {0}, [], revealed={(0, 0), (0, 4)}, sources={"a.py": source})
+    assert plain(shown) == [
+        "▾ a.py  +1 −1",
+        "    1    1   l1",
+        "    2    2   l2",
+        "    3    3   l3",
+        "            ▴ 3 lines (tab)" + header,
+        *hunk,
+        "            ▾ 1 more line (tab)",
+        "    6    6   l6",
+    ]
+    assert all(row.line.outside for row in shown if row.line and row.line.new in (1, 2, 3, 6))
+    # A file that ends with the last hunk: nothing after it.
+    ends = rows([file], {0}, [], sources={"a.py": "l1\nl2\nl3\nx\nY\n"})
+    assert plain(ends)[-1] == "         5  +Y"

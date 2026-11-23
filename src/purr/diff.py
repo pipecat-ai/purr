@@ -3,6 +3,9 @@
 GitHub places an inline comment by file, line and side: a line the PR adds or
 keeps is on the ``RIGHT`` (its number in the PR's version), a line it deletes on
 the ``LEFT`` (its number in the base). Only lines in the diff's hunks take one.
+
+What the diff leaves out of a file, around its hunks, are its gaps (:func:`gaps`):
+lines the PR doesn't change, which can be shown from the file as it is in the PR.
 """
 
 import re
@@ -35,6 +38,7 @@ class Line:
     text: str  # as in the diff, its +/-/space included
     old: int | None = None
     new: int | None = None
+    outside: bool = False  # from a gap, shown around the hunks: not one to comment on
 
     def target(self) -> tuple[int, str] | None:
         """Where a comment on it goes: (line, side); None if it can't take one."""
@@ -67,6 +71,46 @@ class File:
     def at(self, line: int, side: str) -> int | None:
         """The index of the line a comment at (line, side) is on, if it's in the diff."""
         return next((i for i, x in enumerate(self.lines) if x.target() == (line, side)), None)
+
+
+@dataclass(frozen=True)
+class Gap:
+    """Lines a file's diff leaves out: before the hunk whose header is ``file.lines[at]``,
+    or after the last hunk (``at`` is ``len(file.lines)``). From ``first`` to ``last`` in
+    the PR's version (``last`` None: to the end of the file, which the diff doesn't say);
+    in the base, each is ``offset`` lines earlier."""
+
+    at: int
+    first: int
+    last: int | None
+    offset: int
+
+    def lines(self, source: list[str]) -> list[Line]:
+        """Its lines, from the file as it is in the PR (``source``, a line each)."""
+        last = len(source) if self.last is None else min(self.last, len(source))
+        return [
+            Line(" ", f" {source[new - 1]}", new - self.offset, new, outside=True)
+            for new in range(self.first, last + 1)
+        ]
+
+
+@lru_cache(maxsize=64)
+def gaps(file: File) -> tuple[Gap, ...]:
+    """What the file's diff leaves out, around its hunks. Nothing for a file the PR adds or
+    deletes (all of it is in the diff), or one with no hunks (binary, only renamed)."""
+    if not file.lines or file.note.startswith(("new file", "deleted", "binary")):
+        return ()
+    found: list[Gap] = []
+    old = new = 0  # the last line numbers seen, in the base and the PR
+    for index, line in enumerate(file.lines):
+        if line.kind == "@@" and (hunk := _HUNK.match(line.text)):
+            old_start, new_start = int(hunk[1]), int(hunk[2])
+            if new_start > new + 1:
+                found.append(Gap(index, new + 1, new_start - 1, new_start - old_start))
+        old, new = line.old or old, line.new or new
+    if file.lines[-1].kind != "\\":  # git says when the file ends without a newline
+        found.append(Gap(len(file.lines), new + 1, None, new - old))
+    return tuple(found)
 
 
 @lru_cache(maxsize=16)  # a PR's pane redraws often, from the same diff

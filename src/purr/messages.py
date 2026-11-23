@@ -353,6 +353,20 @@ class GetDiff(Request[PRDiff]):
 
 
 @dataclass(kw_only=True)
+class FileText:
+    text: str
+
+
+@dataclass(kw_only=True)
+class GetFile(Request[FileText]):
+    """A file as it is in the PR (at its head): for the diff's lines around the changes."""
+
+    worker: ClassVar[str] = GIT_WORKER
+    pr: PRRef
+    path: str
+
+
+@dataclass(kw_only=True)
 class Worktree:
     path: str
 

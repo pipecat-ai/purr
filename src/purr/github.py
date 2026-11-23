@@ -10,6 +10,7 @@ import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TypeAlias
+from urllib.parse import quote
 
 from loguru import logger
 
@@ -319,8 +320,19 @@ class GitHub:
 
     async def pr_diff(self, ref: PRRef) -> str:
         """The PR's unified diff (what ``gh pr diff`` shows). GitHub refuses very big ones."""
-        args = [self._gh, "api", f"repos/{ref.repo}/pulls/{ref.number}"]
-        args += ["-H", "Accept: application/vnd.github.diff"]
+        return await self._raw(
+            f"repos/{ref.repo}/pulls/{ref.number}", "application/vnd.github.diff"
+        )
+
+    async def file_at(self, repo: str, path: str, sha: str) -> str:
+        """A file as it is at commit ``sha``."""
+        return await self._raw(
+            f"repos/{repo}/contents/{quote(path)}?ref={sha}", "application/vnd.github.raw"
+        )
+
+    async def _raw(self, endpoint: str, accept: str) -> str:
+        """What a REST endpoint answers, as text (``accept``: the kind)."""
+        args = [self._gh, "api", endpoint, "-H", f"Accept: {accept}"]
         try:
             process = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

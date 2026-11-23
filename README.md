@@ -58,8 +58,9 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 3. **Talk to the agent** (`enter` goes to the prompt): ask, dig in, or change what it
    proposes. `tab` takes the suggestion. `esc` in its pane stops it while it works.
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation, the code in its
-   language's colors on green and red. Select lines (`shift+↑`/`↓`) and press `enter` to ask
-   the agent about them, or `c` to comment on them.
+   language's colors on green and red; `tab` on a change's `@@` line shows the lines around it.
+   Select lines (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to
+   comment on them.
    Comments show in boxes under their lines (yours, the agent's and GitHub's), and what's
    said on the PR itself is at the top. Yours go to GitHub when you save them: `enter` on one
    edits it there and `x` deletes it (after asking); `r` on anyone's replies, quoting it.
@@ -86,6 +87,7 @@ work everywhere. The main ones:
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |
 | `d` / `D` | The diff, to read, ask about (`enter`) and comment on (`c`) / in your pager |
 | `shift+↑` `shift+↓` | In the diff: select lines (`ctrl+space` sets a mark, as in Emacs) |
+| `tab` | In the diff: open or shut a file or a comment; on a change's `@@` line, the lines around it |
 | `m` | Merge a PR you approved: once to see where it stands, again to merge |
 | `t` / `z` | The agent's reasoning in full / full screen |
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |

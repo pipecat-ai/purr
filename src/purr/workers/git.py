@@ -14,7 +14,9 @@ from purr.jobs import Failed, NotFound, handles
 from purr.messages import (
     GIT_WORKER,
     ActionResolved,
+    FileText,
     GetDiff,
+    GetFile,
     GetWorktree,
     PRChanged,
     PRDiff,
@@ -157,3 +159,17 @@ class GitWorker(BaseWorker):
             except GitHubError as e:
                 raise Failed(f"Couldn't read the diff from GitHub: {e}") from e
         return PRDiff(diff=diff[:MAX_DIFF_CHARS])
+
+    @handles(GetFile)
+    async def get_file(self, request: GetFile) -> FileText:
+        """A file at the PR's head: from the clone, or from GitHub if it isn't synced."""
+        pr = await self._store.get_pr(request.pr)
+        if pr is None:
+            raise NotFound(f"Purr doesn't know {request.pr}")
+        text = await self._repos.file_at(pr, request.path)
+        if text is None:
+            try:
+                text = await self._github.file_at(pr.repo, request.path, pr.head_sha)
+            except GitHubError as e:
+                raise Failed(f"Couldn't read {request.path} from GitHub: {e}") from e
+        return FileText(text=text)

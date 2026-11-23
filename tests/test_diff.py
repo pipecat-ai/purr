@@ -51,3 +51,56 @@ def test_where_a_comment_goes():
     assert targets == [None, (10, "RIGHT"), (11, "LEFT"), (11, "RIGHT"), (12, "RIGHT"),
                        (12, "LEFT"), (13, "RIGHT")]  # fmt: skip
     assert bus.at(12, "RIGHT") == 4 and bus.at(12, "LEFT") == 5 and bus.at(99, "RIGHT") is None
+
+
+GAPPED = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -10,3 +10,4 @@ def f():
+ a
+-b
++B
++C
+ c
+@@ -30,2 +31,2 @@ def g():
+ x
+-y
++Y
+"""
+
+
+def test_what_the_diff_leaves_out_around_its_hunks():
+    from purr.diff import Gap, gaps
+
+    [file] = parse(GAPPED)
+    # Before the first hunk, between the hunks, and after the last (to the end, which
+    # the diff doesn't say); numbered in the PR, each so many lines later than the base.
+    assert gaps(file) == (
+        Gap(at=0, first=1, last=9, offset=0),
+        Gap(at=6, first=14, last=30, offset=1),
+        Gap(at=10, first=33, last=None, offset=1),
+    )
+    source = [f"line {n}" for n in range(1, 36)]
+    between = gaps(file)[1].lines(source)
+    assert (between[0].old, between[0].new, between[0].text) == (13, 14, " line 14")
+    assert (between[-1].old, between[-1].new) == (29, 30)
+    assert all(line.outside and line.target() == (line.new, "RIGHT") for line in between)
+    end = gaps(file)[2].lines(source)
+    assert [(line.old, line.new) for line in end] == [(32, 33), (33, 34), (34, 35)]
+
+
+def test_nothing_left_out_of_new_or_deleted_files_or_after_the_last_line():
+    from purr.diff import gaps
+
+    new, deleted = parse(
+        "diff --git a/n.py b/n.py\nnew file mode 100644\n--- /dev/null\n+++ b/n.py\n"
+        "@@ -0,0 +1 @@\n+x\n"
+        "diff --git a/d.py b/d.py\ndeleted file mode 100644\n--- a/d.py\n+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n-x\n"
+    )
+    assert gaps(new) == gaps(deleted) == ()
+    [ends] = parse(
+        "diff --git a/e.py b/e.py\n--- a/e.py\n+++ b/e.py\n@@ -1 +1 @@\n-x\n+y\n"
+        "\\ No newline at end of file\n"
+    )
+    assert gaps(ends) == ()

@@ -1636,6 +1636,62 @@ async def test_esc_zooms_out_first(tmp_path):
         await until(pilot, lambda: home(app))
 
 
+async def test_tab_shows_the_lines_around_the_changes(tmp_path):
+    from purr.models import PRRef
+    from purr.tui.diffview import CommentScreen
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7)]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    github.diffs[ref] = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -201,2 +201,2 @@ def f():\n"
+        " x\n-y\n+Y\n"
+    )
+    before = "".join(f"line_{n} = {n}\n" for n in range(1, 201))
+    github.files = {("pipecat-ai/pipecat", "a.py"): before + "x\nY\nlast = 1\n"}
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        await pilot.press("d")
+        view = app.main.repo.diff.view
+        await until(pilot, lambda: any(row.gap for row in view._rows))
+
+        def texts() -> list[str]:
+            return [row.text.plain for row in view._rows]
+
+        # tab on the hunk's header: the 200 lines above it, read from the PR's version;
+        # the header stays on screen, the lines nearest it just above.
+        while not (view.current() and view.current().gap):
+            await pilot.press("down")
+        await pilot.press("tab")
+        await until(pilot, lambda: any("line_1 = 1" in text for text in texts()))
+        assert view.current().gap and "▴ 200 lines (tab)" in view.current().text.plain
+        top = round(view.scroll_offset.y)
+        assert top <= view.cursor < top + view.size.height
+        assert "line_200 = 200" in view._rows[view.cursor - 1].text.plain
+
+        # They're asked about, not commented on: GitHub takes comments on the diff's lines.
+        await pilot.press("up", "c")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, CommentScreen)
+        await pilot.press("enter")
+        prompt = app.main.repo.session.query_one("#prompt")
+        await until(pilot, lambda: prompt.text == "About a.py:200: ")
+
+        # After the last hunk, the rest of the file; tab again hides what's shown.
+        await pilot.press("shift+tab")
+        await until(pilot, lambda: view.has_focus)
+        while not (view.current() and view.current().gap and not view.current().line):
+            await pilot.press("down")
+        await pilot.press("tab")
+        await until(pilot, lambda: "last = 1" in texts()[-1])
+        await pilot.press("tab")
+        await until(pilot, lambda: "last = 1" not in texts()[-1])
+        assert texts()[-1].endswith("⋯ 1 more line (tab)")
+
+
 async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
     from purr.models import PRDetails, PRRef
     from purr.tui.dialogs import ConfirmScreen
@@ -1682,7 +1738,10 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         # The PR's review threads on GitHub come in a box under their line (their file
         # opens); tab shuts one to a line, and opens it again.
         await until(pilot, lambda: rows(view, "│ Say why"))
-        await pilot.press("end")  # a box is one step, highlighted whole
+        # Last, the rest of the file; above it, a box: one step, highlighted whole.
+        await pilot.press("end")
+        assert view.current().gap and not view.current().line
+        await pilot.press("up")
         assert view.current().said.thread == "T1" and view.current().text.plain.endswith("╮")
         await pilot.press("tab")
         await until(pilot, lambda: rows(view, "▸ carol ─ Say why"))

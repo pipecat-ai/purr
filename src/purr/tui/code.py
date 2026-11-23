@@ -44,6 +44,18 @@ def highlighted(file: File, style: str) -> tuple[Text | None, ...]:
     return (*out, *_hunk(hunk, lexer, style))
 
 
+@lru_cache(maxsize=16)
+def colored_source(path: str, source: str, style: str) -> tuple[Text, ...]:
+    """A whole file, a line each, colored as its language (plain if it has none): the
+    lines a diff leaves out, when they're shown."""
+    lines = source.splitlines()
+    lexer = _lexer(path)
+    if lexer is None:
+        return tuple(Text(line.expandtabs(TAB)) for line in lines)
+    whole = [Line(" ", f" {line}") for line in lines]
+    return tuple(_colored(whole, lexer, style))
+
+
 def _lexer(path: str) -> Lexer | None:
     try:
         # Leading and trailing blank lines kept, or the lines wouldn't line up.

@@ -15,12 +15,17 @@ closes to a line (resolved threads start that way) and opens again.
 
 Lines added and removed have a green or red background, under their code in its
 language's colors (see purr.tui.code).
+
+What the diff leaves out around its hunks (see purr.diff.gaps) is a row each, the
+hunk's header (or a row after the last hunk): ``tab`` there shows those lines, from the
+file as it is in the PR, and hides them again. They can be asked about, not commented
+on: GitHub takes comments only on the diff's lines.
 """
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from rich.style import Style
 from rich.text import Text
@@ -36,7 +41,7 @@ from textual.strip import Strip
 from textual.widgets import Label
 
 from purr.actions import unsigned
-from purr.diff import File, Line, parse
+from purr.diff import File, Gap, Line, gaps, parse
 from purr.jobs import PurrError, Request
 from purr.messages import (
     DeleteGitHubComment,
@@ -44,6 +49,7 @@ from purr.messages import (
     EditGitHubComment,
     EditPRComment,
     EditProposedComment,
+    GetFile,
     GetReviewThreads,
     PostLineComment,
     PostPRComment,
@@ -53,7 +59,7 @@ from purr.messages import (
 )
 from purr.models import PR, DraftComment, PRComment, Quote
 from purr.tui.boxes import BOX_WIDTH, comment_box
-from purr.tui.code import code, highlighted
+from purr.tui.code import code, colored_source, highlighted
 from purr.tui.dialogs import ConfirmScreen
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
@@ -125,16 +131,26 @@ class Said:
 class Row:
     """A line of the view: a file's, one of its diff lines, a comment's, or a note."""
 
-    kind: str  # "file", "line", "said", "note"
+    kind: str  # "file", "line", "said", "note", "gap"
     text: Text
     file: int  # which file it's in
     line: Line | None = None
     said: Said | None = None
+    gap: Gap | None = None  # lines left out, which tab shows (on a hunk's header, say)
 
     def key(self) -> tuple:
         """What it shows, to find it again once the rows change (a comment by its key:
         rewriting it doesn't make it another)."""
-        return (self.kind, self.file, self.line, self.said.key if self.said else None)
+        said = self.said.key if self.said else None
+        return (self.kind, self.file, self.line, said, self.gap.at if self.gap else None)
+
+
+class _Around(NamedTuple):
+    """A file's gaps, as shown: those opened (by where they are), and the file as it is in
+    the PR, once read (None until then)."""
+
+    opened: frozenset[int] = frozenset()
+    source: str | None = None
 
 
 def said(
@@ -190,15 +206,22 @@ def rows(
     comments: Sequence[Said],
     shut: set[str] = frozenset(),
     width: int = BOX_WIDTH,
+    *,
+    revealed: set[tuple[int, int]] = frozenset(),
+    sources: Mapping[str, str] | None = None,
 ) -> list[Row]:
     """The view's lines: each file's, then, if it's opened, its lines and their comments
-    (those in ``shut`` as a line each; the others in boxes ``width`` wide)."""
+    (those in ``shut`` as a line each; the others in boxes ``width`` wide), and a row for
+    each gap around its hunks, with its lines if it's in ``revealed`` (as (file, where the
+    gap is)), from ``sources`` (the files as they are in the PR, by path)."""
     out: list[Row] = []
     for index, file in enumerate(files):
         on_file = [c for c in comments if c.path == file.path]
         out.append(Row("file", _file_text(file, index in opened, on_file), index))
         if index in opened:
-            out += _file_rows(index, file, on_file, shut, width)
+            shown = frozenset(at for i, at in revealed if i == index)
+            around = _Around(shown, (sources or {}).get(file.path))
+            out += _file_rows(index, file, on_file, shut, width, around)
     return out
 
 
@@ -215,7 +238,7 @@ def _file_text(file: File, opened: bool, comments: list[Said]) -> Text:
 
 
 def _file_rows(
-    index: int, file: File, comments: list[Said], shut: set[str], width: int
+    index: int, file: File, comments: list[Said], shut: set[str], width: int, around: _Around
 ) -> list[Row]:
     if not file.path:  # the conversation: its comments, oldest first
         return [row for comment in comments for row in _said_rows(index, comment, shut, width)]
@@ -223,14 +246,53 @@ def _file_rows(
         return [Row("note", Text("  generated, not shown", style="dim"), index)]
     out: list[Row] = []
     colored = highlighted(file, palette().code)
-    for line, words in zip(file.lines, colored, strict=True):
-        out.append(Row("line", _numbered(line, words), index, line))
+    left_out = {gap.at: gap for gap in gaps(file)}
+    for at, (line, words) in enumerate(zip(file.lines, colored, strict=True)):
+        if gap := left_out.get(at):  # its header: the gap's row, its lines above it
+            out += _gap_rows(index, file, gap, line, around)
+        else:
+            out.append(Row("line", _numbered(line, words), index, line))
         for comment in (c for c in comments if (c.line, c.side) == line.target()):
             out += _said_rows(index, comment, shut, width)
+    if end := left_out.get(len(file.lines)):  # after the last hunk: its row, then its lines
+        out += _gap_rows(index, file, end, None, around)
     placed = {line.target() for line in file.lines}
     for comment in (c for c in comments if (c.line, c.side) not in placed):
         out += _said_rows(index, comment, shut, width, where=True)
     return out
+
+
+def _gap_rows(index: int, file: File, gap: Gap, header: Line | None, around: _Around) -> list[Row]:
+    """A gap's row, and its lines if it's opened: above a hunk's header, or below the row
+    after the last hunk. Once the file's read, nothing after a last hunk that ends it."""
+    source = around.source.splitlines() if around.source is not None else None
+    lines = gap.lines(source) if source is not None else []
+    if source is not None and not lines:
+        return []  # the last hunk is the end of the file
+    opened = gap.at in around.opened and bool(lines)
+    row = Row("gap", _gap_text(gap, header, opened, len(lines) or None), index, header, gap=gap)
+    if not opened:
+        return [row]
+    words = colored_source(file.path, around.source or "", palette().code)
+    shown = [Row("line", _numbered(line, words[line.new - 1]), index, line) for line in lines]
+    return [*shown, row] if header else [row, *shown]
+
+
+def _gap_text(gap: Gap, header: Line | None, opened: bool, size: int | None) -> Text:
+    """``⋯ 37 lines (tab)  @@ -398,21 +398,30 @@ class Service:``, what's left out first
+    (a long header runs off a narrow pane); after the last hunk, ``⋯ 12 more lines
+    (tab)``, or the rest of the file, until it's read. Shown: ``▴``, ``▾``."""
+    text = Text(" " * len(_INDENT))
+    size = size or (gap.last - gap.first + 1 if gap.last else None)
+    if not size:
+        text.append("⋯ the rest of the file (tab)", "dim")
+    else:
+        mark = ("▴" if header else "▾") if opened else "⋯"
+        more = "" if header else "more "
+        text.append(f"{mark} {size} {more}line{'s' if size != 1 else ''} (tab)", "dim")
+    if header:
+        text.append("  ").append(header.text.expandtabs(4), LINE_STYLES["@@"])
+    return text
 
 
 def _numbered(line: Line, words: Text | None = None) -> Text:
@@ -323,13 +385,21 @@ _SELECT = Binding.Group("Select", compact=True)
 
 
 class DiffView(ScrollView, can_focus=True):
-    _on_comment = False  # the cursor's on a comment (the footer says what r does there)
-
     """The diff's lines, a cursor on one, and a selection; long lines scroll sideways.
 
     ``shift+↑``/``shift+↓`` select, as in most editors; ``ctrl+space`` sets a mark that
     moving selects from, as in Emacs. ``esc`` (or ``ctrl+g``) lets the selection go.
     """
+
+    _on_comment = False  # the cursor's on a comment (the footer says what r does there)
+
+    class NeedsFile(Message):
+        """A gap's lines are wanted, and they come from the file as it is in the PR: read
+        it (into ``sources``), then :meth:`reveal` them."""
+
+        def __init__(self, file: int, at: int):
+            super().__init__()
+            self.file, self.at = file, at
 
     COMPONENT_CLASSES = {"diff-view--cursor", "diff-view--selected"}
     TAKES_OVER = {"next_alert", "command_palette"}  # the app's ctrl+n/p: they move here
@@ -370,6 +440,8 @@ class DiffView(ScrollView, can_focus=True):
         self.marking = False  # the anchor's a mark (ctrl+space): moving keeps selecting
         self._rows: list[Row] = []
         self._strips: dict[int, Strip] = {}
+        self.revealed: set[tuple[int, int]] = set()  # the gaps shown: (file, where it is)
+        self.sources: dict[str, str] = {}  # the files as they are in the PR, once read
 
     def show(self, comments: list[Said], opened: set[int] | None = None) -> None:
         """Lay the rows out again: other comments, other files opened. The cursor stays
@@ -382,7 +454,10 @@ class DiffView(ScrollView, can_focus=True):
         if opened is not None:
             self.opened = opened
         self._laid_out_at = self._box_width()
-        self._rows = rows(self.files, self.opened, comments, self.shut, self._laid_out_at)
+        self._rows = rows(
+            self.files, self.opened, comments, self.shut, self._laid_out_at,
+            revealed=self.revealed, sources=self.sources,
+        )  # fmt: skip
         self._strips.clear()
         width = max((row.text.cell_len for row in self._rows), default=0)
         self.virtual_size = Size(width, len(self._rows))
@@ -424,12 +499,39 @@ class DiffView(ScrollView, can_focus=True):
         self._move_to(self._file_row(file))
 
     def action_toggle_here(self) -> None:
-        """Open or close the comment under the cursor, or else the file it's in."""
+        """Open or close the comment under the cursor, or the gap (lines left out), or else
+        the file it's in."""
         row = self.current()
         if row and row.said:
             self.toggle_said(row.said)
+        elif row and row.gap:
+            self.toggle_gap(row.file, row.gap)
         elif row:
             self.toggle(row.file)
+
+    def toggle_gap(self, file: int, gap: Gap) -> None:
+        """Show a gap's lines, or hide them; the file's read first, the first time."""
+        if self.files[file].path in self.sources:
+            self.reveal(file, gap.at)
+        else:
+            self.post_message(self.NeedsFile(file, gap.at))
+
+    def reveal(self, file: int, at: int) -> None:
+        """Show the gap's lines, or hide them, its row staying where it is on the screen:
+        lines above a hunk's header come in above it, those after the last hunk below."""
+        where = next((i for i, r in enumerate(self._rows) if r.gap and r.gap.at == at
+                      and r.file == file), self.cursor)  # fmt: skip
+        on_screen = where - round(self.scroll_offset.y)
+        self.revealed ^= {(file, at)}
+        self.show(self.comments)
+        now = next((i for i, r in enumerate(self._rows) if r.gap and r.gap.at == at
+                    and r.file == file), None)  # fmt: skip
+        if now is None:  # read, the file ends with the last hunk
+            self.notify("That's the end of the file.")
+            return
+        self._place(now)
+        # Once the view's taken its new height (until then, it can't scroll that far).
+        self.call_after_refresh(self.scroll_to, y=max(now - on_screen, 0), animate=False)
 
     def toggle_said(self, said: Said) -> None:
         self.shut ^= {said.key}
@@ -552,6 +654,11 @@ class DiffView(ScrollView, can_focus=True):
         elif height and last >= top + height:
             self.scroll_to(y=min(first, last - height + 1), animate=False)
 
+    def outside_selected(self) -> bool:
+        """Whether what's selected (or the line under the cursor) has lines from a gap,
+        which GitHub takes no comments on."""
+        return any(line.outside for line in self.selected())
+
     def selected(self) -> list[Line]:
         """The diff lines selected (those of the cursor's file), or else the one under it."""
         row = self.current()
@@ -574,7 +681,7 @@ class DiffView(ScrollView, can_focus=True):
 
     def on_click(self, event: events.Click) -> None:
         """A click puts the cursor on a line (shift: selects up to it); on a file's line, it
-        opens or shuts the file."""
+        opens or shuts the file, and on a gap's, its lines."""
         offset = event.get_content_offset(self)
         index = self.scroll_offset.y + offset.y if offset else len(self._rows)
         if index >= len(self._rows):
@@ -582,8 +689,11 @@ class DiffView(ScrollView, can_focus=True):
         if event.shift and self.anchor is None:
             self.anchor = self.cursor
         (self._move_to if event.shift else self._go)(index)
-        if self._rows[index].kind == "file" and not event.shift:
-            self.toggle(self._rows[index].file)
+        row = self._rows[index]
+        if row.kind == "file" and not event.shift:
+            self.toggle(row.file)
+        elif row.gap and not event.shift:
+            self.toggle_gap(row.file, row.gap)
 
     # -- Drawing ---------------------------------------------------------------------
 
@@ -725,6 +835,25 @@ class DiffPane(Vertical):
         comments = await self._comments()
         self.view.show(comments, first_opened(self._files, diff, comments))
         self.run_worker(self._load_threads(), group="threads", exclusive=True)
+
+    @on(DiffView.NeedsFile)
+    def _needs_file(self, event: DiffView.NeedsFile) -> None:
+        self.run_worker(self._read_file(event.file, event.at), group="file", exclusive=True)
+
+    async def _read_file(self, file: int, at: int) -> None:
+        """The file as it is in the PR (from Purr's clone: a moment), then the gap's lines."""
+        pr, files = self.pr, self.view.files
+        if pr is None:
+            return
+        path = files[file].path
+        try:
+            text = (await self.purr_app.bus.request(GetFile(pr=pr.ref, path=path))).text
+        except PurrError as e:
+            self.notify(str(e), severity="warning")
+            return
+        if self.pr is pr and self.view.files is files:  # still the diff it was asked for
+            self.view.sources[path] = text
+            self.view.reveal(file, at)
 
     async def reload(self) -> None:
         """What's been said changed (yours, the agent's proposal)."""
@@ -888,6 +1017,12 @@ class DiffPane(Vertical):
         if row and not self.view.files[row.file].path:
             self._write(CommentScreen("Your comment on the PR (posted when you save it)"),
                         partial(self._on_pr, None))  # fmt: skip
+            return
+        if self.view.outside_selected():
+            self.notify(
+                "GitHub takes comments only on the diff's lines, not those shown around "
+                "them. enter asks the agent about them."
+            )
             return
         mine = row.said.mine if row and row.said else None
         quote = None if mine else self._quoted(row)

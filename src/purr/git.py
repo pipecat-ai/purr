@@ -427,6 +427,17 @@ class GitRepos:
         except GitError:
             return None
 
+    async def file_at(self, pr: PR, path: str) -> str | None:
+        """A file as it is at the PR's head, from the clone; None if the clone doesn't have
+        that head (yet), or the file."""
+        clone = self.clone_path(pr.repo)
+        if not (clone / "HEAD").exists():
+            return None
+        try:
+            return await self._git(clone, "show", f"{pr.head_sha}:{path}", env=_NO_LAZY_FETCH)
+        except GitError:
+            return None
+
     async def guidelines(self, repo: str) -> str:
         """The repo's CLAUDE.md / AGENTS.md from its default branch, with ``@file`` imports.
 

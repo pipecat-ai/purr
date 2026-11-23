@@ -71,6 +71,14 @@ class FakeGitHub:
         self.diff_calls.append(ref)
         return self.diffs.get(ref, "")
 
+    async def file_at(self, repo, path, sha):
+        """From ``files``: (repo, path) -> text."""
+        from purr.github import GitHubError
+
+        if (repo, path) not in getattr(self, "files", {}):
+            raise GitHubError("Not Found (HTTP 404)")
+        return self.files[(repo, path)]
+
     async def merge_check(self, ref):
         return self.merge_checks.get(ref)
 
@@ -101,6 +109,9 @@ class FakeRepos:
 
     async def diff(self, pr):
         return getattr(self, "diffs", {}).get(pr.ref)
+
+    async def file_at(self, pr, path):
+        return getattr(self, "files", {}).get((pr.ref, path))
 
     async def new_commits(self, pr, since):
         return getattr(self, "commits", None)

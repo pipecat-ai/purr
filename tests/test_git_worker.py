@@ -8,7 +8,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from purr.github import GitHubError
 from purr.jobs import Failed, request
-from purr.messages import GetDiff, GetWorktree, PRListUpdated
+from purr.messages import GetDiff, GetFile, GetWorktree, PRListUpdated
 from purr.models import PR, PRRef
 from purr.store import Store
 from purr.workers import GitWorker
@@ -59,6 +59,23 @@ async def test_diffs_come_from_the_clone_or_else_github(setup):
     github.pr_diff = refused
     with pytest.raises(Failed, match="maximum number of files"):
         await client.diff(remote.ref)
+
+
+async def test_files_at_the_prs_head_come_from_the_clone_or_else_github(setup):
+    store, repos, github, client = setup
+    local, remote = pr("a/b", 1), pr("a/b", 2)
+    await store.apply_sync(upserts=[local, remote])
+    repos.files = {(local.ref, "src/a.py"): "local\n"}
+    github.files = {("a/b", "src/a.py"): "from github\n"}
+
+    async def read(ref: PRRef) -> str:
+        return (await request(client, GetFile(pr=ref, path="src/a.py"), timeout=5)).text
+
+    assert await read(local.ref) == "local\n"
+    assert await read(remote.ref) == "from github\n"
+    github.files = {}
+    with pytest.raises(Failed, match="Couldn't read src/a.py"):
+        await read(remote.ref)
 
 
 async def test_open_prs_are_synced_by_repo_when_the_list_changes(setup):
