@@ -10,7 +10,7 @@ from dataclasses import replace
 
 from textual.binding import Binding
 
-_NEXT = Binding.Group("Next/previous", compact=True)
+_NEXT = Binding.Group("Next/prev", compact=True)
 
 # By action: RepoView's.
 REPO_KEYS = {

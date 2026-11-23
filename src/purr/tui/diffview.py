@@ -332,8 +332,8 @@ class DiffView(ScrollView, can_focus=True):
         Binding("pagedown,ctrl+v", "page(1)", "Page down", show=False),
         Binding("home", "move(-1000000)", "Top", show=False),
         Binding("end", "move(1000000)", "Bottom", show=False),
-        Binding("shift+up", "select(-1)", "Select up", group=_SELECT),
-        Binding("shift+down", "select(1)", "Select down", group=_SELECT),
+        Binding("shift+up", "select(-1)", "Select up", key_display="⇧↑", group=_SELECT),
+        Binding("shift+down", "select(1)", "Select down", key_display="⇧↓", group=_SELECT),
         Binding("ctrl+space,ctrl+@", "mark", "Mark", show=False),
         Binding("escape,ctrl+g", "unselect", "Unselect"),  # only while selecting
         # Here rather than on the pane: tab would move the focus otherwise.

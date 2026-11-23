@@ -533,7 +533,7 @@ class PRSession(Vertical):
         *pane_keys(
             ["review", "approve", "dismiss", "merge", "move(1)", "move(-1)", "diff", "thinking"]
             + ["open_claude", "shell", "zoom", "switch_pane"],
-            switch_pane="Other pane",  # the list, or the diff in its place
+            switch_pane="Switch",  # to the list, or the diff in its place
         ),
     ]
 

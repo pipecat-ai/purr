@@ -206,8 +206,14 @@ AddRepoScreen, ConfirmScreen, RecapScreen, InstructionsScreen, HistorySearchScre
     text-overflow: ellipsis;
 }
 
-/* The compact footer (less space between keys, so a pane's keys fit) leaves a group's
-   label (n p Next/previous) against the next key: a space after it. */
-Footer.-compact FooterLabel {
-    margin-right: 1;
+/* The compact footer (less space between keys, so a pane's keys fit): the space after
+   each key, and after a group (n p Next/previous), is a thin line, to tell them apart. */
+Footer.-compact {
+    FooterKey, FooterLabel {
+        margin-right: 0;
+        border-right: solid $footer-description-foreground 60%;  /* the text's, fainter */
+    }
+    KeyGroup FooterKey {  /* n p: one key, as far as lines go; its label comes after */
+        border-right: none;
+    }
 }
