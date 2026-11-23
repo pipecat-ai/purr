@@ -2,6 +2,8 @@
 name = "purr"
 version = "0.1.0"
 description = "A human-in-the-loop agentic code reviewer."
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
