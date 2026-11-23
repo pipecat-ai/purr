@@ -11,8 +11,9 @@ from purr.config import Config
 from purr.messages import DismissAction, WatchRepo
 from purr.store import Store
 from purr.tui import PurrApp
+from purr.tui.dialogs import AddRepoScreen, ConfirmScreen
 from purr.tui.prompt import HistorySearchScreen
-from purr.tui.screens import AddRepoScreen, ConfirmScreen, MainScreen
+from purr.tui.screens import MainScreen
 from tests.fakes import (
     FakeAgent,
     FakeGitHub,
@@ -735,7 +736,7 @@ async def test_moving_around_and_searching(tmp_path):
 
 
 async def test_choosing_the_review_skill(tmp_path):
-    from purr.tui.screens import InstructionsScreen, ReviewSkillScreen
+    from purr.tui.dialogs import InstructionsScreen, ReviewSkillScreen
     from tests.fakes import make_plugin
 
     app, github = make_app(tmp_path)
@@ -780,7 +781,7 @@ async def test_choosing_the_review_skill(tmp_path):
 
 
 async def test_always_allowing_from_the_keyboard(tmp_path):
-    from purr.tui.screens import AlwaysScreen
+    from purr.tui.dialogs import AlwaysScreen
 
     app, github = make_app(tmp_path)
     agent = app.purr.agent
@@ -806,7 +807,7 @@ async def test_always_allowing_from_the_keyboard(tmp_path):
 
 
 async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
-    monkeypatch.setattr("purr.tui.screens.claude_cli", lambda: "claude")  # not this machine's
+    monkeypatch.setattr("purr.tui.pr_keys.claude_cli", lambda: "claude")  # not this machine's
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     ran: list[tuple] = []
@@ -843,13 +844,13 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         assert "/exit goes back to Purr." in banner
 
         # No Claude Code to run, or it doesn't start: a dialog says so.
-        from purr.tui.screens import NoticeScreen
+        from purr.tui.dialogs import NoticeScreen
 
-        monkeypatch.setattr("purr.tui.screens.claude_cli", lambda: None)
+        monkeypatch.setattr("purr.tui.pr_keys.claude_cli", lambda: None)
         await pilot.press("c")
         await until(pilot, lambda: isinstance(app.screen, NoticeScreen))
         await pilot.press("escape")
-        monkeypatch.setattr("purr.tui.screens.claude_cli", lambda: "claude")
+        monkeypatch.setattr("purr.tui.pr_keys.claude_cli", lambda: "claude")
 
         async def not_found(command, cwd, env=None, *, banner=""):
             return None  # it couldn't be started
@@ -1515,7 +1516,7 @@ async def test_the_merge_box_follows_checks_still_running(tmp_path, monkeypatch)
     from purr.messages import ApproveAction
     from purr.models import ActionKind, Check, CheckState, MergeCheck, PRRef
 
-    monkeypatch.setattr("purr.tui.screens.MERGE_RECHECK", 0.05)
+    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
     ref = PRRef("pipecat-ai/pipecat", 7)
@@ -1577,7 +1578,7 @@ async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
 
 async def test_editing_settings_says_what_is_wrong_at_once(tmp_path, monkeypatch):
     from purr.config import SETTINGS_FILE
-    from purr.tui.screens import InstructionsScreen
+    from purr.tui.dialogs import InstructionsScreen
 
     app, github = make_app(tmp_path)
     edited = []

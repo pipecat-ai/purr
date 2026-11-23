@@ -66,7 +66,7 @@ def test_prs_asking_for_your_review_have_their_own_group():
     from dataclasses import replace
 
     from purr.models import PR, PRState
-    from purr.tui.screens import OTHERS, REQUESTED, group
+    from purr.tui.lists import OTHERS, REQUESTED, group
 
     pr = PR("a/b", 1, "Fix", "someone", "u", "abc", "t", requested_from_me=True)
     assert group(pr) == REQUESTED

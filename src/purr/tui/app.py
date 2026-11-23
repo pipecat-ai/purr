@@ -47,10 +47,11 @@ from purr.review.rules import CLAUDE_SETTINGS
 from purr.review.skills import RepoSkill, Skill
 from purr.tui.bridge import BusEvent, UIWorker
 from purr.tui.clipboard import copy_command, system_copy, terminal_copies
+from purr.tui.dialogs import ConfirmScreen, InstructionsScreen, ReviewSkillScreen
 from purr.tui.keyhelp import KeysScreen, key_groups
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
-from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen, ReviewSkillScreen
+from purr.tui.screens import MainScreen
 from purr.tui.session import SessionState
 from purr.tui.switcher import PurrSwitcher, short_name
 from purr.tui.theme import THEME, ansi_themes
