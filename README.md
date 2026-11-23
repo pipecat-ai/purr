@@ -87,7 +87,7 @@ The footer shows the keys for where you are, and `?` lists all of them. The main
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
 | `ctrl+p` / `ctrl+n` / `w` | Find any repo or PR / the latest news / what happened while you were away |
 | `i` | Your review style, code style, permissions, the repo's review skill, settings |
-| `esc` / `q` | Back a step (out of the prompt, the search or the diff), then home / quit |
+| `esc` / `q` | Back a step (out of the prompt or the diff; a search, cleared), then home / quit |
 
 The mouse works too: the wheel scrolls the list, the PR and the diff, and a click in the diff
 puts the cursor on a line (`shift`+click selects up to it).

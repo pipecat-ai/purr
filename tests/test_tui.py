@@ -776,19 +776,32 @@ async def test_moving_around_and_searching(tmp_path):
         await pilot.press("n")
         await until(pilot, lambda: shown() == 1)
 
-        # esc in the search box goes back to the list, keeping the search; esc again
-        # goes home, and the search is still there when you're back.
+        # esc in the search box goes back to the list, keeping the search, which is still
+        # there after going home and back...
         await pilot.press("slash", "escape")
         assert in_repo(app) and focused(app) == "prs" and pr_ids(app) == bus
-        await pilot.press("escape")
+        await pilot.press("0")
         await until(pilot, lambda: home(app))
         await pilot.press("o")
         await until(pilot, lambda: in_repo(app))
         assert pr_ids(app) == bus and repo.query_one("#search").value == "bus"
         assert repo.query_one("#search").display and focused(app) == "prs"
+        # ...until esc clears it: every PR again, the cursor on the one it was on. esc
+        # again goes home.
+        await until(pilot, lambda: "Clear search" in footer(app))
+        await pilot.press("escape")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        assert in_repo(app) and not repo.query_one("#search").display and shown() == 1
+        await until(pilot, lambda: "Home" in footer(app))
+        await pilot.press("escape")
+        await until(pilot, lambda: home(app))
+        await pilot.press("o")
+        await until(pilot, lambda: in_repo(app))
 
-        # Deleting it is what clears it.
-        await pilot.press("slash", "ctrl+u")
+        # Deleting it clears it too.
+        await pilot.press("slash", *"bus")
+        await until(pilot, lambda: pr_ids(app) == bus)
+        await pilot.press("ctrl+u")
         await until(pilot, lambda: len(pr_ids(app)) == 3)
         await pilot.press("enter")
         assert focused(app) == "prs" and not repo.query_one("#search").display

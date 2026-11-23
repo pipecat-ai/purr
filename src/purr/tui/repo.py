@@ -62,6 +62,7 @@ class RepoView(PRKeys):
 
     # Its keys work from either pane; each pane's footer shows its own (pane_keys).
     BINDINGS = [
+        Binding("escape", "clear_search", "Clear search"),  # while there's one (first)
         Binding("escape", "back", "Home"),
         *[replace(binding, show=False) for binding in REPO_KEYS.values()],
     ]
@@ -310,6 +311,8 @@ class RepoView(PRKeys):
             return not self.session.has_focus_within
         if action in ("search", "move", "mark") and self.diff_shown:  # the list's away
             return False
+        if action == "clear_search":  # esc: the search goes first, then home
+            return bool(self._search) and not self.diff_shown
         if action == "search":  # while typing, / is a slash
             return not self.session.query_one("#prompt").has_focus
         return True
@@ -347,6 +350,7 @@ class RepoView(PRKeys):
         if search.value != text:
             search.value = text
         search.display = bool(text) or search.has_focus
+        self.refresh_bindings()  # esc: clear the search, or home
 
     def _leave_search(self) -> None:
         """Back to the list. The search stays, shown above it, until you clear it."""
@@ -365,17 +369,24 @@ class RepoView(PRKeys):
         if self.repo:
             self._searches[self.repo] = event.value
         self._list()
+        self.refresh_bindings()  # esc: clear the search, or home
 
     @on(Input.Submitted, "#search")
     def _searched(self) -> None:
         self._leave_search()
 
+    def action_clear_search(self) -> None:
+        """esc with a search on, from the list or the PR's pane: it goes, and the list
+        has every PR again, the cursor on the one it was on. esc again goes home."""
+        self._set_search("")
+        self._list()
+
     async def action_back(self) -> None:
         """Home, from the list or the PR's pane (tab goes between them).
 
-        From the search box, back to the list (the search stays, shown above it); from
-        the prompt, back to the PR's pane (see PRSession): esc again goes home. Nothing's
-        lost: the search, and anything half-typed in the prompt, are there when you're back.
+        From the search box, back to the list (the search stays, shown above it; esc
+        clears it); from the prompt, back to the PR's pane (see PRSession): esc again goes
+        home. Anything half-typed in the prompt is there when you're back.
         """
         if self.diff_shown:
             self.close_diff()  # back to the list; esc again goes home
