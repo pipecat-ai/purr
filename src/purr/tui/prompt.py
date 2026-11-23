@@ -84,7 +84,10 @@ class PromptArea(TextArea):
             placeholder=PLACEHOLDER,
             **kwargs,
         )
-        self.suggestion = ""  # what you might ask next: shown while it's empty
+        # What you might ask next, shown (as the placeholder) while it's empty. Not
+        # TextArea's own `suggestion`, which it draws after the cursor and → inserts:
+        # with both, taking it left a second copy there.
+        self.suggested = ""
         self._killed = ""  # what ctrl+k, ctrl+u, ctrl+w or alt+d took last, for ctrl+y
         self._history: list[str] = []
         self._position = 0  # len(history): the text being written
@@ -166,14 +169,14 @@ class PromptArea(TextArea):
 
     def suggest(self, text: str) -> None:
         """What you might ask next, dim while the prompt's empty; "" for none."""
-        self.suggestion = text
+        self.suggested = text
         self.placeholder = f"{text}   (tab)" if text else PLACEHOLDER
 
     def _take_suggestion(self) -> bool:
         """Tab (or →) on the empty prompt takes the suggestion, as in Claude Code."""
-        if self.text or not self.suggestion:
+        if self.text or not self.suggested:
             return False
-        self.set_text(self.suggestion)
+        self.set_text(self.suggested)
         return True
 
     def set_text(self, text: str) -> None:

@@ -244,10 +244,14 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         # The agent's done: the empty prompt suggests what to ask next, and tab
         # (or →) takes it, as in Claude Code.
         prompt = session.query_one("#prompt")
-        await until(pilot, lambda: prompt.suggestion == "Is the race on shutdown real?")
+        await until(pilot, lambda: prompt.suggested == "Is the race on shutdown real?")
         assert "Is the race on shutdown real?" in str(prompt.placeholder)
         await pilot.press("tab")
         assert prompt.text == "Is the race on shutdown real?" and focused(app) == "prompt"
+        # Once: nothing more after the cursor (TextArea's own suggestion), nor from →.
+        assert prompt.suggestion == ""
+        await pilot.press("right")
+        assert prompt.text == "Is the race on shutdown real?"
         await pilot.press("ctrl+u")
         assert prompt.text == ""
         await pilot.press(*"is it safe?", "enter")
