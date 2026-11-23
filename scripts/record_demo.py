@@ -35,7 +35,7 @@ from purr.messages import WatchRepo  # noqa: E402
 from purr.models import FileChange, Finding, PRDetails, PRRef, Severity  # noqa: E402
 from purr.review.agent import AgentResult  # noqa: E402
 from purr.tui import PurrApp  # noqa: E402
-from purr.tui.diffview import CommentScreen, DiffScreen  # noqa: E402
+from purr.tui.diffview import CommentScreen, DiffView  # noqa: E402
 from tests.fakes import (  # noqa: E402
     FakeGitHub,
     FakeLead,
@@ -324,36 +324,47 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await until(pilot, lambda: "Request changes?" in str(decision.render()))
     await record.shot(3.5)  # the list, grouped, and the review that needs you
 
-    await pilot.press("enter")  # to the prompt: a suggestion of what to ask
+    await pilot.press("d")  # the diff, in the list's place, next to the conversation
+    repo = app.main.repo
+    view = repo.query_one(DiffView)
+    await until(pilot, lambda: repo.diff_shown and len(view._rows) > 2)
+    await record.shot(2.5)
+    await move_to(record, view, new=415)  # the line the agent's comment is about
+    await pilot.press("shift+down")  # select it and the next: shift+↑/↓
+    await record.shot(1.0)
+    await pilot.press("enter")  # ask about them
     prompt = session.query_one("#prompt")
-    await until(pilot, lambda: bool(prompt.suggestion))
-    await record.shot(2.0)
-    await pilot.press("tab")
-    await record.shot(1.2)
+    await until(pilot, lambda: prompt.text.startswith("About llm_service.py"))
+    await record.shot(1.5)
+    await record.type("why store it before pushing?")
     await pilot.press("enter")
     await until(pilot, lambda: "Storing it after the push" in _transcript(app))
-    await record.shot(3.5)  # the agent answers in the PR's conversation
+    await record.shot(3.5)  # the agent answers in the PR's conversation, next to the code
 
-    await pilot.press("escape", "d")  # the diff, to comment on a line
-    await until(pilot, lambda: isinstance(app.screen, DiffScreen))
-    await record.shot(2.0)
-    for _ in range(10):
-        await pilot.press("down")
-        await record.shot(0.15)
+    await pilot.press("shift+tab")  # back to the diff, to comment on a line
+    await move_to(record, view, new=404)
     await pilot.press("c")
     await until(pilot, lambda: isinstance(app.screen, CommentScreen))
     await record.type("Why not keep waiting on calls marked uninterruptible?")
     await pilot.press("enter")
-    await until(pilot, lambda: isinstance(app.screen, DiffScreen))
-    await record.shot(2.5)  # your comment, under the agent's
+    await until(pilot, lambda: not isinstance(app.screen, CommentScreen))
+    await record.shot(2.5)  # your comment, in a box under the line
 
-    await pilot.press("escape")
+    await pilot.press("escape")  # the list again
     await until(pilot, lambda: "your 1 comment" in str(decision.render()))
     await record.shot(2.5)  # posting it is your call
     await pilot.press("a")
     await until(pilot, lambda: bool(app.purr._writer.reviews) and not decision.display)
-    await pilot.pause(0.6)  # the "Posted" notice
+    await pilot.pause(0.6)
     await record.shot(4.0)  # posted, as you, and the PR is done
+
+
+async def move_to(record: Recorder, view: DiffView, *, new: int) -> None:
+    """Down to the line numbered ``new`` in the PR's version, a frame a step."""
+    target = next(i for i, row in enumerate(view._rows) if row.line and row.line.new == new)
+    while view.cursor < target:
+        await record.pilot.press("down")
+        await record.shot(0.1)
 
 
 def _transcript(app: PurrApp) -> str:

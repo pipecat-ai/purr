@@ -59,7 +59,9 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
    conversation with the agent. `r` reviews one that isn't yours yet (and assigns you).
 3. **Talk to the agent** (`enter` goes to the prompt): ask, dig in, or change what it
    proposes. `tab` takes the suggestion.
-4. **Read the diff** (`d`): `c` comments on the line under the cursor.
+4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
+   (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
+   `esc` or `d` closes it, `z` makes it full screen.
 5. **Decide**: `a` posts the review with your comments, `x` dismisses it. Once you've
    approved, `m` merges.
 
@@ -77,7 +79,7 @@ The footer shows the keys for where you are. The main ones:
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR / mark several first |
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |
-| `d` / `D` | The diff, to read and comment on (`c`) / in your pager |
+| `d` / `D` | The diff, to read, ask about (`enter`) and comment on (`c`) / in your pager |
 | `m` | Merge a PR you approved: once to see where it stands, again to merge |
 | `t` / `z` | The agent's reasoning in full / full screen |
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |

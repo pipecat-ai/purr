@@ -48,8 +48,8 @@
     height: 1fr;
 }
 
-/* The two panes; the focused one's border lights up. */
-#prs-pane, #session {
+/* The two panes (the diff takes the list's place); the focused one's border lights up. */
+#prs-pane, #diff-pane, #session {
     border: round $foreground 25%;
     border-title-color: $text-muted;
 
@@ -60,7 +60,7 @@
     }
 }
 
-#prs-pane {
+#prs-pane, #diff-pane {
     width: 55%;
     min-width: 60;
 }

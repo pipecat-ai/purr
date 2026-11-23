@@ -8,7 +8,7 @@ from textual.widgets import Input, OptionList
 
 from purr.app import Purr
 from purr.config import Config
-from purr.messages import WatchRepo
+from purr.messages import DismissAction, WatchRepo
 from purr.store import Store
 from purr.tui import PurrApp
 from purr.tui.prompt import HistorySearchScreen
@@ -1224,11 +1224,15 @@ async def test_merging_with_m_after_approving(tmp_path):
 
 
 async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
-    from purr.models import ActionKind, PRDetails, PRRef
-    from purr.tui.diffview import CommentScreen, DiffScreen, DiffView
+    from purr.models import PRDetails, PRRef
+    from purr.tui.diffview import CommentScreen, DiffView
 
     app, github = make_app(tmp_path)
-    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    agent = app.purr.agent
+    github.open["pipecat-ai/pipecat"] = [
+        remote(7, title="Fix the bus", head_sha="abc", assignees=("me",))
+    ]
+    github.assigned = list(github.open["pipecat-ai/pipecat"])  # reviewed: you can ask
     ref = PRRef("pipecat-ai/pipecat", 7)
     github.details[ref] = PRDetails(body="Fixes the bus.", additions=2, deletions=2)
     context = "".join(f" line {i}\n" for i in range(2, 80))  # long enough to start shut
@@ -1246,15 +1250,19 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
 
         await until(pilot, lambda: "Fixes the bus." in transcript(app))
         assert "self.lock" not in transcript(app)  # the PR's pane doesn't show the diff
+        await until(pilot, lambda: "[a] approve" in decision(app))  # reviewed
+        await app.bus.request(DismissAction(action_id=(await pending(app, ref))[0].id))
 
-        # d: the diff, to read line by line. Its files start shut too; enter opens one.
+        # d: the diff, in the list's place, to read line by line. Its files start shut too.
         github.threads = [
             {"id": "T1", "path": "README.md", "line": 1, "side": "RIGHT", "resolved": False,
              "comments": [{"author": "carol", "body": "Say why"}]},
         ]  # fmt: skip
+        repo = app.main.repo
         await pilot.press("d")
-        await until(pilot, lambda: isinstance(app.screen, DiffScreen))
-        view = app.screen.query_one(DiffView)
+        await until(pilot, lambda: repo.diff_shown and focused(app) == "diff")
+        assert not repo.query_one("#prs-pane").display and repo.session.display
+        view = repo.query_one(DiffView)
         # The PR's review threads on GitHub come in a box under their line (their file
         # opens); tab shuts one to a line, and opens it again.
         await until(pilot, lambda: rows(view, "│ Say why"))
@@ -1266,11 +1274,11 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: rows(view, "│ Say why"))
         await pilot.press("home", "n", "tab", "home")  # and the README's file shuts
         await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
-        await pilot.press("tab")  # tab (or enter) opens the file, and shuts it
+        await pilot.press("tab")  # tab (or space) opens the file, and shuts it
         await until(pilot, lambda: len(view._rows) > 2)
         await pilot.press("down", "tab")
         await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
-        await pilot.press("enter")
+        await pilot.press("space")
         await until(pilot, lambda: len(view._rows) > 2)
         await pilot.press("ctrl+v")  # a page down, and back up, as in Emacs
         assert view.cursor == view.size.height - 1
@@ -1278,7 +1286,43 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert view.cursor == 0
         await pilot.press("down", "ctrl+n", "ctrl+n", "ctrl+p", "down")  # ctrl+n/p as ↓/↑
         assert view.current().line.target() == (1, "RIGHT")  # @@, -    pass, +    self.lock
-        assert isinstance(app.screen, DiffScreen)  # not the switcher, nor news
+        assert focused(app) == "diff"  # not the switcher, nor news
+
+        # z: the diff full screen, and back.
+        await pilot.press("z")
+        assert not repo.session.display
+        await pilot.press("z")
+        assert repo.session.display
+
+        # Select (shift+↑/↓, or ctrl+space and moving) and enter: ask the agent about
+        # those lines, in the PR's conversation, next to them.
+        await pilot.press("up", "shift+down", "shift+down")  # -    pass .. line 2
+        assert [line.text for line in view.selected()] == [
+            "-    pass", "+    self.lock = asyncio.Lock()", " line 2"
+        ]  # fmt: skip
+        await pilot.press("escape")  # esc lets the selection go first
+        assert view.anchor is None and repo.diff_shown
+        await pilot.press("up", "up", "ctrl+@", "down", "down")  # a mark, as in Emacs
+        await pilot.press("enter")
+        prompt = repo.session.query_one("#prompt")
+        await until(pilot, lambda: focused(app) == "prompt")
+        assert prompt.text == "About bus.py:1–2: "
+        await pilot.press(*"why the lock?", "enter")
+        await until(pilot, lambda: agent.runs[-1]["prompt"].endswith("why the lock?"))
+        sent = agent.runs[-1]["prompt"]
+        assert "src/bus.py, lines 1–2, in the base's line 1 to the PR's line 2" in sent
+        assert "+    self.lock = asyncio.Lock()" in sent and "> About bus.py:1–2: why" in (
+            transcript(app)
+        )
+        assert "purr-note" not in transcript(app)
+        await until(pilot, lambda: not repo.session.state().working)
+        await pilot.press("shift+tab")  # from the PR's pane back to the diff, and back
+        assert focused(app) == "diff"
+        await pilot.press("shift+tab")  # (in the diff, tab opens and shuts)
+        assert focused(app) == "transcript"
+        await pilot.press("tab")
+        assert focused(app) == "diff"
+        await pilot.press("home", "down", "down", "down")
 
         # c: a comment on that line, in a box under it; c on it rewrites it.
         await pilot.press("c")
@@ -1300,28 +1344,36 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await pilot.press("down", "x")
         await until(pilot, lambda: not rows(view, "Gone?"))
 
-        # Back in the PR: posting them is the decision. With a proposal, they go with
-        # it; a posts both, the agent's comments and yours, as one review.
-        await pilot.press("escape")
-        await until(pilot, lambda: "Post your 1 comment?" in decision(app))
-        store = app.purr.store
-        await store.add_pending_action(
-            ref,
-            kind=ActionKind.REQUEST_CHANGES,
-            description="Request changes",
-            payload={"comments": [{"path": "README.md", "line": 1, "body": "Say why"}]},
-        )
-        await app.main.repo.session.refresh_status()
+        # A comment on several lines (a selection) goes on all of them.
+        assert view.current().line.target() == (1, "RIGHT")  # where the removed one was
+        await pilot.press("shift+down", "c")  # over the comment under it, to line 2
+        await until(pilot, lambda: isinstance(app.screen, CommentScreen))
+        await pilot.press(*"Both?", "enter")
+        await until(pilot, lambda: rows(view, "✎ you · lines 1–2"))
+        both = (await app.purr.store.draft_comments(ref))[-1]
+        assert (both.start_line, both.line) == (1, 2)
+        await pilot.press("down", "x")  # it's under the last of them
+        await until(pilot, lambda: not rows(view, "Both?"))
+
+        # d (or esc) closes it: the list again. Posting them is the decision: with the
+        # agent's proposal (asking made it propose again), or on their own.
+        await pilot.press("d")
+        assert not repo.diff_shown and focused(app) == "prs"
         await until(pilot, lambda: "and your 1 comment" in decision(app))
+        await pilot.press("x")  # not the agent's: then yours alone
+        await until(pilot, lambda: "Post your 1 comment?" in decision(app))
         await pilot.press("a")
         writer = app.purr._writer
         await until(pilot, lambda: writer.reviews)
-        assert writer.reviews[0]["comments"] == [
-            {"path": "README.md", "line": 1, "side": "RIGHT", "body": "Say why"},
+        assert writer.reviews[0]["event"] == "COMMENT" and writer.reviews[0]["comments"] == [
             {"path": "src/bus.py", "line": 1, "side": "RIGHT", "body": "Why a lock here?"},
         ]
         assert writer.reviews[0]["commit_id"] == "abc"
         await until(pilot, lambda: not decision(app))
+
+
+async def pending(app, ref):
+    return await app.purr.store.pending_actions(ref)
 
 
 def rows(view, text: str) -> list:

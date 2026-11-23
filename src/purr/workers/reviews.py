@@ -64,6 +64,7 @@ from purr.review.agent import (
     ReviewCallbacks,
     describe_background,
     describe_tool_use,
+    quote_note,
     replies_note,
     rereview_prompt,
     review_prompt,
@@ -280,7 +281,8 @@ class ReviewWorker(BaseWorker):
 
     @handles(SendMessage)
     async def send_message(self, request: SendMessage) -> MessageSent:
-        sent = await self.send_followup(request.pr, request.text)
+        quoted = quote_note(request.quote) if request.quote else ""
+        sent = await self.send_followup(request.pr, quoted + request.text)
         await self._store.add_prompt(request.pr, request.text)  # for the prompt's history
         return sent
 

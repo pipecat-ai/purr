@@ -1,13 +1,18 @@
-"""The diff view (``d``): a PR's diff to read line by line, and comment on.
+"""The diff (``d``): a PR's diff in the PR list's place, to read line by line, ask
+about and comment on, next to the PR's conversation. ``z`` makes it full screen;
+``esc`` or ``d`` closes it.
 
 Files start as a line each (all of them opened if the diff is short; those with
-comments on them, if not): ``tab`` (or ``enter``) opens or closes the one the cursor's in,
-``e`` all of them, ``n``/``p`` go to the next or previous file. ``c`` writes a
-comment on the line under the cursor, or rewrites yours under it, and ``x``
-removes it. Yours are posted with your next review of the PR (see
-DraftComment). The comments the agent proposes show too, and the PR's review
-threads on GitHub: each in a box under its line, which ``tab`` closes to a line
-(resolved threads start that way) and opens again.
+comments on them, if not): ``tab`` opens or closes the one the cursor's in, ``e``
+all of them, ``n``/``p`` go to the next or previous file. ``shift+↑``/``shift+↓``
+(or ``ctrl+space`` and moving) select lines; ``enter`` asks the agent about them
+(or the line under the cursor), in the PR's conversation. ``c`` writes a comment
+on them, or rewrites yours under the cursor, and ``x`` removes it.
+
+Yours are posted with your next review of the PR (see DraftComment). The
+comments the agent proposes show too, and the PR's review threads on GitHub:
+each in a box under its line, which ``tab`` closes to a line (resolved threads
+start that way) and opens again.
 """
 
 import textwrap
@@ -23,15 +28,17 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.geometry import Size
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
-from textual.widgets import Footer, Label, Static
+from textual.widgets import Label
 
 from purr.diff import File, Line, parse
 from purr.jobs import PurrError
 from purr.messages import GetReviewThreads, RemoveComment, SaveComment
-from purr.models import PR, DraftComment
+from purr.models import PR, DraftComment, Quote
+from purr.tui.keys import pane_keys
 from purr.tui.prompt import PromptArea
 
 if TYPE_CHECKING:
@@ -76,6 +83,7 @@ class Said:
     key: str  # which it is, to open or close it
     resolved: bool = False
     mine: DraftComment | None = None
+    start: int | None = None  # on several lines: the first (line is the last)
 
 
 @dataclass(frozen=True)
@@ -99,8 +107,10 @@ def said(
 ) -> list[Said]:
     """Your comments, the agent's proposed ones, and the PR's review threads on GitHub."""
     yours = [
-        Said(c.path, c.line, c.side, (("you", c.body),), "you", f"you:{c.id}", mine=c) for c in mine
-    ]
+        Said(c.path, c.line, c.side, (("you", c.body),), "you", f"you:{c.id}", mine=c,
+             start=c.start_line if c.start_line != c.line else None)
+        for c in mine
+    ]  # fmt: skip
     theirs = [
         Said(str(c["path"]), int(c["line"]), "RIGHT", (("agent", str(c.get("body") or "")),),
              "agent", f"agent:{i}")
@@ -178,7 +188,8 @@ def _title(said: Said, where: bool) -> str:
     """``you``, ``agent, proposed``, ``alice and bob · resolved`` (and where, if not here)."""
     people = list(dict.fromkeys(who for who, _ in said.comments))
     title = {"you": "you", "agent": "agent, proposed"}.get(said.source) or " and ".join(people)
-    notes = ["resolved"] if said.resolved else []
+    notes = [f"lines {said.start}–{said.line}"] if said.start else []
+    notes += ["resolved"] if said.resolved else []
     notes += [_where(said)] if where else []
     return " · ".join([title, *notes])
 
@@ -228,12 +239,18 @@ def first_opened(files: Sequence[File], diff: str, comments: Sequence[Said]) -> 
 
 
 class DiffView(ScrollView, can_focus=True):
-    """The diff's lines, a cursor on one; long lines scroll sideways."""
+    """The diff's lines, a cursor on one, and a selection; long lines scroll sideways.
 
-    COMPONENT_CLASSES = {"diff-view--cursor"}
+    ``shift+↑``/``shift+↓`` select, as in most editors; ``ctrl+space`` sets a mark that
+    moving selects from, as in Emacs. ``esc`` (or ``ctrl+g``) lets the selection go.
+    """
+
+    COMPONENT_CLASSES = {"diff-view--cursor", "diff-view--selected"}
+    TAKES_OVER = {"next_alert", "command_palette"}  # the app's ctrl+n/p: they move here
     DEFAULT_CSS = """
     DiffView { height: 1fr; }
     DiffView > .diff-view--cursor { background: $accent 30%; }
+    DiffView > .diff-view--selected { background: $accent 15%; }
     """
     BINDINGS = [
         Binding("up,k,ctrl+p", "move(-1)", "Up", show=False),
@@ -242,24 +259,34 @@ class DiffView(ScrollView, can_focus=True):
         Binding("pagedown,ctrl+v", "page(1)", "Page down", show=False),
         Binding("home", "move(-1000000)", "Top", show=False),
         Binding("end", "move(1000000)", "Bottom", show=False),
-        # Here rather than on the screen: tab would move the focus otherwise.
-        Binding("tab,enter,space", "toggle_here", "Open/close", key_display="tab"),
+        Binding("shift+up", "select(-1)", "Select up", show=False),
+        Binding("shift+down", "select(1)", "Select down", show=False),
+        Binding("ctrl+space,ctrl+@", "mark", "Mark", show=False),
+        Binding("escape,ctrl+g", "unselect", "Unselect", show=False),
+        # Here rather than on the pane: tab would move the focus otherwise.
+        Binding("tab,space", "toggle_here", "Open/close", key_display="tab"),
     ]
 
-    def __init__(self, files: Sequence[File], **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.load(())
+
+    def load(self, files: Sequence[File]) -> None:
+        """Another diff: nothing opened, said or selected yet."""
         self.files = files
         self.opened: set[int] = set()
         self.comments: list[Said] = []
         self.shut: set[str] = set()  # the comments shown as a line (resolved ones, at first)
         self._known: set[str] = set()  # the comments seen so far
         self.cursor = 0
+        self.anchor: int | None = None  # where the selection starts; None: there's none
+        self.marking = False  # the anchor's a mark (ctrl+space): moving keeps selecting
         self._rows: list[Row] = []
         self._strips: dict[int, Strip] = {}
 
     def show(self, comments: list[Said], opened: set[int] | None = None) -> None:
         """Lay the rows out again: other comments, other files opened. The cursor stays
-        on the line it was on (or its file)."""
+        on the line it was on (or its file); a selection goes."""
         here = self.current()
         self.comments = comments
         new = [c for c in comments if c.key not in self._known]
@@ -271,20 +298,27 @@ class DiffView(ScrollView, can_focus=True):
         self._strips.clear()
         width = max((row.text.cell_len for row in self._rows), default=0)
         self.virtual_size = Size(width, len(self._rows))
+        self.anchor, self.marking = None, False
         self._move_to(self._find(here))
 
     def current(self) -> Row | None:
         return self._rows[self.cursor] if 0 <= self.cursor < len(self._rows) else None
 
     def _find(self, row: Row | None) -> int:
-        """Where a row (or, if it's gone, its file's) is now."""
+        """Where a row is now; if it's gone (a comment removed), the row now where it was,
+        if that's in the same file, else the file's."""
         if row is None:
             return 0
         same = next((i for i, r in enumerate(self._rows) if r.key() == row.key()), None)
-        return same if same is not None else self._file_row(row.file)
+        if same is not None:
+            return same
+        here = min(self.cursor, len(self._rows) - 1)
+        return here if here >= 0 and self._rows[here].file == row.file else self._file_row(row.file)
 
     def _file_row(self, file: int) -> int:
         return next((i for i, r in enumerate(self._rows) if r.file == file), 0)
+
+    # -- Opening and closing -------------------------------------------------------
 
     def toggle(self, file: int) -> None:
         self.show(self.comments, self.opened ^ {file})
@@ -307,18 +341,53 @@ class DiffView(ScrollView, can_focus=True):
         everything = set(range(len(self.files)))
         self.show(self.comments, set() if self.opened == everything else everything)
 
+    # -- Moving and selecting ------------------------------------------------------
+
     def next_file(self, step: int) -> None:
         """The cursor to the next (or previous) file's line."""
         starts = [i for i, row in enumerate(self._rows) if row.kind == "file"]
         later = [i for i in starts if (i - self.cursor) * step > 0]
         if later:
-            self._move_to(min(later) if step > 0 else max(later))
+            self._go(min(later) if step > 0 else max(later))
 
     def action_move(self, step: int) -> None:
-        self._move_to(self.cursor + step)
+        self._go(self.cursor + step)
 
     def action_page(self, step: int) -> None:
-        self._move_to(self.cursor + step * max(self.size.height - 1, 1))
+        self._go(self.cursor + step * max(self.size.height - 1, 1))
+
+    def action_select(self, step: int) -> None:
+        """Select up or down a line of code (over comments), in the file the cursor's in."""
+        if self.anchor is None:
+            self.anchor = self.cursor
+        self._move_to(self._next_line(step))
+
+    def _next_line(self, step: int) -> int:
+        """The next line of code that way, in the cursor's file; where it is, if none."""
+        here = self.current()
+        rows = range(self.cursor + step, -1 if step < 0 else len(self._rows), step)
+        lines = (i for i in rows if self._rows[i].line and here and self._rows[i].file == here.file)
+        return next(lines, self.cursor)
+
+    def action_mark(self) -> None:
+        """Set the mark here (moving selects from it), or let it go."""
+        self.marking = self.anchor is None
+        self.anchor = self.cursor if self.marking else None
+        self.refresh()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # Nothing selected, esc is the pane's: it closes the diff.
+        return self.anchor is not None if action == "unselect" else True
+
+    def action_unselect(self) -> None:
+        self.anchor, self.marking = None, False
+        self.refresh()
+
+    def _go(self, index: int) -> None:
+        """Move, letting a selection go, unless it's from a mark."""
+        if not self.marking:
+            self.anchor = None
+        self._move_to(index)
 
     def _move_to(self, index: int) -> None:
         self.cursor = min(max(index, 0), max(len(self._rows) - 1, 0))
@@ -329,25 +398,59 @@ class DiffView(ScrollView, can_focus=True):
             self.scroll_to(y=self.cursor - height + 1, animate=False)
         self.refresh()
 
+    def selected(self) -> list[Line]:
+        """The diff lines selected (those of the cursor's file), or else the one under it."""
+        row = self.current()
+        if row is None:
+            return []
+        if self.anchor is None:
+            return [row.line] if row.line and row.line.target() else []
+        low, high = sorted((self.anchor, self.cursor))
+        chosen = (r.line for r in self._rows[low : high + 1] if r.file == row.file)
+        return [line for line in chosen if line and line.target()]
+
+    def quote(self) -> Quote | None:
+        """What's selected, as a quote of the diff; None if it isn't on a line of it."""
+        row, lines = self.current(), self.selected()
+        if row is None or not lines:
+            return None
+        (start, start_side), (end, side) = lines[0].target(), lines[-1].target()  # type: ignore[misc]
+        text = "\n".join(line.text for line in lines)
+        return Quote(self.files[row.file].path, start, start_side, end, side, text)
+
     def on_click(self, event: events.Click) -> None:
         offset = event.get_content_offset(self)
         index = self.scroll_offset.y + offset.y if offset else len(self._rows)
-        if index < len(self._rows):
-            self._move_to(index)
-            if self._rows[index].said:
-                self.toggle_said(self._rows[index].said)
-            elif self._rows[index].kind == "file":
-                self.toggle(self._rows[index].file)
+        if index >= len(self._rows):
+            return
+        self._go(index)
+        if said := self._rows[index].said:
+            self.toggle_said(said)
+        elif self._rows[index].kind == "file":
+            self.toggle(self._rows[index].file)
+
+    # -- Drawing ---------------------------------------------------------------------
 
     def render_line(self, y: int) -> Strip:
         index = self.scroll_offset.y + y
         width = self.size.width
         if index >= len(self._rows):
             return Strip.blank(width, self.rich_style)
-        # The view's colors under the line's own, the cursor's across the whole row.
-        style = self.rich_style + (self._cursor_style() if index == self.cursor else Style())
+        # The view's colors under the line's own; the cursor's, or the selection's, across
+        # the whole row.
+        style = self.rich_style + self._highlight(index)
         x = self.scroll_offset.x
         return self._strip(index).apply_style(style).crop_extend(x, x + width, style)
+
+    def _highlight(self, index: int) -> Style:
+        if index == self.cursor:
+            return self._background("diff-view--cursor")
+        if (
+            self.anchor is not None
+            and min(self.anchor, self.cursor) < index < max(self.anchor, self.cursor) + 1
+        ):
+            return self._background("diff-view--selected")
+        return Style()
 
     def _strip(self, index: int) -> Strip:
         if index not in self._strips:
@@ -355,8 +458,8 @@ class DiffView(ScrollView, can_focus=True):
             self._strips[index] = Strip(list(text.render(self.app.console, end="")))
         return self._strips[index]
 
-    def _cursor_style(self) -> Style:
-        return Style(bgcolor=self.get_component_rich_style("diff-view--cursor").bgcolor)
+    def _background(self, component: str) -> Style:
+        return Style(bgcolor=self.get_component_rich_style(component).bgcolor)
 
 
 class CommentScreen(ModalScreen[str | None]):
@@ -395,27 +498,38 @@ class CommentScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class DiffScreen(ModalScreen[None]):
-    """A PR's diff at its head, full screen (see the module's docstring)."""
+_FILES = Binding.Group("Files", compact=True)
 
-    DEFAULT_CSS = """
-    DiffScreen { background: $background; }
-    #diff-title { height: 1; padding: 0 1; background: $panel; }
-    """
+
+class DiffPane(Vertical):
+    """A PR's diff, in place of the PR list (see the module's docstring). It says when
+    you ask about lines of it (Asked) and when you close it (Closed); the repo view
+    decides what that does."""
+
+    @dataclass
+    class Asked(Message):
+        quote: Quote
+
+    class Closed(Message):
+        pass
+
     BINDINGS = [
-        Binding("escape,q", "close", "Close"),
-        Binding("e", "toggle_all", "All files"),
-        Binding("n", "next_file(1)", "Next file"),
-        Binding("p", "next_file(-1)", "Previous file"),
+        Binding("enter", "ask", "Ask"),
         Binding("c", "comment", "Comment"),
-        Binding("x", "remove", "Remove yours"),
+        Binding("x", "remove", "Remove"),
+        Binding("e", "toggle_all", "All"),
+        Binding("n", "next_file(1)", "Next file", group=_FILES),
+        Binding("p", "next_file(-1)", "Previous file", group=_FILES),
+        Binding("escape,d", "close", "Close", key_display="esc"),
+        *pane_keys(["zoom", "approve", "merge"]),
+        Binding("shift+tab", "repo('switch_pane')", "Review", key_display="⇧tab"),
     ]
 
-    def __init__(self, pr: PR, diff: str):
-        super().__init__()
-        self.pr = pr
-        self._diff = diff
-        self._files = parse(diff)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.pr: PR | None = None
+        self._diff = ""
+        self._files: tuple[File, ...] = ()
         self._threads: list[dict] = []  # the PR's review threads on GitHub, once read
 
     @property
@@ -423,24 +537,30 @@ class DiffScreen(ModalScreen[None]):
         return cast("PurrApp", self.app)
 
     def compose(self) -> ComposeResult:
-        title = Text.assemble(
-            (f"#{self.pr.number}", "bold"),
-            f"  {self.pr.title}",
-            ("   c on a line comments; yours go out with your next review (a)", "dim"),
-        )
-        yield Static(title, id="diff-title")
-        yield DiffView(self._files, id="diff")
-        yield Footer()
+        yield DiffView(id="diff")
 
-    async def on_mount(self) -> None:
+    @property
+    def view(self) -> DiffView:
+        return self.query_one(DiffView)
+
+    async def show(self, pr: PR, diff: str) -> None:
+        """The PR's diff at its head, with what's been said on it."""
+        self.pr, self._diff, self._files, self._threads = pr, diff, parse(diff), []
+        self.border_title = f"Diff #{pr.number}"
+        self.view.load(self._files)
         comments = await self._comments()
-        self._view.show(comments, first_opened(self._files, self._diff, comments))
-        self._view.focus()
-        self.run_worker(self._load_threads(), group="threads")
+        self.view.show(comments, first_opened(self._files, diff, comments))
+        self.run_worker(self._load_threads(), group="threads", exclusive=True)
+
+    async def reload(self) -> None:
+        """What's been said changed (yours, the agent's proposal)."""
+        if self.pr:
+            self.view.show(await self._comments())
 
     async def _load_threads(self) -> None:
         """The PR's review threads on GitHub (a request away): their files open as they come,
         unless all of them are resolved."""
+        assert self.pr is not None
         try:
             reply = await self.purr_app.bus.request(GetReviewThreads(pr=self.pr.ref))
         except PurrError as e:
@@ -450,74 +570,77 @@ class DiffScreen(ModalScreen[None]):
         comments = await self._comments()
         open_on = {c.path for c in comments if c.source == "github" and not c.resolved}
         on = {i for i, file in enumerate(self._files) if file.path in open_on}
-        self._view.show(comments, self._view.opened | on)
-
-    @property
-    def _view(self) -> DiffView:
-        return self.query_one(DiffView)
+        self.view.show(comments, self.view.opened | on)
 
     async def _comments(self) -> list[Said]:
         """Yours on this commit, those the agent proposes posting, and the PR's threads."""
+        assert self.pr is not None
         store = self.purr_app.purr.store
-        mine = [c for c in await store.draft_comments(self.pr.ref) if c.head_sha == self._head]
+        head = self.pr.head_sha
+        mine = [c for c in await store.draft_comments(self.pr.ref) if c.head_sha == head]
         actions = await store.pending_actions(self.pr.ref)
         proposed = actions[0].payload.get("comments") or [] if actions else []
         return said(mine, proposed, self._threads)
 
-    @property
-    def _head(self) -> str:
-        return self.pr.head_sha
-
-    async def _reload(self) -> None:
-        self._view.show(await self._comments())
+    async def action_repo(self, action: str) -> None:
+        await self.purr_app.main.repo.run_action(action)
 
     def action_close(self) -> None:
-        self.dismiss(None)
+        self.post_message(self.Closed())
 
     def action_toggle_all(self) -> None:
-        self._view.toggle_all()
+        self.view.toggle_all()
 
     def action_next_file(self, step: int) -> None:
-        self._view.next_file(step)
+        self.view.next_file(step)
+
+    def action_ask(self) -> None:
+        """Ask the agent about the lines selected, or the one under the cursor."""
+        if quote := self.view.quote():
+            self.post_message(self.Asked(quote))
+        else:
+            self.notify("Ask about lines of the diff: move to one (shift+↑/↓ select several).")
 
     def action_comment(self) -> None:
-        """A comment on the line under the cursor, or yours under it rewritten."""
-        row = self._view.current()
+        """A comment on the lines selected (or the one under the cursor, or someone's
+        comment's), or yours under it rewritten."""
+        row = self.view.current()
         mine = row.said.mine if row and row.said else None
-        target = row.line.target() if row and row.line else None
-        if row and row.said and row.said.line:  # on someone's comment: one on the same line
-            target = (row.said.line, row.said.side)
-        spot = (mine.line, mine.side) if mine else target
-        if row is None or spot is None:
-            self.notify("Comments go on a line of the diff: move to one, then c.")
+        quote = None if mine else self._quoted(row)
+        if mine is None and quote is None:
+            self.notify("Comments go on lines of the diff: move to one, then c.")
             return
-        path = self._files[row.file].path
-        line, side = spot
-        where = f"{path}:{line}" + (" (deleted)" if side == "LEFT" else "")
 
         async def save(body: str | None) -> None:
             if body:
-                await self._save(path, line, side, body, mine)
+                await self._save(body, quote, mine)
 
+        where = _where_text(quote) if quote else _mine_text(mine)
         self.app.push_screen(CommentScreen(where, mine.body if mine else ""), save)
 
-    async def _save(
-        self, path: str, line: int, side: str, body: str, mine: DraftComment | None
-    ) -> None:
-        job = SaveComment(
-            pr=self.pr.ref,
-            path=path,
-            line=line,
-            side=side,
-            body=body,
-            head_sha=self._head,
-            comment_id=mine.id if mine else None,
+    def _quoted(self, row: Row | None) -> Quote | None:
+        """What a comment would be on: the selection, or the line of the comment under the
+        cursor."""
+        if row and row.said and row.said.line and self.view.anchor is None:
+            line, side = row.said.line, row.said.side
+            return Quote(row.said.path, line, side, line, side, "")
+        return self.view.quote()
+
+    async def _save(self, body: str, quote: Quote | None, mine: DraftComment | None) -> None:
+        assert self.pr is not None
+        if mine:
+            spot = dict(path=mine.path, line=mine.line, side=mine.side, comment_id=mine.id)
+        else:
+            assert quote is not None
+            spot = dict(path=quote.path, line=quote.end, side=quote.side,
+                        start_line=quote.start, start_side=quote.start_side)  # fmt: skip
+        await self._request(
+            SaveComment(pr=self.pr.ref, body=body, head_sha=self.pr.head_sha, **spot)
         )
-        await self._request(job)
 
     async def action_remove(self) -> None:
-        row = self._view.current()
-        if not (row and row.said and row.said.mine):
+        row = self.view.current()
+        if not (self.pr and row and row.said and row.said.mine):
             self.notify("x removes a comment of yours: move to one first.")
             return
         await self._request(RemoveComment(pr=self.pr.ref, comment_id=row.said.mine.id))
@@ -527,4 +650,18 @@ class DiffScreen(ModalScreen[None]):
             await self.purr_app.bus.request(job)
         except PurrError as e:
             self.notify(str(e), severity="warning")
-        await self._reload()
+        await self.reload()
+
+
+def _where_text(quote: Quote) -> str:
+    """``src/bus.py:404–412`` (``, deleted`` if it's on deleted lines)."""
+    lines = f"{quote.start}–{quote.end}" if quote.start != quote.end else str(quote.end)
+    deleted = ", deleted" if quote.side == "LEFT" and quote.start_side == "LEFT" else ""
+    return f"{quote.path}:{lines}{deleted}"
+
+
+def _mine_text(mine: DraftComment | None) -> str:
+    assert mine is not None
+    first = mine.start_line or mine.line
+    lines = f"{first}–{mine.line}" if first != mine.line else str(mine.line)
+    return f"{mine.path}:{lines}"

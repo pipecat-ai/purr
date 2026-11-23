@@ -410,7 +410,8 @@ class DraftComment:
 
     ``side`` is GitHub's: ``RIGHT`` for a line in the PR's version, ``LEFT`` for one
     it deletes (``line`` is then its number in the base). ``head_sha``: the commit
-    whose diff you wrote it on.
+    whose diff you wrote it on. On several lines, ``start_line`` (on ``start_side``)
+    is the first, and ``line`` the last.
     """
 
     id: int
@@ -419,9 +420,42 @@ class DraftComment:
     side: str
     body: str
     head_sha: str
+    start_line: int | None = None
+    start_side: str | None = None
 
     def for_github(self) -> dict:
-        return {"path": self.path, "line": self.line, "side": self.side, "body": self.body}
+        comment = {"path": self.path, "line": self.line, "side": self.side, "body": self.body}
+        if self.start_line and (self.start_line, self.start_side) != (self.line, self.side):
+            comment |= {"start_line": self.start_line, "start_side": self.start_side}
+        return comment
+
+
+@dataclass(frozen=True)
+class Quote:
+    """Lines of a PR's diff, to ask about or comment on: in ``path``, from ``start`` (on
+    ``start_side``) to ``end`` (on ``side``), numbered as GitHub does (see DraftComment),
+    and ``text``, as they read in the diff."""
+
+    path: str
+    start: int
+    start_side: str
+    end: int
+    side: str
+    text: str
+
+    def ref(self) -> str:
+        """``llm_service.py:404–412``: the file's name and its lines."""
+        lines = f"{self.start}–{self.end}" if self.start != self.end else str(self.end)
+        return f"{self.path.rpartition('/')[2]}:{lines}"
+
+    def lines(self) -> str:
+        """``lines 404–412``, saying which version's numbers they are."""
+        span = f"lines {self.start}–{self.end}" if self.start != self.end else f"line {self.end}"
+        if self.start_side == self.side:
+            version = "the PR's version" if self.side == "RIGHT" else "the base (deleted)"
+        else:
+            version = f"the base's line {self.start} to the PR's line {self.end}"
+        return f"{span}, in {version}"
 
 
 @dataclass

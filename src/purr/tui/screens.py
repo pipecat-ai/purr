@@ -49,7 +49,7 @@ from purr.messages import (
 from purr.models import PR, CheckState, PRRef, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.review.skills import Skill
-from purr.tui.diffview import DiffScreen
+from purr.tui.diffview import DiffPane
 from purr.tui.keys import REPO_KEYS, pane_keys
 from purr.tui.overview import short_age
 from purr.tui.session import NUMBER_STYLE, PRSession, SessionState, outcome_mark
@@ -464,11 +464,14 @@ class RepoView(PurrView):
             with Vertical(id="prs-pane"):
                 yield Input(id="search", placeholder="Search: number, title, author…")
                 yield PRList(id="prs")
+            yield DiffPane(id="diff-pane")  # in the list's place, while it's shown (d)
             yield PRSession(id="session")
 
     def on_mount(self) -> None:
         self.query_one("#prs-pane").border_title = "PRs"
         self.query_one("#search").display = False
+        self.query_one(DiffPane).display = False
+        self._left = "list"  # what's on the left: the PR list, or a PR's diff
         # PRs whose agent is at work: their mark spins, like the PR pane's line.
         self._spinning: set[str] = set()
         self._frame = 0
@@ -617,6 +620,8 @@ class RepoView(PurrView):
     @on(OptionList.OptionHighlighted)
     def _show_highlighted(self) -> None:
         pr = self.selected_pr()
+        if pr and self.diff_shown and self.diff.pr and pr.ref != self.diff.pr.ref:
+            self.close_diff()  # another PR (an alert, ctrl+p): the list, to see where
         if pr and self.repo:
             self._leave_merge(self._selected.get(self.repo), str(pr.ref))
             self._selected[self.repo] = str(pr.ref)
@@ -676,6 +681,8 @@ class RepoView(PurrView):
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if action == "open":  # in the PR's pane, it's already open
             return not self.session.has_focus_within
+        if action in ("search", "move", "mark") and self.diff_shown:  # the list's away
+            return False
         if action == "search":  # while typing, / is a slash
             return not self.session.query_one("#prompt").has_focus
         return True
@@ -692,15 +699,12 @@ class RepoView(PurrView):
             self.session.focus_prompt()
 
     def action_switch_pane(self) -> None:
-        """From the list (or its search) to the PR's pane, and back."""
-        option_list = self.query_one(OptionList)
-        if self.session.has_focus_within:
-            if self.query_one("#prs-pane").display:  # not while zoomed
-                option_list.focus()
-        elif self.query_one("#search").has_focus:
-            option_list.focus()
-        else:
+        """From the list (or its search, or the diff) to the PR's pane, and back."""
+        left = self.diff if self.diff_shown else self.query_one("#prs-pane")
+        if not self.session.has_focus_within:
             self.action_open()
+        elif left.display:  # not while the PR's pane is zoomed
+            self._focus_left()
 
     # -- Search ---------------------------------------------------------------------
 
@@ -742,6 +746,9 @@ class RepoView(PurrView):
         the prompt, back to the PR's pane (see PRSession): esc again goes home. Nothing's
         lost: the search, and anything half-typed in the prompt, are there when you're back.
         """
+        if self.diff_shown:
+            self.close_diff()  # back to the list; esc again goes home
+            return
         if self.query_one("#search").has_focus:
             self._leave_search()  # back to the list, the search kept; esc again goes home
             return
@@ -978,8 +985,26 @@ class RepoView(PurrView):
         self.purr_app.data_version += 1  # its header says whether it has a worktree now
         await self.session.refresh_status()
 
+    # -- The diff, in the list's place --------------------------------------------------
+
+    @property
+    def diff(self) -> DiffPane:
+        return self.query_one(DiffPane)
+
+    @property
+    def diff_shown(self) -> bool:
+        """The diff's in the list's place (zoomed away, maybe)."""
+        return self._left == "diff"
+
+    def _focus_left(self) -> None:
+        self.diff.view.focus() if self.diff_shown else self.query_one(PRList).focus()
+
     async def action_diff(self) -> None:
-        """The PR's diff, to read line by line and comment on (D: in your pager)."""
+        """The PR's diff in the list's place, to read line by line, ask about and comment
+        on; d again (or esc) closes it. D: the whole diff in your pager."""
+        if self.diff_shown:
+            self.close_diff()
+            return
         pr = self.selected_pr()
         if not pr:
             return
@@ -989,7 +1014,34 @@ class RepoView(PurrView):
             message = f"Couldn't get the diff{why}. D opens it in your pager."
             self.notify(message, severity="warning")
             return
-        self.app.push_screen(DiffScreen(pr, diff))
+        await self.diff.show(pr, diff)
+        self._left = "diff"
+        self.query_one("#prs-pane").display = False
+        self.diff.display = self.session.display = True
+        self.diff.view.focus()
+
+    def close_diff(self) -> None:
+        """The list again, in the diff's place (and the PR's pane, if the diff was zoomed)."""
+        self._left = "list"
+        self.diff.display = False
+        self.session.display = True
+        self.query_one("#prs-pane").display = True
+        self.query_one(PRList).focus()
+
+    def diff_changed(self, pr: str) -> None:
+        """What's been said on a PR changed: its diff shows it, if it's the one shown."""
+        if self.diff_shown and self.diff.pr and str(self.diff.pr.ref) == pr:
+            self.run_worker(self.diff.reload(), group="diff-comments")
+
+    @on(DiffPane.Closed)
+    def _diff_closed(self) -> None:
+        self.close_diff()
+
+    @on(DiffPane.Asked)
+    def _asked(self, event: DiffPane.Asked) -> None:
+        """You asked about lines of the diff: to the PR's prompt, with the lines."""
+        self.session.display = True  # if the diff was zoomed
+        self.session.ask_about(event.quote)
 
     async def action_pager(self) -> None:
         """The PR's full diff in your pager (gh's pager settings, or less)."""
@@ -1017,10 +1069,14 @@ class RepoView(PurrView):
         self.notify(f"The agent's reasoning: {what}", timeout=2)
 
     def action_zoom(self) -> None:
-        pane = self.query_one("#prs-pane")
-        pane.display = not pane.display
-        if pane.display:
-            self.query_one(OptionList).focus()
+        """Full screen: the diff, from it, or else the PR's pane; and back."""
+        if self.diff_shown and not self.session.has_focus_within:
+            self.session.display = not self.session.display
+            return
+        left = self.diff if self.diff_shown else self.query_one("#prs-pane")
+        left.display = not left.display
+        if left.display:
+            self._focus_left()
         elif not self.session.has_focus_within:
             self.session.focus_transcript()
 

@@ -279,8 +279,11 @@ class PurrApp(App):
         return isinstance(self.screen, ModalScreen)
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # Over a dialog or the diff, ctrl+n and ctrl+p are theirs: the diff moves with them.
+        # Over a dialog, ctrl+n and ctrl+p are its own; and a widget can take any of the
+        # app's keys while it has the focus (TAKES_OVER: the diff moves with ctrl+n/p).
         if action in _GIVEN_WAY and self._modal_open():
+            return False
+        if action in getattr(self.focused, "TAKES_OVER", ()):
             return False
         return super().check_action(action, parameters)
 
@@ -463,7 +466,8 @@ class PurrApp(App):
 
     def _action_changed(self, event: ActionPending | ActionResolved | CommentsChanged) -> None:
         """A proposal waits for you, or was settled, or your comments changed: the decision
-        box changes."""
+        box changes, and the diff's comments."""
+        self.main.repo.diff_changed(event.pr)
         self._session_changed(event.pr)
 
     def _session_state(self, pr: str) -> SessionState:

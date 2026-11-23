@@ -44,7 +44,7 @@ from claude_agent_sdk.types import (
 )
 
 from purr.claude import log_stderr
-from purr.models import PR, ActionKind, Finding, Reply, ReviewPlan, Severity
+from purr.models import PR, ActionKind, Finding, Quote, Reply, ReviewPlan, Severity
 from purr.review.instructions import ReviewInstructions
 from purr.review.plan import plan_section
 from purr.review.policy import GITHUB_DENY_RULES, github_write
@@ -120,6 +120,15 @@ def replies_note(replies: Sequence[Reply]) -> str:
         "still unanswered:\n" + "\n".join(said(reply) for reply in replies) + "\nTo answer "
         "one, propose it (propose_action): a reply in its thread (get_review_threads has the "
         "ids), or a comment for one on the PR.</purr-note>\n\n"
+    )
+
+
+def quote_note(quote: Quote) -> str:
+    """For the agent, ahead of your message: the lines of the diff you're asking about."""
+    text = quote.text.replace("purr-note>", "purr-note]")  # can't end the note early
+    return (
+        f"<purr-note>The user is asking about {quote.path}, {quote.lines()}, which read in "
+        f"the PR's diff:\n```diff\n{text}\n```</purr-note>\n\n"
     )
 
 

@@ -450,6 +450,8 @@ class GitHubWorker(BaseWorker):
                 side=request.side,
                 body=request.body,
                 head_sha=request.head_sha,
+                start_line=request.start_line,
+                start_side=request.start_side,
             )
         await self.send_bus_message(CommentsChanged(source=self.name, pr=str(request.pr)))
         return Done()

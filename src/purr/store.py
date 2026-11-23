@@ -257,6 +257,11 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX draft_comments_pr ON draft_comments (pr_id);
     """,
+    # A comment of yours on several lines: the first (line is the last).
+    """
+    ALTER TABLE draft_comments ADD COLUMN start_line INTEGER;
+    ALTER TABLE draft_comments ADD COLUMN start_side TEXT;
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -272,7 +277,14 @@ _STATE_ORDER = """
 
 def _draft(row: aiosqlite.Row) -> DraftComment:
     return DraftComment(
-        row["id"], row["path"], row["line"], row["side"], row["body"], row["head_sha"]
+        row["id"],
+        row["path"],
+        row["line"],
+        row["side"],
+        row["body"],
+        row["head_sha"],
+        row["start_line"],
+        row["start_side"],
     )
 
 
@@ -1060,16 +1072,29 @@ class Store:
     # -- Your inline comments, until they're posted ----------------------------------
 
     async def save_comment(
-        self, ref: PRRef, *, path: str, line: int, side: str, body: str, head_sha: str
+        self,
+        ref: PRRef,
+        *,
+        path: str,
+        line: int,
+        side: str,
+        body: str,
+        head_sha: str,
+        start_line: int | None = None,
+        start_side: str | None = None,
     ) -> DraftComment:
-        """A new inline comment of yours, on ``line`` of ``path`` at ``head_sha``."""
+        """A new inline comment of yours, on ``line`` of ``path`` at ``head_sha`` (or from
+        ``start_line`` to it)."""
         cursor = await self._db.execute(
-            "INSERT INTO draft_comments (pr_id, path, line, side, body, head_sha, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (await self._pr_id(ref), path, line, side, body, head_sha, _now()),
-        )
+            "INSERT INTO draft_comments"
+            " (pr_id, path, line, side, body, head_sha, created_at, start_line, start_side)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (await self._pr_id(ref), path, line, side, body, head_sha, _now(), start_line,
+             start_side),
+        )  # fmt: skip
         await self._db.commit()
-        return DraftComment(cursor.lastrowid or 0, path, line, side, body, head_sha)
+        comment_id = cursor.lastrowid or 0
+        return DraftComment(comment_id, path, line, side, body, head_sha, start_line, start_side)
 
     async def edit_comment(self, comment_id: int, body: str) -> None:
         sql = "UPDATE draft_comments SET body = ? WHERE id = ?"

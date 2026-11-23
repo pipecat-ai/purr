@@ -39,6 +39,7 @@ from purr.models import (
     PRDetails,
     PRRef,
     PRState,
+    Quote,
     Reply,
     Review,
     ReviewPlan,
@@ -92,6 +93,7 @@ class SessionState:
     approved: str | None = None  # the commit you approved it at, through Purr
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
+    quote: Quote | None = None  # the lines of the diff you're asking about, if any
     suggestion: str = ""  # what you might ask next (purr.suggest)
     suggested_at: int | None = None  # how far the transcript was when it was asked for
 
@@ -376,6 +378,11 @@ def _worktree_note(worktree_path: str) -> str | None:
     return "Worktree " + ("~" + str(path)[len(home) :] if str(path).startswith(home) else str(path))
 
 
+def _about(quote: Quote) -> str:
+    """How a question about lines of the diff starts: ``About llm_service.py:404–412:``."""
+    return f"About {quote.ref()}:"
+
+
 def _plan_note(plan: ReviewPlan) -> str:
     """What the lead planned, and why: while the review waits or runs (its place in line,
     how deep it goes)."""
@@ -524,7 +531,7 @@ class PRSession(Vertical):
         *pane_keys(
             ["approve", "dismiss", "merge", "move(1)", "move(-1)", "diff", "thinking"]
             + ["open_claude", "shell", "zoom", "switch_pane"],
-            switch_pane="List",
+            switch_pane="Other pane",  # the list, or the diff in its place
         ),
     ]
 
@@ -863,6 +870,14 @@ class PRSession(Vertical):
         if self.pr and self.pr.ref == ref:
             self.query_one(PromptArea).suggest(state.suggested())
 
+    def ask_about(self, quote: Quote) -> None:
+        """Ask the agent about lines of the diff: the prompt starts with which, and they go to
+        it with what you write (as long as that starts so)."""
+        self.state().quote = quote
+        prompt = self.query_one(PromptArea)
+        prompt.set_text(f"{_about(quote)} ")
+        prompt.focus()
+
     def action_leave_prompt(self) -> None:
         """esc in the prompt: the / suggestions close first, then back to the pane."""
         if not self.close_suggestions():
@@ -896,6 +911,11 @@ class PRSession(Vertical):
 
         self.app.push_screen(HistorySearchScreen(asked, prompt.text), picked)
 
+    def _quoted(self, text: str) -> Quote | None:
+        """The lines you asked about, if what you wrote still starts with them."""
+        quote = self.state().quote
+        return quote if quote and text.startswith(_about(quote)) else None
+
     @on(PromptArea.Submitted)
     async def send(self, event: PromptArea.Submitted) -> None:
         text = event.text.strip()
@@ -910,11 +930,14 @@ class PRSession(Vertical):
             except PurrError as e:
                 self.notify(str(e), severity="warning")
             return
+        quote = self._quoted(text)
         try:
-            sent = await self.purr_app.bus.request(SendMessage(pr=self.pr.ref, text=text))
+            request = SendMessage(pr=self.pr.ref, text=text, quote=quote)
+            sent = await self.purr_app.bus.request(request)
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
+        self.state().quote = None
         event.prompt.clear()
         event.prompt.remember(text)
         ref = str(self.pr.ref)

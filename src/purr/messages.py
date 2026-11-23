@@ -19,7 +19,7 @@ from typing import ClassVar, Literal
 from pipecat.bus import BusDataMessage, BusMessage
 
 from purr.jobs import Done, Request
-from purr.models import Depth, MergeCheck, PRDetails, PRRef, ReviewPlan
+from purr.models import Depth, MergeCheck, PRDetails, PRRef, Quote, ReviewPlan
 from purr.review.skills import RepoSkill, Skill
 
 # Worker names (bus addresses).
@@ -140,6 +140,10 @@ class SaveComment(Request[Done]):
     body: str
     head_sha: str
     comment_id: int | None = None
+    start_line: int | None = None  # on several lines: the first (line is the last)
+    start_side: str | None = None
+    start_line: int | None = None  # on several lines: the first (line is the last)
+    start_side: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -316,11 +320,12 @@ class MessageSent:
 
 @dataclass(kw_only=True)
 class SendMessage(Request[MessageSent]):
-    """Say something in the PR's conversation."""
+    """Say something in the PR's conversation; ``quote``: about these lines of its diff."""
 
     worker: ClassVar[str] = REVIEW_WORKER
     pr: PRRef
     text: str
+    quote: Quote | None = None
 
 
 @dataclass(kw_only=True)
