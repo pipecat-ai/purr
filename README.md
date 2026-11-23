@@ -21,22 +21,22 @@ it.**
   question from the agent, someone replying to you on GitHub), *Reviewing*, *Review
   requested*, *Others reviewing*, *Done*, *Not reviewed*. News from other repos shows at the
   top.
-- **Every review is a conversation.** It's a Claude Code session you can keep talking to ("is
-  that race real?", "drop the nit"), and Purr suggests what to ask next, as Claude Code does.
+- **Every review is a conversation.** You can keep talking to the agent about the PR ("is that
+  race real?", "drop the nit"), and Purr suggests what to ask next.
 - **You can comment on lines of the diff.** Your comments go out with the agent's, in one
   review.
 - **Posting and merging are a key each.** `a` posts the review as you. `m` shows the checks,
   the other reviewers and any conflicts, then merges what you approved.
 - **It follows several repos at once**, and recaps what happened while you were away.
-- **It's safe by default.** It uses Claude Code's own permissions, an optional sandbox, and
-  the repo's rules from its main branch, so a PR can't change what it's reviewed against.
+- **It's safe by default.** The agents ask before doing anything risky, can run in a sandbox,
+  and follow the repo's rules from its main branch, so a PR can't change what it's reviewed
+  against.
 
 ## 🚀 Setup
 
 You need a Mac or Linux terminal, [uv](https://docs.astral.sh/uv/), the
-[GitHub CLI](https://cli.github.com) and git. Claude Code is optional: Purr reviews with the
-[Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview), which comes with its
-own.
+[GitHub CLI](https://cli.github.com) and git. You don't need Claude Code: Purr runs its
+agents with the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview).
 
 ```sh
 git clone git@github.com:pipecat-ai/purr.git
@@ -99,13 +99,15 @@ that repo's own versions instead.
 | `~/.config/purr/review.md` | How you like reviews: what to raise, what to skip, tone |
 | `~/.config/purr/code.md` | What good code looks like to you; reviews hold PRs to it |
 | `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, ... (`purr --help` for flags) |
-| `~/.claude/settings.json` | Your Claude Code permissions, which reviews use too |
+| `~/.claude/settings.json` | What the agents may run without asking (the file Claude Code uses too) |
 
 ## 💡 Good to know
 
 - **Purr never posts on its own.** The agents can read GitHub but not change it: they propose,
   and Purr posts what you approve, as you, signed "Sent from Purr."
-- **Permissions are Claude Code's own**, in its auto mode: safe things run, risky ones ask.
+- **The agents ask before anything risky.** Reading code and safe commands just run; anything
+  else waits for your OK, and `A` keeps a rule so it doesn't ask again. This is the Agent SDK's
+  permission system (Claude Code's, underneath), so the rules go in `~/.claude/settings.json`.
   `--sandbox` confines the agents' commands to the PR's checkout (on Ubuntu 24.04+, AppArmor
   has to allow it, so it's off by default).
 - **Costs.** `/cost` shows what each PR has cost. Quick reviews run on Sonnet;
@@ -125,4 +127,4 @@ How Purr works and why: [`docs/purr.md`](docs/purr.md).
 
 ## 📄 License
 
-BSD 2-Clause, as [Pipecat](https://github.com/pipecat-ai/pipecat). See [LICENSE](LICENSE).
+BSD 2-Clause. See [LICENSE](LICENSE).
