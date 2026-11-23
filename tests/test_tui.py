@@ -1313,7 +1313,7 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         # opens); tab shuts one to a line, and opens it again.
         await until(pilot, lambda: rows(view, "│ Say why"))
         await pilot.press("end")  # a box is one step, highlighted whole
-        assert view.current().said.key == "github:T1" and view.current().text.plain.endswith("╮")
+        assert view.current().said.thread == "T1" and view.current().text.plain.endswith("╮")
         await pilot.press("tab")
         await until(pilot, lambda: rows(view, "▸ ✎ carol: Say why"))
         await pilot.press("tab")

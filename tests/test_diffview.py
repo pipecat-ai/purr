@@ -50,29 +50,33 @@ def test_files_start_as_a_line_each():
     assert "  generated, not shown" in opened  # a lock file stays shut
 
 
-def test_comments_in_boxes_under_their_lines():
+def test_a_box_for_each_comment_under_its_line():
     files = parse(DIFF)
     mine = [DraftComment(1, "src/bus.py", 2, "LEFT", "Why drop this?", "abc")]
     agent = [{"path": "src/bus.py", "line": 2, "body": "Race here"}, {"path": "x.py"}]
     threads = [
         {"id": "T1", "path": "src/bus.py", "line": 1, "side": "RIGHT", "resolved": False,
          "comments": [{"author": "alice", "body": "Should subscribe take a lock?"},
-                      {"author": "bob", "body": "Done."}]},
+                      {"author": "me", "by_user": True, "id": "C2", "body": "Done."}]},
         {"id": "T2", "path": "src/bus.py", "line": 2, "side": "RIGHT", "resolved": True,
          "comments": [{"author": "carol", "body": "Typo"}]},
         {"id": "T3", "path": "src/bus.py", "line": None, "resolved": False,
          "comments": [{"author": "dave", "body": "Old code"}]},
     ]  # fmt: skip
     comments = said(mine, agent, threads)
-    assert len(comments) == 5  # the agent's without a line can't be shown
-    text = plain(rows(files, {0}, comments, shut={"github:T2"}))
-    assert text[0] == "▾ src/bus.py  +1 −1  ✎ 5"
+    assert len(comments) == 6  # the agent's without a line can't be shown
+    reply = next(c for c in comments if c.id == "C2")
+    assert (reply.thread, reply.reply, reply.yours) == ("T1", True, True)
+    text = plain(rows(files, {0}, comments, shut={"github:T2:0"}))
+    assert text[0] == "▾ src/bus.py  +1 −1  ✎ 6"
     assert text[2:] == [
         "    1    1   def subscribe(self):",
-        "            ╭─ ✎ alice and bob ────────────────────╮",  # a thread: who said what
-        "            │ alice: Should subscribe take a lock? │",
-        "            │ bob: Done.                           │",
-        "            ╰──────────────────────────────────────╯",
+        "            ╭─ ✎ alice ─────────────────────╮",  # a thread: a box a comment
+        "            │ Should subscribe take a lock? │",
+        "            ╰───────────────────────────────╯",
+        "              ╭─ ✎ me (you) · reply ─╮",  # a reply, a little further in
+        "              │ Done.                │",
+        "              ╰──────────────────────╯",
         "    2       -    pass",
         "            ╭─ ✎ you ────────╮",  # on the deleted line: the base's side
         "            │ Why drop this? │",
@@ -112,10 +116,9 @@ def test_boxes_in_color_authors_and_mentions_picked_out():
          "comments": [{"author": "alice", "body": "Ask @bob about it"},
                       {"author": "bob", "body": "Done."}]},
     ]  # fmt: skip
-    box = rows(files, {0}, said([], [], threads))[3:7]
+    box = rows(files, {0}, said([], [], threads))[3:6]
     top, first = box[0].text, box[1].text
-    assert top.plain.startswith("            ╭─ ✎ alice and bob · resolved")
-    assert "bold cyan" in styles_at(top, "alice and bob")  # resolved, still in its color
+    assert top.plain.startswith("            ╭─ ✎ alice · resolved")
+    assert "bold cyan" in styles_at(top, "alice · resolved")  # resolved, still in its color
     assert "cyan" in styles_at(top, "╭")
-    assert "bold cyan" in styles_at(first, "alice:")  # who said it
     assert "bold blue" in styles_at(first, "@bob")  # a mention

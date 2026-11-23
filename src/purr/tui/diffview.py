@@ -81,30 +81,25 @@ LINE_STYLES = {"@@": "cyan", "+": "green", "-": "red", "\\": "dim"}
 
 
 @dataclass(frozen=True)
-class Remark:
-    """One comment in a box: who wrote it and what; on GitHub, its id, and whether it's
-    yours (you can edit it)."""
-
-    who: str
-    text: str
-    yours: bool = False
-    id: str = ""
-
-
-@dataclass(frozen=True)
 class Said:
-    """What was said on a line: a comment of yours (``mine``), one the agent proposes, or a
-    review thread on GitHub (its comments, in order)."""
+    """A comment on a line, a box of its own: yours, not posted yet (``mine``), one the
+    agent proposes, or one in a review thread on GitHub (``thread``, to reply in; ``reply``
+    if it isn't the thread's first; ``yours`` if you wrote it, to change it there)."""
 
     path: str
     line: int  # 0: on no line of this diff (outdated)
     side: str
-    comments: tuple[Remark, ...]
+    who: str
+    text: str
     source: str  # "you", "agent", "github"
     key: str  # which it is, to open or close it
     resolved: bool = False
     mine: DraftComment | None = None
     start: int | None = None  # on several lines: the first (line is the last)
+    thread: str = ""
+    reply: bool = False
+    yours: bool = False
+    id: str = ""  # on GitHub
 
 
 @dataclass(frozen=True)
@@ -129,39 +124,31 @@ def said(
     """Your comments, the agent's proposed ones, and the PR's review threads on GitHub."""
     yours = [_yours(comment) for comment in mine]
     theirs = [
-        Said(str(c["path"]), int(c["line"]), "RIGHT", (Remark("agent", str(c.get("body") or "")),),
+        Said(str(c["path"]), int(c["line"]), "RIGHT", "agent", str(c.get("body") or ""),
              "agent", f"agent:{i}")
         for i, c in enumerate(proposed)
         if c.get("path") and c.get("line")
     ]  # fmt: skip
-    return yours + theirs + [_thread(thread) for thread in threads if thread.get("path")]
+    on_github = [said for thread in threads if thread.get("path") for said in _thread(thread)]
+    return yours + theirs + on_github
 
 
 def _yours(comment: DraftComment) -> Said:
     start = comment.start_line if comment.start_line != comment.line else None
-    remark = Remark("you", comment.body, yours=True)
-    key = f"you:{comment.id}"
     where = (comment.path, comment.line, comment.side)
-    return Said(*where, (remark,), "you", key, mine=comment, start=start)
+    return Said(*where, "you", comment.body, "you", f"you:{comment.id}", mine=comment, start=start)
 
 
-def _remark(comment: dict) -> Remark:
-    """A comment of a thread on GitHub."""
-    who, text = comment.get("author") or "?", comment.get("body") or ""
-    return Remark(who, text, bool(comment.get("by_user")), comment.get("id") or "")
-
-
-def _thread(thread: dict) -> Said:
-    comments = tuple(_remark(comment) for comment in thread["comments"])
-    return Said(
-        str(thread["path"]),
-        int(thread.get("line") or 0),
-        str(thread.get("side") or "RIGHT"),
-        comments,
-        "github",
-        f"github:{thread.get('id')}",
-        resolved=bool(thread.get("resolved")),
-    )
+def _thread(thread: dict) -> list[Said]:
+    """A review thread on GitHub: a box for each of its comments, in order."""
+    where = (str(thread["path"]), int(thread.get("line") or 0), str(thread.get("side") or "RIGHT"))
+    return [
+        Said(*where, comment.get("author") or "?", comment.get("body") or "", "github",
+             f"github:{thread.get('id')}:{i}", resolved=bool(thread.get("resolved")),
+             thread=str(thread.get("id")), reply=i > 0, yours=bool(comment.get("by_user")),
+             id=str(comment.get("id") or ""))
+        for i, comment in enumerate(thread["comments"])
+    ]  # fmt: skip
 
 
 def rows(
@@ -216,10 +203,11 @@ def _said_rows(index: int, said: Said, shut: set[str], *, where: bool = False) -
 
 
 def _title(said: Said, where: bool) -> str:
-    """``you``, ``agent, proposed``, ``alice and bob · resolved`` (and where, if not here)."""
-    people = list(dict.fromkeys(remark.who for remark in said.comments))
-    title = {"you": "you", "agent": "agent, proposed"}.get(said.source) or " and ".join(people)
+    """``you``, ``agent, proposed``, ``alice · reply · resolved`` (and where, if not here)."""
+    title = "agent, proposed" if said.source == "agent" else said.who
+    title += " (you)" if said.yours else ""
     notes = [f"lines {said.start}–{said.line}"] if said.start else []
+    notes += ["reply"] if said.reply else []
     notes += ["resolved"] if said.resolved else []
     notes += [_where(said)] if where else []
     return " · ".join([title, *notes])
@@ -230,13 +218,11 @@ def _where(said: Said) -> str:
 
 
 def _shut_line(said: Said, where: bool) -> Text:
-    first = said.comments[0].text if said.comments else ""
-    more = f" (+{len(said.comments) - 1})" if len(said.comments) > 1 else ""
     color = _COLORS[said.source]
     return Text.assemble(
-        (f"{_INDENT}▸ ✎ ", color),
+        (f"{_indent(said)}▸ ✎ ", color),
         (_title(said, where), f"bold {color}"),
-        (f": {_short(first)}{more}", "dim" if said.resolved else ""),
+        (f": {_short(said.text)}", "dim" if said.resolved else ""),
     )
 
 
@@ -250,44 +236,43 @@ _MENTION = re.compile(r"(?<![\w/])@[A-Za-z0-9][\w-]*(?:/[\w.-]+)?")  # @alice, @
 
 
 def _box(said: Said, where: bool) -> list[Text]:
-    """The comment (each of a thread's, after who said it) in a box, wrapped: its border
-    and title in its color (yours, the agent's, GitHub's), resolved or not; the words in
-    the text's, with mentions picked out."""
+    """The comment in a box, wrapped: its border and title (who wrote it) in its color
+    (yours, the agent's, GitHub's), resolved or not; the words in the text's, with
+    mentions picked out."""
     color = _COLORS[said.source]
-    many = len(said.comments) > 1
-    body = [line for remark in said.comments for line in _wrapped(remark, many, color)]
+    body = _wrapped(said.text)
     title = f"✎ {_title(said, where)}"
     width = max([line.cell_len for line in body] + [cell_len(title) + 2])
+    indent = _indent(said)
     top = Text.assemble(
-        (f"{_INDENT}╭─ ", color),
+        (f"{indent}╭─ ", color),
         (title, f"bold {color}"),
         (f" {'─' * (width - cell_len(title) - 1)}╮", color),
     )
-    middle = [_inside(line, width, color) for line in body]
-    bottom = Text(f"{_INDENT}╰{'─' * (width + 2)}╯", style=color)
+    middle = [_inside(line, width, color, indent) for line in body]
+    bottom = Text(f"{indent}╰{'─' * (width + 2)}╯", style=color)
     return [top, *middle, bottom]
 
 
-def _inside(line: Text, width: int, color: str) -> Text:
+def _indent(said: Said) -> str:
+    """Under the code; a reply in a thread a little further in."""
+    return _INDENT + "  " * said.reply
+
+
+def _inside(line: Text, width: int, color: str, indent: str) -> Text:
     """A line of a box: between its sides, on its background, padded to its width."""
     inside = Text(" ", style=_INSIDE)
     inside.append_text(line)
     inside.append(" " * (width - line.cell_len + 1), style=_INSIDE)
-    return Text.assemble((f"{_INDENT}│", color), inside, ("│", color))
+    return Text.assemble((f"{indent}│", color), inside, ("│", color))
 
 
-def _wrapped(remark: Remark, many: bool, color: str) -> list[Text]:
-    """A comment's lines; in a thread of several, after who said it (in bold, its color)."""
+def _wrapped(text: str) -> list[Text]:
+    """A comment's lines, wrapped, with its mentions picked out."""
     lines = [
-        line
-        for paragraph in remark.text.splitlines()
-        for line in textwrap.wrap(paragraph, _WRAP) or [""]
+        line for paragraph in text.splitlines() for line in textwrap.wrap(paragraph, _WRAP) or [""]
     ] or [""]
-    texts = [_mentions(line) for line in lines]
-    if not many:
-        return texts
-    first = Text.assemble((f"{remark.who}: ", f"bold {color}"), texts[0])
-    return [first, *[Text("  ") + text for text in texts[1:]]]
+    return [_mentions(line) for line in lines]
 
 
 def _mentions(line: str) -> Text:
@@ -712,16 +697,15 @@ class DiffPane(Vertical):
     def _editing(self, said: Said) -> tuple[str, str, Callable[[Said, str], Awaitable[None]]]:
         """What the editor says, what it starts with, and what saving it does."""
         where = f"{said.path}:{said.line}"
-        last = said.comments[-1]
         if said.source == "you":
-            return f"Your comment on {where}", last.text, self._rewrite_mine
+            return f"Your comment on {where}", said.text, self._rewrite_mine
         if said.source == "agent":
-            return f"The agent's proposed comment on {where}", last.text, self._rewrite_proposed
-        if last.yours and last.id:
+            return f"The agent's proposed comment on {where}", said.text, self._rewrite_proposed
+        if said.yours and said.id:
             signature = self.purr_app.purr.config.signature
             heading = f"Your comment on GitHub, on {where} (saving changes it there)"
-            return heading, unsigned(last.text, signature), self._edit_on_github
-        return f"Your reply on GitHub, to {last.who} on {where}", "", self._reply
+            return heading, unsigned(said.text, signature), self._edit_on_github
+        return f"Your reply on GitHub, to {said.who} on {where}", "", self._reply
 
     async def _rewrite_mine(self, said: Said, text: str) -> None:
         await self._save(text, None, said.mine)
@@ -733,15 +717,13 @@ class DiffPane(Vertical):
 
     async def _edit_on_github(self, said: Said, text: str) -> None:
         assert self.pr is not None
-        comment = said.comments[-1].id
-        await self._request(EditGitHubComment(pr=self.pr.ref, comment_id=comment, body=text))
+        await self._request(EditGitHubComment(pr=self.pr.ref, comment_id=said.id, body=text))
         self.notify("Changed on GitHub")
         self.run_worker(self._load_threads(), group="threads", exclusive=True)
 
     async def _reply(self, said: Said, text: str) -> None:
         assert self.pr is not None
-        thread = said.key.partition(":")[2]
-        await self._request(ReplyToThread(pr=self.pr.ref, thread_id=thread, body=text))
+        await self._request(ReplyToThread(pr=self.pr.ref, thread_id=said.thread, body=text))
         self.notify("Replied on GitHub")
         self.run_worker(self._load_threads(), group="threads", exclusive=True)
 
