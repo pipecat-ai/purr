@@ -513,6 +513,9 @@ class PRSession(Vertical):
         # The transcript, wherever the focus is in the pane, typing included.
         Binding("pageup", "page(-1)", "Page up", show=False, priority=True),
         Binding("pagedown", "page(1)", "Page down", show=False, priority=True),
+        # As in Emacs, reading; typing, ctrl+v pastes (what you copied from the pane).
+        Binding("ctrl+v", "page(1)", "Page down", show=False),
+        Binding("alt+v", "page(-1)", "Page up", show=False),
         Binding("ctrl+r", "search_history", "Search history"),
         # In the prompt: the / suggestions close, or back to the pane. Elsewhere
         # it's the repo's (home).

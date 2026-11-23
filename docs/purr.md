@@ -202,7 +202,7 @@ Opening a PR (`o` or `enter`) puts you in a Claude Code-style terminal for that 
 
 ## Commenting on lines
 
-`d` opens the PR's diff full screen (`tui/diffview.py`), with a cursor on a line (the diff is read once, in `purr/diff.py`: files, numbered lines, and the line and side a comment on each goes on): `↑`/`↓` (or `j`/`k`), `page up`/`page down`, `home`/`end`. Each line shows its numbers in the base and in the PR. Files start as a line each, except in a short diff and those with comments on them: `tab` (or `enter`, or a click) opens or shuts the one the cursor's in, `e` all, `n`/`p` go to the next or previous file. `esc` goes back to the PR.
+`d` opens the PR's diff full screen (`tui/diffview.py`), with a cursor on a line (`ctrl+v` / `alt+v` page, as in Emacs; `ctrl+n` / `ctrl+p` move a line) (the diff is read once, in `purr/diff.py`: files, numbered lines, and the line and side a comment on each goes on): `↑`/`↓` (or `j`/`k`), `page up`/`page down`, `home`/`end`. Each line shows its numbers in the base and in the PR. Files start as a line each, except in a short diff and those with comments on them: `tab` (or `enter`, or a click) opens or shuts the one the cursor's in, `e` all, `n`/`p` go to the next or previous file. `esc` goes back to the PR.
 
 - `c` writes a comment on the line under the cursor (or on someone's comment: on its line), or rewrites yours under it; `x` removes it (`enter` saves, `ctrl+j` a new line).
 - What's been said shows under its line, each in a box: yours (yellow), the agent's proposed inline comments (magenta), so you see its review where it lands, and the PR's review threads on GitHub (cyan; `GetReviewThreads {pr}` on the GitHub worker, read in the background as the view opens, and their files open as they come). A thread lists who said what. `tab` (or a click) on a comment shuts it to a line (`▸ ✎ carol · resolved: Typo`) and opens it again; resolved threads start shut. One on a line no longer in the diff (outdated) goes at the end of its file. The side GitHub puts it on (`diffSide`) places one on a deleted line.
@@ -453,7 +453,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `n` / `p` next / previous: repo, or PR. Moving stops at either end of the list rather than wrapping round, and at a group's first PR its heading shows too (it can't be selected itself). They only change which PR the PR's pane shows, never the focus, so from the pane you read PRs one after another.
 - `/` search the PR list as you type (number, title, author, assignees; every word has to match). `enter` goes back to the list, keeping the results. The search stays (shown above the list, per repo, also after leaving it) until you press `/` and delete it.
 - `esc` goes home from the list or the PR's pane. From the search box it goes back to the list (the search stays), and from the prompt back to the PR's pane (the `/` suggestions close first): a second `esc` goes home. Nothing's lost: the search and anything half-typed are there when you're back.
-- `page up` / `page down` scroll a page, in either pane (the transcript while typing too)
+- `page up` / `page down` scroll a page, in either pane (the transcript while typing too); reading the PR's pane, `ctrl+v` / `alt+v` (meta+v) too, as in Emacs (typing, `ctrl+v` pastes)
 - `space` mark/unmark PR
 - `r` start review on marked PRs (or the selected one), assigning you
 - `d` the diff view, to read it line by line and comment (`D`: the whole diff in your pager)

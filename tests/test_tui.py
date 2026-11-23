@@ -294,6 +294,15 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("pageup")
         await until(pilot, lambda: log.scroll_y < bottom)
         assert focused(app) == "prompt"
+        # Reading the pane, ctrl+v and alt+v (meta+v) page down and up, as in Emacs.
+        log.focus()
+        await pilot.press("ctrl+v")
+        await until(pilot, lambda: log.scroll_y == bottom)
+        await pilot.press("alt+v")
+        await until(pilot, lambda: log.scroll_y < bottom)
+        await pilot.press("ctrl+v")
+        await until(pilot, lambda: log.scroll_y == bottom)
+        prompt.focus()
 
         # The footer has the keys for where you are: typing, the prompt's...
         await until(pilot, lambda: {"Back", "Search history"} <= footer(app))
@@ -1263,6 +1272,10 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
         await pilot.press("enter")
         await until(pilot, lambda: len(view._rows) > 2)
+        await pilot.press("ctrl+v")  # a page down, and back up, as in Emacs
+        assert view.cursor == view.size.height - 1
+        await pilot.press("alt+v")
+        assert view.cursor == 0
         await pilot.press("down", "ctrl+n", "ctrl+n", "ctrl+p", "down")  # ctrl+n/p as ↓/↑
         assert view.current().line.target() == (1, "RIGHT")  # @@, -    pass, +    self.lock
         assert isinstance(app.screen, DiffScreen)  # not the switcher, nor news

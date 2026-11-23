@@ -238,8 +238,8 @@ class DiffView(ScrollView, can_focus=True):
     BINDINGS = [
         Binding("up,k,ctrl+p", "move(-1)", "Up", show=False),
         Binding("down,j,ctrl+n", "move(1)", "Down", show=False),
-        Binding("pageup", "page(-1)", "Page up", show=False),
-        Binding("pagedown", "page(1)", "Page down", show=False),
+        Binding("pageup,alt+v", "page(-1)", "Page up", show=False),  # alt+v, ctrl+v: as in Emacs
+        Binding("pagedown,ctrl+v", "page(1)", "Page down", show=False),
         Binding("home", "move(-1000000)", "Top", show=False),
         Binding("end", "move(1000000)", "Bottom", show=False),
         # Here rather than on the screen: tab would move the focus otherwise.
