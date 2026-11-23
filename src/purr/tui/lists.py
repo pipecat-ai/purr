@@ -3,11 +3,15 @@ shows in one."""
 
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
+from rich.color import Color
 from rich.rule import Rule
+from rich.segment import Segment
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual._widget_navigation import find_next_enabled_no_wrap
 from textual.binding import Binding
+from textual.strip import Strip
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
@@ -74,6 +78,36 @@ class GroupedList(OptionList):
     def _heading(self, option: Option) -> bool:
         """A heading (or the gap above one), which comes into view with what's under it."""
         return option.disabled
+
+    def render_line(self, y: int) -> Strip:
+        """A line, with any text in about the cursor's own color (a PR's number, in the
+        theme's primary) in the cursor's text color instead, so it doesn't vanish."""
+        strip = super().render_line(y)
+        if not any(_hidden(segment.style) for segment in strip):
+            return strip
+        cursor = self.get_visual_style("option-list--option", "option-list--option-highlighted")
+        legible = Style(color=cursor.rich_style.color)
+        return Strip(
+            [
+                Segment(text, style + legible, control) if _hidden(style) else segment
+                for segment in strip
+                for text, style, control in [segment]
+            ],
+            strip.cell_length,
+        )
+
+
+def _hidden(style: Style | None) -> bool:
+    """Text about the color of what's behind it."""
+    if not style or not style.color or not style.bgcolor:
+        return False
+    return _close(style.color, style.bgcolor)
+
+
+def _close(one: Color, other: Color) -> bool:
+    if one.triplet is None or other.triplet is None:  # the terminal's colors: as it has them
+        return one == other
+    return sum((a - b) ** 2 for a, b in zip(one.triplet, other.triplet, strict=True)) < 40**2
 
 
 class PRList(GroupedList):

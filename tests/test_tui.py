@@ -1358,6 +1358,24 @@ async def test_the_colors_are_solarized(tmp_path):
         assert app.ansi_theme.ansi_colors[2] == (0x85, 0x99, 0x00)
 
 
+async def test_the_highlighted_prs_number_shows(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1), remote(2)]
+    async with app.run_test(size=(140, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        prs = app.main.repo.query_one("#prs")
+        await until(pilot, lambda: prs.has_focus)
+        line = prs._index_to_line[prs.highlighted] - prs.scroll_offset.y
+        number = next(s for s in prs.render_line(line) if s.text.startswith("#"))
+        # The number's in the theme's primary, the cursor's color: on it, its text color.
+        assert number.style.bgcolor.triplet == (0x26, 0x8B, 0xD2)
+        assert number.style.color.triplet != number.style.bgcolor.triplet
+        assert number.style.bold
+
+
 async def test_the_agents_reasoning_is_a_line_per_thought(tmp_path):
     """In full it's ten times what the agent says: a line each, unless you press t."""
     app, github = make_app(tmp_path)
