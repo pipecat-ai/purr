@@ -50,24 +50,44 @@ def test_files_start_as_a_line_each():
     assert "  generated, not shown" in opened  # a lock file stays shut
 
 
-def test_comments_under_their_lines():
+def test_comments_in_boxes_under_their_lines():
     files = parse(DIFF)
-    mine = [
-        DraftComment(1, "src/bus.py", 2, "LEFT", "Why drop this?", "abc"),
-        DraftComment(2, "src/bus.py", 9, "RIGHT", "Way down", "abc"),
-    ]
+    mine = [DraftComment(1, "src/bus.py", 2, "LEFT", "Why drop this?", "abc")]
     agent = [{"path": "src/bus.py", "line": 2, "body": "Race here"}, {"path": "x.py"}]
-    comments = said(mine, agent)
-    assert len(comments) == 3  # one without a line can't be shown
-    text = plain(rows(files, {0}, comments))
-    assert text[0] == "▾ src/bus.py  +1 −1  ✎ 3"
-    assert text[3:7] == [
+    threads = [
+        {"id": "T1", "path": "src/bus.py", "line": 1, "side": "RIGHT", "resolved": False,
+         "comments": [{"author": "alice", "body": "Should subscribe take a lock?"},
+                      {"author": "bob", "body": "Done."}]},
+        {"id": "T2", "path": "src/bus.py", "line": 2, "side": "RIGHT", "resolved": True,
+         "comments": [{"author": "carol", "body": "Typo"}]},
+        {"id": "T3", "path": "src/bus.py", "line": None, "resolved": False,
+         "comments": [{"author": "dave", "body": "Old code"}]},
+    ]  # fmt: skip
+    comments = said(mine, agent, threads)
+    assert len(comments) == 5  # the agent's without a line can't be shown
+    text = plain(rows(files, {0}, comments, shut={"github:T2"}))
+    assert text[0] == "▾ src/bus.py  +1 −1  ✎ 5"
+    assert text[2:] == [
+        "    1    1   def subscribe(self):",
+        "            ╭─ ✎ alice and bob ────────────────────╮",  # a thread: who said what
+        "            │ alice: Should subscribe take a lock? │",
+        "            │ bob: Done.                           │",
+        "            ╰──────────────────────────────────────╯",
         "    2       -    pass",
-        "            ✎ you: Why drop this?",
+        "            ╭─ ✎ you ────────╮",  # on the deleted line: the base's side
+        "            │ Why drop this? │",
+        "            ╰────────────────╯",
         "         2  +    self._subscribers.append(x)",
-        "            ✎ agent: Race here",
+        "            ╭─ ✎ agent, proposed ─╮",
+        "            │ Race here           │",
+        "            ╰─────────────────────╯",
+        "            ▸ ✎ carol · resolved: Typo",  # shut: a line
+        "            ╭─ ✎ dave · outdated ─╮",  # on no line of this diff: at the end
+        "            │ Old code            │",
+        "            ╰─────────────────────╯",
+        "▸ uv.lock  +1 −1",
+        "▸ docs/new.md  +1 −0  new file",
     ]
-    assert text[7] == "            ✎ you (line 9, not in the diff): Way down"
 
 
 def test_which_files_start_opened():

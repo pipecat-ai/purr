@@ -415,7 +415,7 @@ class GitHub:
         body = await self.graphql(
             "query($owner: String!, $name: String!, $number: Int!) {"
             " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
-            " reviewThreads(first: 100) { nodes { id isResolved isOutdated path line"
+            " reviewThreads(first: 100) { nodes { id isResolved isOutdated path line diffSide"
             " comments(first: 30) { nodes { author { login } body createdAt } } } } } } }",
             {"owner": owner, "name": name, "number": ref.number},
         )
@@ -439,6 +439,7 @@ class GitHub:
                     "id": node["id"],
                     "path": node.get("path"),
                     "line": node.get("line"),
+                    "side": node.get("diffSide") or "RIGHT",  # LEFT: on a deleted line
                     "resolved": node.get("isResolved", False),
                     "outdated": node.get("isOutdated", False),
                     "comments": comments,

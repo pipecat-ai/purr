@@ -114,6 +114,19 @@ class Posted:
 
 
 @dataclass(kw_only=True)
+class ReviewThreads:
+    threads: list[dict]  # see GitHub.review_threads
+
+
+@dataclass(kw_only=True)
+class GetReviewThreads(Request[ReviewThreads]):
+    """The PR's inline review threads on GitHub, with their comments (for the diff view)."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class SaveComment(Request[Done]):
     """An inline comment of yours on a line of the PR's diff at ``head_sha`` (see
     DraftComment), or, with ``comment_id``, new words for one. It's posted with your

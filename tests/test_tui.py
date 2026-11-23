@@ -1236,10 +1236,24 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert "self.lock" not in transcript(app)  # the PR's pane doesn't show the diff
 
         # d: the diff, to read line by line. Its files start shut too; enter opens one.
+        github.threads = [
+            {"id": "T1", "path": "README.md", "line": 1, "side": "RIGHT", "resolved": False,
+             "comments": [{"author": "carol", "body": "Say why"}]},
+        ]  # fmt: skip
         await pilot.press("d")
         await until(pilot, lambda: isinstance(app.screen, DiffScreen))
         view = app.screen.query_one(DiffView)
-        await until(pilot, lambda: len(view._rows) == 2)
+        # The PR's review threads on GitHub come in a box under their line (their file
+        # opens); tab shuts one to a line, and opens it again.
+        await until(pilot, lambda: rows(view, "│ Say why"))
+        await pilot.press("end", "up")
+        assert view.current().said.key == "github:T1"
+        await pilot.press("tab")
+        await until(pilot, lambda: rows(view, "▸ ✎ carol: Say why"))
+        await pilot.press("tab")
+        await until(pilot, lambda: rows(view, "│ Say why"))
+        await pilot.press("home", "n", "tab", "home")  # and the README's file shuts
+        await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
         await pilot.press("tab")  # tab (or enter) opens the file, and shuts it
         await until(pilot, lambda: len(view._rows) > 2)
         await pilot.press("down", "tab")
@@ -1250,20 +1264,20 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert view.current().line.target() == (1, "RIGHT")  # @@, -    pass, +    self.lock
         assert isinstance(app.screen, DiffScreen)  # not the switcher, nor news
 
-        # c: a comment on that line, shown under it; c on it rewrites it.
+        # c: a comment on that line, in a box under it; c on it rewrites it.
         await pilot.press("c")
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press(*"Why a lock?", "enter")
-        await until(pilot, lambda: rows(view, "✎ you: Why a lock?"))
+        await until(pilot, lambda: rows(view, "│ Why a lock? "))
         await pilot.press("down", "c")
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press("ctrl+u", *"Why a lock here?", "enter")
-        await until(pilot, lambda: rows(view, "✎ you: Why a lock here?"))
+        await until(pilot, lambda: rows(view, "│ Why a lock here?"))
         # One on the deleted line goes on the base's side; x removes it.
         await pilot.press("up", "up", "c")
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press(*"Gone?", "enter")
-        await until(pilot, lambda: rows(view, "✎ you: Gone?"))
+        await until(pilot, lambda: rows(view, "│ Gone?"))
         assert [(c.line, c.side) for c in await app.purr.store.draft_comments(ref)] == [
             (1, "RIGHT"), (1, "LEFT")
         ]  # fmt: skip

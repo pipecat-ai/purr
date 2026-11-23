@@ -24,6 +24,7 @@ from purr.messages import (
     DismissReplies,
     FetchDetails,
     FetchedDetails,
+    GetReviewThreads,
     MarkSeen,
     Merged,
     MergePR,
@@ -33,6 +34,7 @@ from purr.messages import (
     PRChanged,
     PRListUpdated,
     RemoveComment,
+    ReviewThreads,
     SaveComment,
     Synced,
     UnwatchRepo,
@@ -425,7 +427,14 @@ class GitHubWorker(BaseWorker):
             await self.send_bus_message(CommentsChanged(source=self.name, pr=str(ref)))
         return url
 
-    # -- Your inline comments -------------------------------------------------------
+    # -- Inline comments ------------------------------------------------------------
+
+    @handles(GetReviewThreads)
+    async def get_review_threads(self, request: GetReviewThreads) -> ReviewThreads:
+        try:
+            return ReviewThreads(threads=await self._github.review_threads(request.pr))
+        except GitHubError as e:
+            raise Failed(f"Couldn't read its review threads: {e}") from e
 
     @handles(SaveComment)
     async def save_comment(self, request: SaveComment) -> Done:

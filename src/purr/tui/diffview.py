@@ -5,7 +5,9 @@ comments on them, if not): ``tab`` (or ``enter``) opens or closes the one the cu
 ``e`` all of them, ``n``/``p`` go to the next or previous file. ``c`` writes a
 comment on the line under the cursor, or rewrites yours under it, and ``x``
 removes it. Yours are posted with your next review of the PR (see
-DraftComment); the comments the agent proposes show too.
+DraftComment). The comments the agent proposes show too, and the PR's review
+threads on GitHub: each in a box under its line, which ``tab`` closes to a line
+(resolved threads start that way) and opens again.
 """
 
 import textwrap
@@ -13,6 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 from textual import events, on
@@ -27,7 +30,7 @@ from textual.widgets import Footer, Label, Static
 
 from purr.diff import File, Line, parse
 from purr.jobs import PurrError
-from purr.messages import RemoveComment, SaveComment
+from purr.messages import GetReviewThreads, RemoveComment, SaveComment
 from purr.models import PR, DraftComment
 from purr.tui.prompt import PromptArea
 
@@ -62,12 +65,16 @@ LINE_STYLES = {"@@": "cyan", "+": "green", "-": "red", "\\": "dim"}
 
 @dataclass(frozen=True)
 class Said:
-    """A comment as the view shows it: yours (``mine`` set) or the agent's proposed."""
+    """What was said on a line: a comment of yours (``mine``), one the agent proposes, or a
+    review thread on GitHub. ``comments`` are each ``(who, what they said)``."""
 
     path: str
-    line: int
+    line: int  # 0: on no line of this diff (outdated)
     side: str
-    body: str
+    comments: tuple[tuple[str, str], ...]
+    source: str  # "you", "agent", "github"
+    key: str  # which it is, to open or close it
+    resolved: bool = False
     mine: DraftComment | None = None
 
 
@@ -82,31 +89,51 @@ class Row:
     said: Said | None = None
 
     def key(self) -> tuple:
-        """What it shows, to find it again once the rows change (a comment of yours by its
-        id: rewriting it doesn't make it another)."""
-        said = self.said.mine.id if self.said and self.said.mine else self.said
-        return (self.kind, self.file, self.line, said)
+        """What it shows, to find it again once the rows change (a comment by its key:
+        rewriting it doesn't make it another)."""
+        return (self.kind, self.file, self.line, self.said.key if self.said else None)
 
 
-def said(mine: Sequence[DraftComment], proposed: Sequence[dict]) -> list[Said]:
-    """Your comments and the agent's proposed ones, as the view shows them."""
-    yours = [Said(c.path, c.line, c.side, c.body, c) for c in mine]
-    theirs = [
-        Said(str(c["path"]), int(c["line"]), "RIGHT", str(c.get("body") or ""))
-        for c in proposed
-        if c.get("path") and c.get("line")
+def said(
+    mine: Sequence[DraftComment], proposed: Sequence[dict], threads: Sequence[dict] = ()
+) -> list[Said]:
+    """Your comments, the agent's proposed ones, and the PR's review threads on GitHub."""
+    yours = [
+        Said(c.path, c.line, c.side, (("you", c.body),), "you", f"you:{c.id}", mine=c) for c in mine
     ]
-    return yours + theirs
+    theirs = [
+        Said(str(c["path"]), int(c["line"]), "RIGHT", (("agent", str(c.get("body") or "")),),
+             "agent", f"agent:{i}")
+        for i, c in enumerate(proposed)
+        if c.get("path") and c.get("line")
+    ]  # fmt: skip
+    return yours + theirs + [_thread(thread) for thread in threads if thread.get("path")]
 
 
-def rows(files: Sequence[File], opened: set[int], comments: Sequence[Said]) -> list[Row]:
-    """The view's lines: each file's, then, if it's opened, its lines and their comments."""
+def _thread(thread: dict) -> Said:
+    comments = tuple((c.get("author") or "?", c.get("body") or "") for c in thread["comments"])
+    return Said(
+        str(thread["path"]),
+        int(thread.get("line") or 0),
+        str(thread.get("side") or "RIGHT"),
+        comments,
+        "github",
+        f"github:{thread.get('id')}",
+        resolved=bool(thread.get("resolved")),
+    )
+
+
+def rows(
+    files: Sequence[File], opened: set[int], comments: Sequence[Said], shut: set[str] = frozenset()
+) -> list[Row]:
+    """The view's lines: each file's, then, if it's opened, its lines and their comments
+    (those in ``shut`` as a line each)."""
     out: list[Row] = []
     for index, file in enumerate(files):
         on_file = [c for c in comments if c.path == file.path]
         out.append(Row("file", _file_text(file, index in opened, on_file), index))
         if index in opened:
-            out += _file_rows(index, file, on_file)
+            out += _file_rows(index, file, on_file, shut)
     return out
 
 
@@ -117,17 +144,17 @@ def _file_text(file: File, opened: bool, comments: list[Said]) -> Text:
     return text
 
 
-def _file_rows(index: int, file: File, comments: list[Said]) -> list[Row]:
+def _file_rows(index: int, file: File, comments: list[Said], shut: set[str]) -> list[Row]:
     if file.generated:
         return [Row("note", Text("  generated, not shown", style="dim"), index)]
     out: list[Row] = []
     for line in file.lines:
         out.append(Row("line", _numbered(line), index, line))
         for comment in (c for c in comments if (c.line, c.side) == line.target()):
-            out += _said_rows(index, comment)
+            out += _said_rows(index, comment, shut)
     placed = {line.target() for line in file.lines}
     for comment in (c for c in comments if (c.line, c.side) not in placed):
-        out += _said_rows(index, comment, where=True)
+        out += _said_rows(index, comment, shut, where=True)
     return out
 
 
@@ -137,15 +164,60 @@ def _numbered(line: Line) -> Text:
     return Text.assemble((gutter, "dim"), (line.text.expandtabs(4), LINE_STYLES.get(line.kind, "")))
 
 
-def _said_rows(index: int, comment: Said, *, where: bool = False) -> list[Row]:
-    """A comment under its line, wrapped: a row per line of it."""
-    who, style = ("you", "yellow") if comment.mine else ("agent", "magenta")
-    at = f" (line {comment.line}, not in the diff)" if where else ""
-    first, *more = textwrap.wrap(comment.body, _WRAP) or [""]
-    lead = f"{' ' * 12}✎ {who}{at}: "
-    texts = [Text.assemble((lead, f"bold {style}"), (first, style))]
-    texts += [Text(f"{' ' * len(lead)}{line}", style=style) for line in more]
-    return [Row("said", text, index, said=comment) for text in texts]
+_INDENT = " " * 12  # under the code, past the line numbers
+_COLORS = {"you": "yellow", "agent": "magenta", "github": "cyan"}
+
+
+def _said_rows(index: int, said: Said, shut: set[str], *, where: bool = False) -> list[Row]:
+    """A comment under its line: in a box, or (shut) a line saying who and how it starts."""
+    texts = [_shut_line(said, where)] if said.key in shut else _box(said, where)
+    return [Row("said", text, index, said=said) for text in texts]
+
+
+def _title(said: Said, where: bool) -> str:
+    """``you``, ``agent, proposed``, ``alice and bob · resolved`` (and where, if not here)."""
+    people = list(dict.fromkeys(who for who, _ in said.comments))
+    title = {"you": "you", "agent": "agent, proposed"}.get(said.source) or " and ".join(people)
+    notes = ["resolved"] if said.resolved else []
+    notes += [_where(said)] if where else []
+    return " · ".join([title, *notes])
+
+
+def _where(said: Said) -> str:
+    return f"line {said.line}, not in the diff" if said.line else "outdated"
+
+
+def _shut_line(said: Said, where: bool) -> Text:
+    who, first = said.comments[0] if said.comments else ("", "")
+    more = f" (+{len(said.comments) - 1})" if len(said.comments) > 1 else ""
+    style = "dim" if said.resolved else _COLORS[said.source]
+    return Text(f"{_INDENT}▸ ✎ {_title(said, where)}: {_short(first)}{more}", style=style)
+
+
+def _short(text: str, width: int = 60) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _box(said: Said, where: bool) -> list[Text]:
+    """The comment (each of a thread's, with who said it) in a box, wrapped."""
+    many = len(said.comments) > 1
+    body = [line for who, what in said.comments for line in _wrapped(who, what, many)]
+    title = f"✎ {_title(said, where)}"
+    width = max([cell_len(line) for line in body] + [cell_len(title) + 2])
+    style = "dim" if said.resolved else _COLORS[said.source]
+    top = f"{_INDENT}╭─ {title} {'─' * (width - cell_len(title) - 1)}╮"
+    middle = [f"{_INDENT}│ {line}{' ' * (width - cell_len(line))} │" for line in body]
+    bottom = f"{_INDENT}╰{'─' * (width + 2)}╯"
+    return [Text(line, style=style) for line in [top, *middle, bottom]]
+
+
+def _wrapped(who: str, what: str, many: bool) -> list[str]:
+    """A comment's lines; in a thread of several, with who said it first."""
+    lines = [
+        line for paragraph in what.splitlines() for line in textwrap.wrap(paragraph, _WRAP) or [""]
+    ] or [""]
+    return [f"{who}: {lines[0]}", *[f"  {line}" for line in lines[1:]]] if many else lines
 
 
 def first_opened(files: Sequence[File], diff: str, comments: Sequence[Said]) -> set[int]:
@@ -179,6 +251,8 @@ class DiffView(ScrollView, can_focus=True):
         self.files = files
         self.opened: set[int] = set()
         self.comments: list[Said] = []
+        self.shut: set[str] = set()  # the comments shown as a line (resolved ones, at first)
+        self._known: set[str] = set()  # the comments seen so far
         self.cursor = 0
         self._rows: list[Row] = []
         self._strips: dict[int, Strip] = {}
@@ -188,9 +262,12 @@ class DiffView(ScrollView, can_focus=True):
         on the line it was on (or its file)."""
         here = self.current()
         self.comments = comments
+        new = [c for c in comments if c.key not in self._known]
+        self.shut |= {c.key for c in new if c.resolved}
+        self._known |= {c.key for c in new}
         if opened is not None:
             self.opened = opened
-        self._rows = rows(self.files, self.opened, comments)
+        self._rows = rows(self.files, self.opened, comments, self.shut)
         self._strips.clear()
         width = max((row.text.cell_len for row in self._rows), default=0)
         self.virtual_size = Size(width, len(self._rows))
@@ -214,9 +291,17 @@ class DiffView(ScrollView, can_focus=True):
         self._move_to(self._file_row(file))
 
     def action_toggle_here(self) -> None:
-        """Open or close the file the cursor's in."""
-        if row := self.current():
+        """Open or close the comment under the cursor, or else the file it's in."""
+        row = self.current()
+        if row and row.said:
+            self.toggle_said(row.said)
+        elif row:
             self.toggle(row.file)
+
+    def toggle_said(self, said: Said) -> None:
+        self.shut ^= {said.key}
+        self.show(self.comments)
+        self._move_to(next(i for i, r in enumerate(self._rows) if r.said == said))
 
     def toggle_all(self) -> None:
         everything = set(range(len(self.files)))
@@ -249,7 +334,9 @@ class DiffView(ScrollView, can_focus=True):
         index = self.scroll_offset.y + offset.y if offset else len(self._rows)
         if index < len(self._rows):
             self._move_to(index)
-            if self._rows[index].kind == "file":
+            if self._rows[index].said:
+                self.toggle_said(self._rows[index].said)
+            elif self._rows[index].kind == "file":
                 self.toggle(self._rows[index].file)
 
     def render_line(self, y: int) -> Strip:
@@ -329,6 +416,7 @@ class DiffScreen(ModalScreen[None]):
         self.pr = pr
         self._diff = diff
         self._files = parse(diff)
+        self._threads: list[dict] = []  # the PR's review threads on GitHub, once read
 
     @property
     def purr_app(self) -> "PurrApp":
@@ -348,17 +436,33 @@ class DiffScreen(ModalScreen[None]):
         comments = await self._comments()
         self._view.show(comments, first_opened(self._files, self._diff, comments))
         self._view.focus()
+        self.run_worker(self._load_threads(), group="threads")
+
+    async def _load_threads(self) -> None:
+        """The PR's review threads on GitHub (a request away): their files open as they come,
+        unless all of them are resolved."""
+        try:
+            reply = await self.purr_app.bus.request(GetReviewThreads(pr=self.pr.ref))
+        except PurrError as e:
+            self.notify(str(e), severity="warning")
+            return
+        self._threads = reply.threads
+        comments = await self._comments()
+        open_on = {c.path for c in comments if c.source == "github" and not c.resolved}
+        on = {i for i, file in enumerate(self._files) if file.path in open_on}
+        self._view.show(comments, self._view.opened | on)
 
     @property
     def _view(self) -> DiffView:
         return self.query_one(DiffView)
 
     async def _comments(self) -> list[Said]:
-        """Yours on this commit, and those the agent proposes posting."""
+        """Yours on this commit, those the agent proposes posting, and the PR's threads."""
         store = self.purr_app.purr.store
         mine = [c for c in await store.draft_comments(self.pr.ref) if c.head_sha == self._head]
         actions = await store.pending_actions(self.pr.ref)
-        return said(mine, actions[0].payload.get("comments") or [] if actions else [])
+        proposed = actions[0].payload.get("comments") or [] if actions else []
+        return said(mine, proposed, self._threads)
 
     @property
     def _head(self) -> str:
@@ -381,6 +485,8 @@ class DiffScreen(ModalScreen[None]):
         row = self._view.current()
         mine = row.said.mine if row and row.said else None
         target = row.line.target() if row and row.line else None
+        if row and row.said and row.said.line:  # on someone's comment: one on the same line
+            target = (row.said.line, row.said.side)
         spot = (mine.line, mine.side) if mine else target
         if row is None or spot is None:
             self.notify("Comments go on a line of the diff: move to one, then c.")
