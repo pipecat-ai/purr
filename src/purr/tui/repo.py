@@ -20,13 +20,19 @@ from purr.tui.diffview import DiffPane
 from purr.tui.keys import REPO_KEYS
 from purr.tui.lists import (
     DONE_SHOWN,
+    GROUP_GAP,
     GROUPS,
+    HEADING,
     ICONS,
+    PRGroup,
     PRList,
+    blank,
     group,
+    heading,
     matches,
     pr_columns,
     pr_row,
+    separated,
 )
 from purr.tui.pr_keys import PRKeys
 from purr.tui.session import PRSession, SessionState, outcome_mark
@@ -60,6 +66,7 @@ class RepoView(PRKeys):
         self._marked: set[str] = set()
         self._outcomes: dict = {}  # PRRef -> what its latest review found
         self._listed: str | None = None  # the repo whose PRs the list has
+        self._folded: dict[str, set[str]] = {}  # repo -> its groups folded (←)
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -102,11 +109,13 @@ class RepoView(PRKeys):
         self._number_width = max((len(f"#{pr.number}") for pr in self._all), default=5)
         self._list()
 
-    def _list(self) -> None:
-        """Draw the list: the PRs matching the search, grouped."""
+    def _list(self, at: str | None = None) -> None:
+        """Draw the list: the PRs matching the search, grouped; the cursor ``at`` an option
+        (by id), or else on the selected PR (or its folded group), or else the first PR."""
         prs = [pr for pr in self._all if matches(pr, self._search)]
         groups = self._groups(prs)
-        self._prs = {str(pr.ref): pr for _, members in groups for pr in members}
+        folded = self._folded_now()
+        self._prs = {str(pr.ref): pr for g in groups if g.key not in folded for pr in g.prs}
         self._spinning = {str(pr.ref) for pr in prs if self._working(str(pr.ref))}
         self._marked &= {str(pr.ref) for pr in self._all}
         self._spinner.resume() if self._spinning else self._spinner.pause()
@@ -123,27 +132,30 @@ class RepoView(PRKeys):
         self._listed = self.repo
         option_list.set_options(options)
         selected = self._selected.get(self.repo)
-        if selected in self._prs:
-            option_list.highlighted = option_list.get_option_index(selected)
+        if not at:  # the selected PR, or the heading of the group it's folded away in
+            at = selected if selected in self._prs else self._fold_of(selected)
+        if at:
+            option_list.highlighted = option_list.get_option_index(at)
             if scrolled is not None:
                 option_list.scroll_to(y=scrolled, animate=False, immediate=True)  # stays put
         else:
+            pr = next((i for i, o in enumerate(options) if o.id in self._prs), None)
             first = next((i for i, o in enumerate(options) if not o.disabled), None)
-            option_list.highlighted = first
+            option_list.highlighted = first if pr is None else pr
         self._show_highlighted()
 
-    def _groups(self, prs: list[PR]) -> list[tuple[Text, list[PR]]]:
-        """The PRs in their groups, each with its heading; empty groups left out."""
+    def _groups(self, prs: list[PR]) -> list[PRGroup]:
+        """The PRs in their groups; empty groups left out."""
         groups = []
         for key, icon, label, style in GROUPS:
             members = [pr for pr in prs if group(pr) == key]
             if not members:
                 continue
-            heading = Text(f"{icon} {label} ({len(members)})", style=style)
+            title = Text(f"{icon} {label} ({len(members)})", style=style)
             if key == PRState.DONE:
                 members, note = self._latest_done(members)
-                heading.append(note, style="dim")
-            groups.append((heading, members))
+                title.append(note, style="dim")
+            groups.append(PRGroup(key, title, style, members))
         return groups
 
     def _latest_done(self, done: list[PR]) -> tuple[list[PR], str]:
@@ -156,14 +168,20 @@ class RepoView(PRKeys):
         latest = [pr for i, pr in enumerate(done) if i < DONE_SHOWN or str(pr.ref) == chosen]
         return latest, f"  the latest {DONE_SHOWN}; / finds the others"
 
-    def _options(self, groups: list[tuple[Text, list[PR]]]) -> list[Option]:
-        """The column headings, then each group's heading and its PRs, a line apart."""
+    def _options(self, groups: list[PRGroup]) -> list[Option]:
+        """The column headings, then each group's heading and its PRs (unless it's folded),
+        a thin line between PRs."""
         options = [Option(pr_columns(self._number_width), disabled=True)]
-        for heading, members in groups:
+        folded = self._folded_now()
+        for pr_group in groups:
             if len(options) > 1:
-                options.append(Option(" ", disabled=True))
-            options.append(Option(heading, disabled=True))
-            options += [Option(self._prompt(pr), id=str(pr.ref)) for pr in members]
+                options += blank(GROUP_GAP)
+            shut = pr_group.key in folded
+            options.append(heading(pr_group, folded=shut))
+            if not shut:
+                options += separated(
+                    [Option(self._prompt(pr), id=str(pr.ref)) for pr in pr_group.prs]
+                )
         return options
 
     def _working(self, key: str) -> bool:
@@ -212,11 +230,13 @@ class RepoView(PRKeys):
         if pr in self._prs:
             option_list = self.query_one(OptionList)
             option_list.highlighted = option_list.get_option_index(pr)
-        elif any(str(listed.ref) == pr for listed in self._all):
-            self._list()  # an older done one: listed now that it's selected
+        elif listed := next((p for p in self._all if str(p.ref) == pr), None):
+            self._folded.get(repo, set()).discard(group(listed))  # its group opens
+            self._list()  # or an older done one: listed now that it's selected
 
     @on(OptionList.OptionHighlighted)
     def _show_highlighted(self) -> None:
+        self.refresh_bindings()  # tab: fold or open on a heading, the PR's pane on a PR
         pr = self.selected_pr()
         if pr and self.diff_shown and self.diff.pr and pr.ref != self.diff.pr.ref:
             self.close_diff()  # another PR (an alert, ctrl+p): the list, to see where
@@ -287,16 +307,20 @@ class RepoView(PRKeys):
             self.session.focus_transcript()
 
     @on(OptionList.OptionSelected)
-    def _ask(self) -> None:
-        """enter on a PR: straight to its prompt, to ask the agent about it."""
+    def _ask(self, event: OptionList.OptionSelected) -> None:
+        """enter on a PR: straight to its prompt, to ask the agent about it. On a group's
+        heading (or a click on it): it folds or opens."""
         if self.selected_pr():
             self.session.focus_prompt()
+        elif event.option_list.id == "prs":
+            self.action_toggle_group()
 
     def action_switch_pane(self) -> None:
         """From the list (or its search, or the diff) to the PR's pane, and back."""
         left = self.diff if self.diff_shown else self.query_one("#prs-pane")
         if not self.session.has_focus_within:
-            self.action_open()
+            if self.session.pr:  # the selected PR, or the last one (on a heading)
+                self.session.focus_transcript()
         elif left.display:  # not while the PR's pane is zoomed
             self._focus_left()
 
@@ -351,12 +375,48 @@ class RepoView(PRKeys):
         self.query_one(PRList).focus()
         await self.purr_app.action_home()
 
+    # -- Folding --------------------------------------------------------------------
+
+    def _folded_now(self) -> set[str]:
+        """The groups folded in this repo; none while searching, so every match shows."""
+        return set() if self._search or not self.repo else self._folded.get(self.repo, set())
+
+    def _fold_of(self, ref: str | None) -> str | None:
+        """The heading of the folded group a PR is in, if it is in one."""
+        pr = next((pr for pr in self._all if str(pr.ref) == ref), None)
+        return f"{HEADING}{group(pr)}" if pr and group(pr) in self._folded_now() else None
+
+    def on_heading(self) -> bool:
+        """Whether the cursor's on a group's heading, to fold or open (not while searching:
+        every match shows)."""
+        return self._heading_here() is not None and not self._search
+
+    def _heading_here(self) -> str | None:
+        option = self.query_one(PRList).highlighted_option
+        return option.id if option and option.id and option.id.startswith(HEADING) else None
+
+    def action_toggle_group(self) -> None:
+        """tab (or enter, or a click) on a group's heading folds or opens it."""
+        heading_id = self._heading_here()
+        if not (heading_id and self.repo and self.on_heading()):
+            return
+        self._folded.setdefault(self.repo, set()).symmetric_difference_update(
+            {heading_id.removeprefix(HEADING)}
+        )
+        self._list(at=heading_id)  # the cursor stays on it
+
     # -- Moving and marking --------------------------------------------------------
 
     def action_move(self, delta: int) -> None:
-        """The next or previous PR, from either pane."""
-        option_list = self.query_one(OptionList)
-        option_list.action_cursor_down() if delta > 0 else option_list.action_cursor_up()
+        """The next or previous PR, from either pane, over the groups' headings."""
+        option_list = self.query_one(PRList)
+        if (here := option_list.highlighted) is None:
+            return
+        ids = [option.id for option in option_list.options]
+        ahead = range(here + delta, len(ids) if delta > 0 else -1, delta)
+        found = next((i for i in ahead if ids[i] in self._prs), None)
+        if found is not None:
+            option_list.highlighted = found
 
     def action_mark(self) -> None:
         pr = self.selected_pr()

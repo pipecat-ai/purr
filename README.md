@@ -76,7 +76,7 @@ The footer shows the keys for where you are, and `?` lists all of them. The main
 | Key | Does |
 |---|---|
 | `?` | Every key for where you are |
-| `enter` / `o` / `tab` | Ask the agent / read the PR / switch between the list and the PR |
+| `enter` / `o` / `tab` | Ask the agent / read the PR / switch between the list and the PR (on a group's heading: fold or open it) |
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR / mark several first |
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |

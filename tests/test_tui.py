@@ -9,9 +9,11 @@ from textual.widgets import Input, OptionList
 from purr.app import Purr
 from purr.config import Config
 from purr.messages import DismissAction, WatchRepo
+from purr.models import PRState
 from purr.store import Store
 from purr.tui import PurrApp
 from purr.tui.dialogs import AddRepoScreen, ConfirmScreen
+from purr.tui.lists import HEADING
 from purr.tui.prompt import HistorySearchScreen
 from purr.tui.screens import MainScreen
 from tests.fakes import (
@@ -66,7 +68,7 @@ def in_repo(app: PurrApp, repo: str | None = None) -> bool:
 def pr_ids(app: PurrApp) -> list[str]:
     options = app.main.repo.query_one(OptionList)
     ids = [options.get_option_at_index(i).id for i in range(options.option_count)]
-    return [i for i in ids if i]
+    return [i for i in ids if i and not i.startswith(HEADING)]  # the PRs, not the groups
 
 
 async def test_repos_navigation_and_live_updates(tmp_path):
@@ -307,14 +309,16 @@ async def test_reviewing_from_the_keyboard(tmp_path):
 
         # The footer has the keys for where you are: typing, the prompt's...
         await until(pilot, lambda: {"Back", "Search history"} <= footer(app))
-        assert not footer(app) & {"Home", "Approve", "Ask"}
+        assert not footer(app) & {"Home", "Review", "Approve", "Ask"}
 
         # esc leaves the prompt for the PR's pane; esc again goes home, and what
         # you'd typed is there when you're back.
         await pilot.press("escape")
         assert in_repo(app) and focused(app) == "transcript"
         # ...reading the PR, the pane's...
-        await until(pilot, lambda: {"Home", "Ask", "Thinking", "Claude Code"} <= footer(app))
+        await until(
+            pilot, lambda: {"Home", "Ask", "Review", "Thinking", "Claude Code"} <= footer(app)
+        )
         assert not footer(app) & {"Open", "Mark", "Back"}
         await pilot.press("t")  # the pane's keys work from the list too, and back
         assert app.full_thinking
@@ -648,13 +652,65 @@ async def test_the_list_stops_at_its_ends_and_shows_its_headings(tmp_path):
         await pilot.press("end", "down")
         assert prs.highlighted == len(prs.options) - 1 and prs.scroll_offset.y > 0
         # Up to the pool's first PR: its heading comes into view with it.
-        heading = next(i for i, o in enumerate(prs.options) if "NOT REVIEWED" in str(o.prompt))
+        heading = prs.get_option_index(f"{HEADING}{PRState.NOT_REVIEWED}")
         while prs.highlighted != heading + 1:
             await pilot.press("up")
         assert lines[heading] >= prs.scroll_offset.y
         # And at the very top, the first group's heading and the columns.
         await pilot.press("home", "up")
-        assert prs.highlighted == first and prs.scroll_offset.y == 0
+        assert prs.highlighted == first - 1 and prs.scroll_offset.y == 0  # its heading
+
+
+async def test_folding_a_group(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1), remote(2), remote(3, assignees=("bob",))]
+    async with app.run_test(size=(140, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        repo = app.main.repo
+        prs = repo.query_one("#prs")
+        heading = f"{HEADING}{PRState.NOT_REVIEWED}"
+
+        def on(option_id: str) -> bool:
+            return prs.highlighted_option.id == option_id
+
+        # The cursor starts on the first PR; down, and it's on the next group's heading.
+        await until(pilot, lambda: on("pipecat-ai/pipecat#3"))
+        await pilot.press("down")
+        assert on(heading)
+        await until(pilot, lambda: "Fold/open" in footer(app) and "PR" not in footer(app))
+        # tab folds it, the cursor staying on it; tab again opens it.
+        await pilot.press("tab")
+        assert pr_ids(app) == ["pipecat-ai/pipecat#3"] and on(heading)
+        await pilot.press("tab")
+        assert len(pr_ids(app)) == 3 and on(heading)
+        # shift+tab is still the PR's pane.
+        await pilot.press("shift+tab")
+        assert repo.session.has_focus_within
+        await pilot.press("shift+tab")
+        assert on(heading)
+        # enter folds or opens it too.
+        await pilot.press("enter")
+        assert pr_ids(app) == ["pipecat-ai/pipecat#3"]
+        # On a PR, tab is still the PR's pane; n and p go from PR to PR, over headings.
+        await pilot.press("up")
+        assert on("pipecat-ai/pipecat#3")
+        await until(pilot, lambda: "Fold/open" not in footer(app) and "PR" in footer(app))
+        await pilot.press("tab")
+        assert repo.session.has_focus_within
+        await pilot.press("tab", "n")
+        assert on("pipecat-ai/pipecat#3")  # nothing after it: #1 and #2 are folded
+        # Going to a PR in a folded group (an alert, ctrl+p) opens it.
+        repo.select("pipecat-ai/pipecat#1", repo="pipecat-ai/pipecat")
+        await until(pilot, lambda: on("pipecat-ai/pipecat#1"))
+        assert len(pr_ids(app)) == 3
+        await pilot.press("p")
+        assert on("pipecat-ai/pipecat#2")
+        # Searching shows every match, folded or not.
+        await pilot.press("p", "p", "tab", "slash", "2")
+        await until(pilot, lambda: pr_ids(app) == ["pipecat-ai/pipecat#2"])
 
 
 async def test_moving_around_and_searching(tmp_path):
@@ -970,7 +1026,8 @@ async def test_home_says_what_watching_means(tmp_path):
         await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
         await until(pilot, lambda: not hint.display)
         repo_list = app.main.repos.query_one(OptionList)
-        rows = [str(repo_list.get_option_at_index(i).prompt) for i in range(repo_list.option_count)]
+        prompts = [repo_list.get_option_at_index(i).prompt for i in range(repo_list.option_count)]
+        rows = [str(getattr(prompt, "title", prompt)) for prompt in prompts]  # a heading's
         headings = [row for row in rows if "WATCHED (" in row]
         assert headings[0].startswith("● WATCHED (1)")
         assert headings[1].startswith("○ NOT WATCHED (1)")

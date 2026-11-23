@@ -531,7 +531,7 @@ class PRSession(Vertical):
         Binding("escape", "leave_prompt", "Back"),
         # The repo's keys, for reading and deciding (they work from the list too).
         *pane_keys(
-            ["approve", "dismiss", "merge", "move(1)", "move(-1)", "diff", "thinking"]
+            ["review", "approve", "dismiss", "merge", "move(1)", "move(-1)", "diff", "thinking"]
             + ["open_claude", "shell", "zoom", "switch_pane"],
             switch_pane="Other pane",  # the list, or the diff in its place
         ),
@@ -695,14 +695,22 @@ class PRSession(Vertical):
         """
         self.pr = pr
         await self.refresh_status()
-        state = self.state()
+        state = self.state(pr)
         loaded = state.entries is None
         if loaded:
             state.entries = await self._load_history(pr)
+        if not self._showing(pr):
+            return  # moved on meanwhile (another PR, another repo)
         if loaded or self._drawn != pr.ref:
             self.redraw()
             asked = await self.purr_app.purr.store.prompts(pr.ref)
-            self.query_one(PromptArea).set_history([text for _, text in reversed(asked)])
+            if self._showing(pr):
+                self.query_one(PromptArea).set_history([text for _, text in reversed(asked)])
+
+    def _showing(self, pr: PR) -> bool:
+        """Whether it's this PR in the pane still: the store's answers take a moment, and
+        moving on meanwhile (another PR, another repo) shows another, or none."""
+        return self.pr is not None and self.pr.ref == pr.ref
 
     def clear(self) -> None:
         """Show nothing, until the next PR is shown (another repo's is on its way)."""
@@ -779,17 +787,20 @@ class PRSession(Vertical):
         self._wrote = True
 
     async def refresh_status(self) -> None:
-        if not self.pr:
+        if not (shown := self.pr):
             return
         store = self.purr_app.purr.store
-        pr = await store.get_pr(self.pr.ref) or self.pr
-        self.pr = pr
+        pr = await store.get_pr(shown.ref) or shown
         review = await store.latest_review(pr.ref)
         outcome = Outcome.of(await store.findings(review.id)) if review else Outcome()
         actions = await store.pending_actions(pr.ref)
+        approved = await store.approved_head(pr.ref)
+        mine = await store.draft_comments(pr.ref)
+        if not self._showing(pr):
+            return
+        self.pr = pr
         state = self.state()
-        state.approved = await store.approved_head(pr.ref)
-        state.mine = await store.draft_comments(pr.ref)
+        state.approved, state.mine = approved, mine
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details)

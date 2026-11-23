@@ -15,7 +15,7 @@ from purr.messages import UnwatchRepo
 from purr.models import RepoSummary
 from purr.tui.dialogs import AddRepoScreen, ConfirmScreen
 from purr.tui.keyhelp import KEYS
-from purr.tui.lists import GroupedList
+from purr.tui.lists import GROUP_GAP, GroupedList, blank, separated, titled_line
 from purr.tui.views import PurrView
 
 _REPO_COLUMNS = ("", "REPO", "NEEDS YOU", "REVIEWING", "NOT REVIEWED", "LAST ACTIVITY")
@@ -117,21 +117,23 @@ class ReposView(PurrView):
         """The column headings, then the watched repos and the others, each group headed."""
         options = [Option(_repo_row(*_REPO_COLUMNS, header=True), disabled=True)]
         number = 0
-        for summaries, heading, note in [
-            (watched, "● WATCHED", "all their open PRs"),
-            (yours, "○ NOT WATCHED", "only the PRs assigned to you · + watches one"),
+        for summaries, heading, note, style in [
+            (watched, "● WATCHED", "all their open PRs", "bold cyan"),
+            (yours, "○ NOT WATCHED", "only the PRs assigned to you · + watches one", "bold"),
         ]:
             if not summaries:
                 continue
             if len(options) > 1:
-                options.append(Option(" ", disabled=True))
-            title = Text(f"{heading} ({len(summaries)})", style="bold")
+                options += blank(GROUP_GAP)
+            title = Text(f"{heading} ({len(summaries)})", style=style)
             title.append(f"  {note}", style="dim")
-            options.append(Option(title, disabled=True))
+            options.append(Option(titled_line(title, style), disabled=True))
+            rows = []
             for summary in summaries:
                 number += 1
                 cells = self._cells(number, summary, summary.name in alerted)
-                options.append(Option(_repo_row(*cells), id=summary.name))
+                rows.append(Option(_repo_row(*cells), id=summary.name))
+            options += separated(rows)
         return options
 
     @staticmethod
