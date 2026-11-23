@@ -168,7 +168,9 @@ def focused(app: PurrApp) -> str | None:
 
 def footer(app: PurrApp) -> set[str]:
     """What the footer's keys say they do."""
-    return {str(key.description) for key in app.screen.query("FooterKey")}
+    from purr.tui.keybar import KeyBar
+
+    return {what for bar in app.screen.query(KeyBar) for _, what in bar.keys}
 
 
 def header(app: PurrApp) -> str:
@@ -323,7 +325,8 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(
             pilot, lambda: {"Home", "Ask", "Review", "Thinking", "Claude Code"} <= footer(app)
         )
-        assert not footer(app) & {"Open", "Mark", "Back"}
+        # (every key that works here: the list's too, and those that work everywhere)
+        assert {"Mark", "Search", "Settings", "Quit"} <= footer(app) and "Back" not in footer(app)
         await pilot.press("t")  # the pane's keys work from the list too, and back
         assert app.full_thinking
         await pilot.press("tab", "t", "tab")
@@ -345,7 +348,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
         # ...and in the list, the list's.
         await until(pilot, lambda: {"Home", "PR", "Search", "Mark", "Approve"} <= footer(app))
-        assert "Claude Code" in footer(app) and not footer(app) & {"Ask", "Thinking", "Quit"}
+        assert {"Claude Code", "Thinking", "Quit"} <= footer(app) and "Ask" not in footer(app)
 
         # The / suggestions close first.
         await pilot.press("enter")
@@ -573,7 +576,7 @@ async def test_every_page_says_its_keys(tmp_path):
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
         home_keys = await keys("Home", "Everywhere")
         assert "Watch repo" in home_keys and "Repo 1–9" in home_keys and "1–9" in home_keys
-        assert "Find a repo or PR" in home_keys and "Latest news" in home_keys
+        assert "Find" in home_keys and "News" in home_keys
 
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)

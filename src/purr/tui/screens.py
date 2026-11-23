@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING, cast
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.screen import Screen
-from textual.widgets import ContentSwitcher, Footer, Static
+from textual.widgets import ContentSwitcher, Static
 
 from purr.tui.home import ReposView
+from purr.tui.keybar import KeyBar
 from purr.tui.repo import RepoView
 from purr.tui.views import PurrView
 
@@ -31,8 +32,7 @@ class MainScreen(Screen):
         with ContentSwitcher(initial="repos", id="views"):
             yield ReposView(id="repos")
             yield RepoView(id="repo")
-        # ctrl+p is Purr's finder (the README says), not the "palette" Textual would show.
-        yield Footer(compact=True, show_command_palette=False)
+        yield KeyBar()  # every key that works where you are
 
     @property
     def repos(self) -> ReposView:

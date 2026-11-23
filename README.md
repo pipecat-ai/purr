@@ -71,7 +71,7 @@ write what to do instead). When someone replies to you on GitHub, the PR is back
 
 ### ⌨️ Keys
 
-The footer shows the keys for where you are, and `?` lists all of them. The main ones:
+The footer shows every key that works where you are, and `?` lists them grouped, with the Emacs ones. The main ones:
 
 | Key | Does |
 |---|---|

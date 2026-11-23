@@ -206,15 +206,3 @@ NoticeScreen, AlwaysScreen, ReviewSkillScreen, ThemeScreen {
     text-wrap: nowrap;
     text-overflow: ellipsis;
 }
-
-/* The compact footer (less space between keys, so a pane's keys fit): the space after
-   each key, and after a group (n p Next/previous), is a thin line, to tell them apart. */
-Footer.-compact {
-    FooterKey, FooterLabel {
-        margin-right: 0;
-        border-right: solid $footer-description-foreground 60%;  /* the text's, fainter */
-    }
-    KeyGroup FooterKey {  /* n p: one key, as far as lines go; its label comes after */
-        border-right: none;
-    }
-}

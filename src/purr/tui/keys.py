@@ -34,7 +34,7 @@ REPO_KEYS = {
     "shell": Binding("exclamation_mark", "shell", "Shell"),
     # Two panes, so either way it's the other one (typing included: tab never
     # indents the prompt).
-    "switch_pane": Binding("tab,shift+tab", "switch_pane", "Switch pane", key_display="tab"),
+    "switch_pane": Binding("tab,shift+tab", "switch_pane", "Switch pane"),
 }
 
 

@@ -69,12 +69,6 @@ class ReposView(PurrView):
         Binding("p", "move(-1)", "Previous", show=False),
         Binding("plus", "add", "Watch repo"),
         Binding("minus", "remove", "Stop watching"),
-        # Keys that work anywhere, shown here, where there's room (the app's own run).
-        Binding("ctrl+p", "app.command_palette", "Find a repo or PR", priority=True),
-        Binding("ctrl+n", "app.next_alert", "Latest news", priority=True),
-        Binding("w", "app.recap", "Recap"),
-        Binding("i", "app.instructions", "Review style"),
-        Binding("q", "app.request_quit", "Quit"),
     ]
 
     def __init__(self, **kwargs):

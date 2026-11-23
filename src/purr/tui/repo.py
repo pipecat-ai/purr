@@ -2,7 +2,6 @@
 the right."""
 
 import asyncio
-from dataclasses import replace
 from functools import partial
 
 from rich.table import Table
@@ -61,11 +60,11 @@ class RepoView(PRKeys):
     do to a PR (review, approve, merge…) is in PRKeys.
     """
 
-    # Its keys work from either pane; each pane's footer shows its own (pane_keys).
+    # Its keys work from either pane; each pane binds the ones it shows first (pane_keys).
     BINDINGS = [
         Binding("escape", "clear_search", "Clear search"),  # while there's one (first)
         Binding("escape", "back", "Home"),
-        *[replace(binding, show=False) for binding in REPO_KEYS.values()],
+        *REPO_KEYS.values(),
     ]
 
     def __init__(self, **kwargs):
