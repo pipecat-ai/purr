@@ -1118,8 +1118,10 @@ class MainScreen(Screen):
         return self.repos if self.query_one(ContentSwitcher).current == "repos" else self.repo
 
     def set_alert(self, text: str) -> None:
-        if self.is_mounted:  # events can arrive before the screen is up
-            self.query_one("#alert", Static).update(text)
+        # Events can arrive before the screen is up, and workers finish as it goes down
+        # (mounted still, its widgets gone): then there's nothing to say it on.
+        for alert in self.query("#alert").results(Static):
+            alert.update(text)
 
     async def show_home(self) -> None:
         self.query_one("#crumb", Static).update("Purr")
