@@ -484,12 +484,13 @@ class Store:
             )
 
     async def _fetchone(self, sql: str, params: Iterable = ()) -> aiosqlite.Row | None:
-        async with self._db.execute(sql, tuple(params)) as cursor:
-            return await cursor.fetchone()
+        rows = await self._fetchall(sql, params)
+        return rows[0] if rows else None
 
     async def _fetchall(self, sql: str, params: Iterable = ()) -> list[aiosqlite.Row]:
-        async with self._db.execute(sql, tuple(params)) as cursor:
-            return list(await cursor.fetchall())
+        """The rows, read in one go: a query left half-read while another task commits is
+        an error ("SQL statements in progress"), on Python 3.14's sqlite3 at least."""
+        return list(await self._db.execute_fetchall(sql, tuple(params)))
 
     async def _pr_id(self, ref: PRRef) -> int:
         row = await self._fetchone(

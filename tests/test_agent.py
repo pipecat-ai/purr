@@ -1,6 +1,7 @@
 """Turning SDK messages and stored transcripts into transcript entries."""
 
 import io
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,7 +79,9 @@ def test_the_command_line(monkeypatch):
     monkeypatch.setattr(purr.cli, "_run", lambda config, **how: runs.append((config, how)))
     runner = CliRunner()
     assert "Purr" in runner.invoke(purr.cli.app, ["--version"]).output
-    assert "--no-auto-review" in runner.invoke(purr.cli.app, ["--help"]).output
+    # Plain and wide, as on any terminal (CI's makes Rich color it, which splits names).
+    shown = runner.invoke(purr.cli.app, ["--help"], env={"NO_COLOR": "1", "COLUMNS": "200"})
+    assert "--no-auto-review" in re.sub(r"\x1b\[[0-9;]*m", "", shown.output)
     result = runner.invoke(purr.cli.app, ["--no-auto-review", "--max-reviews", "2", "--headless"])
     assert result.exit_code == 0, result.output
     config, how = runs[-1]
