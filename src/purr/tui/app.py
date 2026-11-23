@@ -15,7 +15,13 @@ from textual.worker import NoActiveWorker, get_current_worker
 
 from purr.app import Purr
 from purr.checkout import github_repos
-from purr.config import SETTINGS_FILE, SettingsError, read_settings, settings_template
+from purr.config import (
+    SETTINGS_FILE,
+    SettingsError,
+    read_settings,
+    save_setting,
+    settings_template,
+)
 from purr.jobs import PurrError
 from purr.messages import (
     REVIEW_WORKER,
@@ -48,7 +54,7 @@ from purr.review.skills import RepoSkill, Skill
 from purr.tui import theme
 from purr.tui.bridge import BusEvent, UIWorker
 from purr.tui.clipboard import copy_command, system_copy, terminal_copies
-from purr.tui.dialogs import ConfirmScreen, InstructionsScreen, ReviewSkillScreen
+from purr.tui.dialogs import ConfirmScreen, InstructionsScreen, ReviewSkillScreen, ThemeScreen
 from purr.tui.keyhelp import KeysScreen, key_groups
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
@@ -128,12 +134,43 @@ class PurrApp(App):
         self._last_reported: datetime | None = None
 
     def _use_theme(self, name: str) -> None:
-        """The theme (settings), what the named colors are in it, and Purr's own colors."""
+        """Start in the theme (settings): it, what the named colors are in it, Purr's own."""
         self.theme = name
-        if named := theme.ansi_themes(name):
-            self.set_reactive(PurrApp.ansi_theme_dark, named[0])
-            self.set_reactive(PurrApp.ansi_theme_light, named[1])
+        dark, light = theme.ansi_themes(name)
+        self.set_reactive(PurrApp.ansi_theme_dark, dark)
+        self.set_reactive(PurrApp.ansi_theme_light, light)
         theme.use(name, self.get_css_variables(), dark=self.current_theme.dark)
+
+    async def change_theme(self, name: str) -> None:
+        """Another theme, now: the widgets and the named colors take it at once; Purr's own
+        colors are in the rows and the transcript as they were drawn, so those are drawn
+        again (``restyle``)."""
+        if name == self.theme:
+            return
+        self.theme = name
+        self.ansi_theme_dark, self.ansi_theme_light = theme.ansi_themes(name)
+        theme.use(name, self.get_css_variables(), dark=self.current_theme.dark)
+        await self.main.repos.reload()
+        await self.main.repo.restyle()
+
+    def choose_theme(self) -> None:
+        """The themes, each shown as you move to it: enter keeps it (in settings.toml), esc
+        goes back to the one you had."""
+        if self._modal_open():
+            return
+        was = self.theme
+
+        async def chosen(name: str | None) -> None:
+            await (self.change_theme(was) if name is None else self.keep_theme(name))
+
+        self.push_screen(ThemeScreen(theme.theme_names(), was), chosen)
+
+    async def keep_theme(self, name: str) -> None:
+        """This theme, now, and from now on (settings.toml)."""
+        await self.change_theme(name)
+        path = self.purr.config.config_dir / SETTINGS_FILE
+        save_setting(path, "theme", name)
+        self.notify(f"Theme: {name} (saved in {path})")
 
     async def on_mount(self) -> None:
         await self.purr.start(self.bus)
@@ -206,6 +243,8 @@ class PurrApp(App):
                 await self._edit(self.purr.rules.ensure(repo) if repo else _claude_settings())
             elif kind == "settings":
                 await self._edit_settings()
+            elif kind == "theme":
+                self.choose_theme()
             elif isinstance(kind, Kind):
                 await self._edit(self.purr.instructions.ensure(kind, repo))
 
@@ -270,11 +309,13 @@ class PurrApp(App):
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(settings_template())
-        await self._edit(path, applies="next time Purr starts")
+        await self._edit(path, applies="next time Purr starts (the theme, now)")
         try:
-            read_settings(path)
+            settings = read_settings(path)
         except SettingsError as e:
             self.notify(str(e), severity="error", timeout=20)
+            return
+        await self.change_theme(settings.get("theme", theme.DEFAULT))
 
     async def action_recap(self) -> None:
         if self._modal_open():

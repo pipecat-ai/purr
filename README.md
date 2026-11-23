@@ -94,7 +94,7 @@ puts the cursor on a line (`shift`+click selects up to it).
 
 In the prompt (and the comment editor): `ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go
 through what you asked, Emacs's keys move and edit (`ctrl+a` `ctrl+e` `ctrl+b` `ctrl+f`
-`M-b` `M-f` `ctrl+k` `ctrl+y` …), and `/` lists commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/compact`, and the
+`M-b` `M-f` `ctrl+k` `ctrl+y` …), and `/` lists commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/theme`, `/compact`, and the
 repo's own skills. Reading, `ctrl+v` and `alt+v` page down and up, as in Emacs.
 
 ## 🎨 Make it yours
@@ -106,7 +106,7 @@ that repo's own versions instead.
 |---|---|
 | `~/.config/purr/review.md` | How you like reviews: what to raise, what to skip, tone |
 | `~/.config/purr/code.md` | What good code looks like to you; reviews hold PRs to it |
-| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, colors (`theme = "nord"`), ... (`purr --help` for flags) |
+| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, colors (`theme = "nord"`; `i` then `t` picks one, shown as you go), ... (`purr --help` for flags) |
 | `~/.claude/settings.json` | What the agents may run without asking (the file Claude Code uses too) |
 
 ## 💡 Good to know

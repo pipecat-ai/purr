@@ -12,6 +12,7 @@ instructions, standing permissions) in the config dir, what Purr manages itself
 """
 
 import os
+import re
 import textwrap
 import tomllib
 import types
@@ -189,6 +190,22 @@ def _value(path: Path, name: str, value: Any) -> Any:
 
 def _optional(kind: Any) -> bool:
     return get_origin(kind) in (Union, types.UnionType) and type(None) in get_args(kind)
+
+
+def save_setting(path: Path, name: str, value: Any) -> None:
+    """Set one setting in ``settings.toml``, leaving the rest as it is, comments too: on
+    the line that sets it, else on its commented-out line (the starter file's), else on
+    a new last line. The file's made from the starter one if it isn't there yet."""
+    text = path.read_text() if path.exists() else settings_template()
+    line = f"{name} = {_toml(value)}"
+    for pattern in (rf"^{re.escape(name)}\s*=.*$", rf"^#\s*{re.escape(name)}\s*=.*$"):
+        if re.search(pattern, text, flags=re.M):
+            text = re.sub(pattern, lambda _: line, text, count=1, flags=re.M)
+            break
+    else:
+        text = text.rstrip("\n") + f"\n{line}\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
 
 
 def settings_template() -> str:

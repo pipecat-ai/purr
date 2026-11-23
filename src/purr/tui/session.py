@@ -60,7 +60,7 @@ from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
-from purr.tui.theme import palette
+from purr.tui.theme import palette, theme_names
 from purr.tui.transcript import Transcript
 from purr.tui.working import Working
 
@@ -675,6 +675,17 @@ class PRSession(Vertical):
     async def _claude(self, ref: PRRef, args: str) -> None:
         await self.purr_app.main.repo.action_open_claude()
 
+    async def _theme(self, ref: PRRef, args: str) -> None:
+        """/theme: the picker; /theme nord: that one, now and from now on."""
+        if not args:
+            self.purr_app.choose_theme()
+            return
+        if args not in (names := theme_names()):
+            said = f"No theme {args!r}. Themes: {', '.join(names)}"
+            self.query_one(RichLog).write(Text(said, style="yellow"))
+            return
+        await self.purr_app.keep_theme(args)
+
     # What runs each of Purr's commands (listed, with their help, in purr.tui.commands).
     # A new command: its method here, and a line in this table.
     _COMMAND_HANDLERS = {
@@ -685,6 +696,7 @@ class PRSession(Vertical):
         "cost": _cost,
         "shell": _shell,
         "claude": _claude,
+        "theme": _theme,
     }
 
     def state(self, pr: PR | None = None) -> SessionState:

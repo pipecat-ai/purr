@@ -1,5 +1,6 @@
 """Purr's dialogs: modal screens over the main one."""
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 
 from rich.table import Table
@@ -143,6 +144,7 @@ class InstructionsScreen(ModalScreen):
         Binding("p", "pick('permissions')", "Permissions"),
         Binding("s", "pick('skill')", "Review skill"),
         Binding("o", "pick('settings')", "Settings"),
+        Binding("t", "pick('theme')", "Theme"),
         Binding("escape", "pick('')", "Cancel", show=False),
     ]
 
@@ -160,6 +162,7 @@ class InstructionsScreen(ModalScreen):
             if self._repo:
                 yield Label("[b]s[/b]  review skill: which of the repo's skills reviews follow")
             yield Label("[b]o[/b]  Purr's settings: models, polling, signature… (all repos)")
+            yield Label("[b]t[/b]  theme: Purr's colors, each shown as you pick (all repos)")
             yield Label("Opens in $EDITOR. Repo files add to the general ones.", classes="hint")
             yield Label("a key above opens it · esc cancel", classes="hint")
 
@@ -170,7 +173,11 @@ class InstructionsScreen(ModalScreen):
         from purr.review.instructions import Kind
 
         self.dismiss(
-            kind if kind in ("skill", "permissions", "settings") else Kind(kind) if kind else None
+            kind
+            if kind in ("skill", "permissions", "settings", "theme")
+            else Kind(kind)
+            if kind
+            else None
         )
 
 
@@ -239,6 +246,59 @@ class ReviewSkillScreen(ModalScreen[str | None]):
     @on(OptionList.OptionSelected, "#review-skill-items")
     def _picked(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(self._choices[event.option_index])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ThemeScreen(ModalScreen[str | None]):
+    """Purr's colors: Textual's themes, each one shown as you move to it. Dismisses with
+    the one you're on (enter), or None (esc) for the one you had."""
+
+    DEFAULT_CSS = """
+    #themes { width: 44; }
+    #theme-items { height: auto; max-height: 16; margin: 1 0; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, names: list[str], current: str):
+        super().__init__()
+        self._names, self._current = names, current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="themes"):
+            yield Label("Purr's colors")
+            rows = [Option(self._row(name), id=name) for name in self._names]
+            yield OptionList(*rows, id="theme-items")
+            yield Label("↑ ↓ shows each · enter keeps it · esc goes back", classes="hint")
+
+    def _row(self, name: str) -> Text:
+        from textual.theme import BUILTIN_THEMES
+
+        row = Text(f"{'✓' if name == self._current else ' '} {name}")
+        theme = BUILTIN_THEMES.get(name)
+        row.append(f"  {'dark' if theme is None or theme.dark else 'light'}", style="dim")
+        return row
+
+    def on_mount(self) -> None:
+        items = self.query_one(OptionList)
+        if self._current in self._names:
+            items.highlighted = self._names.index(self._current)
+        items.focus()
+
+    @on(OptionList.OptionHighlighted, "#theme-items")
+    def _show(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option.id:
+            self._preview(event.option.id)
+
+    @work(exclusive=True, group="theme")
+    async def _preview(self, name: str) -> None:
+        await asyncio.sleep(0.08)  # moving fast, only the one you stop on
+        await cast("PurrApp", self.app).change_theme(name)
+
+    @on(OptionList.OptionSelected, "#theme-items")
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

@@ -92,12 +92,14 @@ _NORMAL = [_rgb(c) for c in (BASE02, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, BA
 _BRIGHT = [_rgb(c) for c in (BASE03, ORANGE, BASE01, BASE00, BASE0, VIOLET, BASE1, BASE3)]
 
 
-def ansi_themes(theme: str) -> tuple[TerminalTheme, TerminalTheme] | None:
+def ansi_themes(theme: str) -> tuple[TerminalTheme, TerminalTheme]:
     """What the named colors are, dark and light (for :class:`~textual.app.App`'s
-    ``ansi_theme_dark`` and ``ansi_theme_light``): Solarized's for its themes; None,
-    Textual's own, for the others."""
+    ``ansi_theme_dark`` and ``ansi_theme_light``): Solarized's for its themes, Textual's
+    own for the others."""
     if theme not in _SOLARIZED:
-        return None
+        from textual._ansi_theme import ALABASTER, MONOKAI  # what App starts with
+
+        return MONOKAI, ALABASTER
     dark = TerminalTheme(_rgb(BASE03), _rgb(BASE0), _NORMAL, _BRIGHT)
     light = TerminalTheme(_rgb(BASE3), _rgb(BASE00), _NORMAL, _BRIGHT)
     return dark, light

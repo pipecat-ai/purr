@@ -1710,6 +1710,50 @@ async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
         )
 
 
+async def test_choosing_a_theme(tmp_path, monkeypatch):
+    from purr.config import SETTINGS_FILE, read_settings, save_setting
+    from purr.tui import theme
+    from purr.tui.dialogs import ThemeScreen
+
+    monkeypatch.setattr(theme, "_palette", theme.palette())  # back as it was, after
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1)]
+    settings = app.purr.config.config_dir / SETTINGS_FILE
+    async with app.run_test(size=(140, 45)) as pilot:
+        # i, then t: the themes, each shown as you move to it (Purr's own colors too);
+        # esc goes back to the one you had.
+        await pilot.press("i", "t")
+        await until(pilot, lambda: isinstance(app.screen, ThemeScreen))
+        await pilot.press("down")
+        await until(pilot, lambda: app.theme == "solarized-light")
+        assert theme.palette().code == "solarized-light"
+        await pilot.press("escape")
+        await until(pilot, lambda: app.theme == "solarized-dark")
+        assert theme.palette().code == "solarized-dark" and not settings.exists()
+        # enter keeps it, in settings.toml.
+        await pilot.press("i", "t", "down", "enter")
+        await until(pilot, lambda: settings.exists())
+        assert app.theme == "solarized-light" == read_settings(settings)["theme"]
+
+        # Saving settings.toml (i, then o) with another theme in it: that one, at once.
+        async def editor(path, *, applies):
+            save_setting(path, "theme", "nord")
+
+        monkeypatch.setattr(app, "_edit", editor)
+        await pilot.press("i", "o")
+        await until(pilot, lambda: app.theme == "nord")
+        assert theme.palette().code == "nord"
+
+        # /theme <name> in a PR's prompt: that one, kept.
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: app.main.repo.session.pr is not None)
+        await pilot.press("enter", *"/theme dracula", "enter")
+        await until(pilot, lambda: app.theme == "dracula")
+        assert read_settings(settings)["theme"] == "dracula"
+
+
 async def test_editing_settings_says_what_is_wrong_at_once(tmp_path, monkeypatch):
     from purr.config import SETTINGS_FILE
     from purr.tui.dialogs import InstructionsScreen
@@ -1732,6 +1776,6 @@ async def test_editing_settings_says_what_is_wrong_at_once(tmp_path, monkeypatch
         await pilot.press("o")
         await until(pilot, lambda: bool(errors))
     starter, applies = edited[0]
-    assert "# max_reviews = 3" in starter and applies == "next time Purr starts"
+    assert "# max_reviews = 3" in starter and applies.startswith("next time Purr starts")
     assert (app.purr.config.config_dir / SETTINGS_FILE).exists()
     assert "unknown setting 'away_aftr'" in errors[0]

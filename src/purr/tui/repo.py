@@ -514,6 +514,16 @@ class RepoView(PRKeys):
         self.diff.remove_class("-wide")
         self.session.ask_about(event.quote)
 
+    async def restyle(self) -> None:
+        """Drawn again, in another theme's colors: the list, the PR's pane, the diff."""
+        if self.repo:
+            self._list()
+        if self.session.pr is not None:
+            self.session.redraw(keep_place=True)
+            await self.session.refresh_status()
+        if self.diff_shown:
+            self.diff.view.show(self.diff.view.comments)
+
     # -- The panes -----------------------------------------------------------------
 
     def action_thinking(self) -> None:

@@ -5,7 +5,14 @@ import tomllib
 import pytest
 
 from purr.cli import Flags, _config
-from purr.config import SETTINGS_FILE, Config, SettingsError, settings_template
+from purr.config import (
+    SETTINGS_FILE,
+    Config,
+    SettingsError,
+    read_settings,
+    save_setting,
+    settings_template,
+)
 
 
 @pytest.fixture
@@ -87,3 +94,16 @@ def test_the_starter_file_has_every_setting_at_its_default(dirs):
     defaults = Config(data_dir=config.data_dir, config_dir=dirs)
     assert config == defaults
     assert config.data_dir.name == "purr"  # ~/.local/share/purr, expanded
+
+
+def test_saving_one_setting_leaves_the_rest(dirs):
+    path = dirs / SETTINGS_FILE
+    save_setting(path, "theme", "nord")  # no file: the starter one, with it set
+    text = path.read_text()
+    assert 'theme = "nord"' in text and '# theme = "solarized-dark"' not in text
+    assert "# max_reviews = 3" in text  # the rest as it was
+    path.write_text('max_reviews = 5  # mine\ntheme = "nord"\n')
+    save_setting(path, "theme", "dracula")  # the line that sets it
+    assert path.read_text() == 'max_reviews = 5  # mine\ntheme = "dracula"\n'
+    save_setting(path, "signature", "")  # none there: a last line
+    assert read_settings(path) == {"max_reviews": 5, "theme": "dracula", "signature": ""}

@@ -32,6 +32,7 @@ PURR_COMMANDS = [
     Command("cost", "", "What this PR's reviews and questions cost, and how long they took"),
     Command("shell", "", "A shell in the PR's worktree, to run things yourself (same as !)"),
     Command("claude", "", "This conversation in Claude Code itself, for hands-on work (same as c)"),
+    Command("theme", "[name]", "Purr's colors: pick a theme, each shown as you move to it"),
 ]
 # Claude Code's own, worth having here; they go to the session as typed.
 CLAUDE_CODE_COMMANDS = [
