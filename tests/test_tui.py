@@ -724,8 +724,10 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         assert "Worktree " in header(app) and "! opens a shell there" in header(app)
         await pilot.press("c")
         await until(pilot, lambda: len(ran) == 2)
-        command, cwd, _ = ran[-1]
-        assert command[:2] == ["claude", "--resume"] and cwd == worktree
+        command, cwd, env = ran[-1]
+        claude = command.index("claude")
+        assert command[claude + 1] == "--resume" and cwd == worktree
+        assert "/exit goes back to Purr." in env["PURR_BANNER"]
 
 
 async def test_slash_commands(tmp_path):

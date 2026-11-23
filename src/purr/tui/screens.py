@@ -418,6 +418,13 @@ class ReposView(PurrView):
             self.notify(str(e), severity="warning")
 
 
+def _announced(command: list[str], banner: str) -> tuple[list[str], dict[str, str]]:
+    """``command`` with its environment, run after a line on the terminal saying where you
+    are and how to get back to Purr (``!``, ``c``)."""
+    script = 'printf "%s\\n" "$PURR_BANNER"; exec "$@"'
+    return ["/bin/sh", "-c", script, "purr", *command], {"PURR_BANNER": banner}
+
+
 MERGE_RECHECK = 10.0  # seconds between asking GitHub again while checks run
 
 
@@ -934,9 +941,10 @@ class RepoView(PurrView):
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
-        await self.purr_app.run_outside(
-            claude_code_command(review.session_id, str(pr.ref), claude_cli()), worktree
-        )
+        claude = claude_code_command(review.session_id, str(pr.ref), claude_cli())
+        banner = f"Claude Code, in {pr.ref}'s review session. /exit goes back to Purr."
+        command, env = _announced(claude, banner)
+        await self.purr_app.run_outside(command, worktree, env)
         # The session may have grown in Claude Code: reload its transcript.
         self.purr_app.sessions.pop(str(pr.ref), None)
         self.session.pr = None
@@ -958,9 +966,8 @@ class RepoView(PurrView):
             return
         shell = os.environ.get("SHELL") or "/bin/sh"
         banner = f"{pr.ref} at {pr.head_sha[:7]}, in {worktree}. Exit the shell to go back to Purr."
-        command = ["/bin/sh", "-c", 'printf "%s\\n" "$PURR_BANNER"; exec "$PURR_SHELL"']
-        env = {"PURR_BANNER": banner, "PURR_SHELL": shell, "PURR_PR": str(pr.ref)}
-        await self.purr_app.run_outside(command, worktree, env)
+        command, env = _announced([shell], banner)
+        await self.purr_app.run_outside(command, worktree, {**env, "PURR_PR": str(pr.ref)})
         self.purr_app.data_version += 1  # its header says whether it has a worktree now
         await self.session.refresh_status()
 
