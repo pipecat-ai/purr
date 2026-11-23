@@ -10,7 +10,7 @@ import time
 from rich.text import Text
 from textual.widgets import Static
 
-from purr.tui.theme import ORANGE
+from purr.tui.theme import palette
 
 # A star that grows and shrinks.
 FRAMES = "·✢✳✶✻✽✻✶✳✢"
@@ -37,7 +37,6 @@ VERBS = [
 VERB_SECONDS = 20  # how long a verb lasts
 FRAME_SECONDS = 0.12
 _SHINE = 3  # letters lit at once, sweeping across the verb
-COLOR, SHINE_COLOR = ORANGE, "bold #e19872"  # and a lighter orange, for the shine
 
 
 def elapsed_text(seconds: float) -> str:
@@ -57,10 +56,12 @@ def render_working(since: float, now: float, frame: int, background: int = 0) ->
     # Seeded by when the stretch began: each one starts on its own verb.
     verb = VERBS[(int(since * 10) + int(elapsed // VERB_SECONDS)) % len(VERBS)]
     word = f"{verb}…"
-    text = Text(f"{FRAMES[frame % len(FRAMES)]} ", style=f"bold {COLOR}")
+    colors = palette()
+    text = Text(f"{FRAMES[frame % len(FRAMES)]} ", style=f"bold {colors.working}")
     lit = frame % (len(word) + 2 * _SHINE) - _SHINE
     for i, char in enumerate(word):
-        text.append(char, style=SHINE_COLOR if lit <= i < lit + _SHINE else COLOR)
+        lit_up = lit <= i < lit + _SHINE
+        text.append(char, style=f"bold {colors.shine}" if lit_up else colors.working)
     details = elapsed_text(elapsed) + (f" · {background} in the background" if background else "")
     text.append(f" ({details})", style="dim")
     return text

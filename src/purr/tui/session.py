@@ -60,7 +60,7 @@ from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
-from purr.tui.theme import BLUE, CODE_THEME
+from purr.tui.theme import palette
 from purr.tui.transcript import Transcript
 from purr.tui.working import Working
 
@@ -68,7 +68,13 @@ if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
 _SEVERITY_STYLE = {"issue": "bold red", "suggestion": "yellow", "nit": "dim"}
-NUMBER_STYLE = f"bold {BLUE}"  # PR numbers, wherever they show
+
+
+def number_style() -> str:
+    """PR numbers' style, wherever they show."""
+    return f"bold {palette().number}"
+
+
 # A background task's event: its mark, what it says, its style.
 _TASK_EVENTS = {
     "started": ("◷", "started", "dim"),
@@ -138,7 +144,7 @@ def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
     verdict = _VERDICT.get(str(proposal.get("kind")), str(proposal.get("kind", "")))
     parts.append(Text(f"{verdict}", style="magenta"))
     if body := str(proposal.get("body") or "").strip():
-        parts.append(Markdown(body, code_theme=CODE_THEME))
+        parts.append(Markdown(body, code_theme=palette().code))
     elif proposal.get("kind") == "approve" and not proposal.get("comments"):
         parts.append(Text("LGTM"))  # what an approval with nothing to say posts
     signature = _MARKDOWN_LINK.sub(r"\1", signature)  # as it reads on GitHub
@@ -209,7 +215,7 @@ def render_entry(
 
 
 def _render_text(entry: dict, options: _RenderOptions) -> RenderableType:
-    return _bullet(Markdown(entry["text"], code_theme=CODE_THEME))
+    return _bullet(Markdown(entry["text"], code_theme=palette().code))
 
 
 def _render_thinking(entry: dict, options: _RenderOptions) -> RenderableType:
@@ -836,7 +842,7 @@ class PRSession(Vertical):
         details: PRDetails | None,
     ) -> Text:
         text = Text()
-        text.append(f"#{pr.number}", style=NUMBER_STYLE)
+        text.append(f"#{pr.number}", style=number_style())
         text.append(f"  {pr.title}\n", style="bold")
         text.append(details_line(pr, details))
         text.append("\n")

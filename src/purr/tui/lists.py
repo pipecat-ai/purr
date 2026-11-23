@@ -15,8 +15,8 @@ from purr.models import PR, PRState
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import short_age
-from purr.tui.session import NUMBER_STYLE
-from purr.tui.theme import NAME
+from purr.tui.session import number_style
+from purr.tui.theme import palette
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -235,9 +235,9 @@ def pr_row(pr: PR, mark: Text, *, unread: bool, number_width: int) -> Table:
     """A PR in the list: its mark, number, title, assignees, author and age."""
     return _row(
         mark,
-        Text(f"#{pr.number}", style=NUMBER_STYLE),
+        Text(f"#{pr.number}", style=number_style()),
         # Something happened since you last looked: like unread mail.
-        Text(pr.title, style=f"bold {NAME}" if unread else NAME),
+        Text(pr.title, style=f"bold {palette().name}" if unread else palette().name),
         _assignees(pr),
         Text(pr.author),
         Text(short_age(pr.created_at)),

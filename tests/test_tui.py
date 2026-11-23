@@ -28,9 +28,9 @@ from tests.fakes import (
 )
 
 
-def make_app(tmp_path, cwd=None) -> tuple[PurrApp, FakeGitHub]:
+def make_app(tmp_path, cwd=None, **settings) -> tuple[PurrApp, FakeGitHub]:
     github = FakeGitHub()
-    config = Config(data_dir=tmp_path / "data", poll_interval=3600)
+    config = Config(data_dir=tmp_path / "data", poll_interval=3600, **settings)
     purr = Purr(
         config,
         github=github,
@@ -753,6 +753,28 @@ async def test_zooming_rewraps_the_pr(tmp_path, monkeypatch):
         await pilot.press("z")
         await until(pilot, lambda: widest() <= log.size.width)
         assert focused(app) == "transcript"
+
+
+async def test_the_theme_setting(tmp_path, monkeypatch):
+    from purr.tui import theme
+
+    monkeypatch.setattr(theme, "_palette", theme.palette())  # back as it was, after
+    app, _ = make_app(tmp_path)
+    assert app.theme == "solarized-dark" and theme.palette().code == "solarized-dark"
+    nord, github = make_app(tmp_path / "nord", theme="nord")
+    # The theme, and Purr's own colors from it: its primary color for numbers, ...
+    assert nord.theme == "nord" and nord.current_theme.name == "nord"
+    colors = theme.palette()
+    assert colors.number.lower() == "#88c0d0" and colors.code == "nord"
+    github.open["pipecat-ai/pipecat"] = [remote(7)]
+    async with nord.run_test(size=(120, 30)) as pilot:
+        await nord.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in nord.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: nord.main.repo.selected_pr() is not None)
+        row = nord.main.repo._prompt(nord.main.repo.selected_pr())
+        number = row.columns[2]._cells[0]
+        assert colors.number.lower() in str(number.style).lower()
 
 
 async def test_moving_around_and_searching(tmp_path):

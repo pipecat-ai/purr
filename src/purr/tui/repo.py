@@ -36,7 +36,8 @@ from purr.tui.lists import (
 )
 from purr.tui.pr_keys import PRKeys
 from purr.tui.session import PRSession, SessionState, outcome_mark
-from purr.tui.working import COLOR, FRAME_SECONDS, FRAMES
+from purr.tui.theme import palette
+from purr.tui.working import FRAME_SECONDS, FRAMES
 
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
 
@@ -228,7 +229,7 @@ class RepoView(PRKeys):
         if str(pr.ref) in self._marked:
             return Text("▪", style="bold magenta")
         if str(pr.ref) in self._spinning:
-            return Text(FRAMES[self._frame % len(FRAMES)], style=f"bold {COLOR}")
+            return Text(FRAMES[self._frame % len(FRAMES)], style=f"bold {palette().working}")
         outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
         return outcome_mark(outcome) if outcome else Text(ICONS[group(pr)])
 

@@ -40,9 +40,19 @@ def _xdg_data_dir() -> Path:
     return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "purr"
 
 
-def _setting(default: Any = MISSING, *, about: str, factory: Any = MISSING) -> Any:
-    """A setting, with what it does (for the starter ``settings.toml`` and the docs)."""
-    return field(default=default, default_factory=factory, metadata={"about": about})
+def _setting(
+    default: Any = MISSING, *, about: str, factory: Any = MISSING, choices: Any = None
+) -> Any:
+    """A setting, with what it does (for the starter ``settings.toml`` and the docs), and,
+    for one that's one of a few, a function that says which."""
+    metadata = {"about": about, "choices": choices}
+    return field(default=default, default_factory=factory, metadata=metadata)
+
+
+def _themes() -> list[str]:
+    from purr.tui.theme import theme_names  # Textual's, only when it's checked
+
+    return theme_names()
 
 
 @dataclass(frozen=True)
@@ -106,6 +116,14 @@ class Config:
         about="Run review agents' commands in Claude Code's sandbox (confined to the PR's "
         "checkout and a few domains). Needs bubblewrap on Linux; see the README. Also --sandbox.",
     )
+    theme: str = _setting(
+        "solarized-dark",
+        about="Purr's colors: one of Textual's themes. Dark: solarized-dark, nord, gruvbox, "
+        "dracula, tokyo-night, monokai, catppuccin-mocha, rose-pine, atom-one-dark, "
+        "textual-dark, ...; light: solarized-light, catppuccin-latte, rose-pine-dawn, "
+        "atom-one-light, textual-light, ... (a wrong one says them all).",
+        choices=_themes,
+    )
     config_dir: Path = field(default_factory=_config_dir)  # where settings.toml is
 
     @classmethod
@@ -159,10 +177,14 @@ def _value(path: Path, name: str, value: Any) -> Any:
     if value == "" and _optional(kind):
         return None
     try:
-        return TypeAdapter(kind).validate_python(value, strict=False)
+        value = TypeAdapter(kind).validate_python(value, strict=False)
     except ValidationError as e:
         reason = e.errors()[0]["msg"].lower()
         raise SettingsError(f"{path}: {name} = {value!r}: {reason}") from e
+    choices = _SETTINGS[name].metadata["choices"]
+    if choices and value not in (allowed := choices()):
+        raise SettingsError(f"{path}: {name} = {value!r}: one of {', '.join(allowed)}")
+    return value
 
 
 def _optional(kind: Any) -> bool:

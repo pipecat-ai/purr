@@ -45,6 +45,7 @@ from purr.news import news
 from purr.review.instructions import Kind
 from purr.review.rules import CLAUDE_SETTINGS
 from purr.review.skills import RepoSkill, Skill
+from purr.tui import theme
 from purr.tui.bridge import BusEvent, UIWorker
 from purr.tui.clipboard import copy_command, system_copy, terminal_copies
 from purr.tui.dialogs import ConfirmScreen, InstructionsScreen, ReviewSkillScreen
@@ -54,7 +55,6 @@ from purr.tui.recap import RecapScreen
 from purr.tui.screens import MainScreen
 from purr.tui.session import SessionState
 from purr.tui.switcher import PurrSwitcher, short_name
-from purr.tui.theme import THEME, ansi_themes
 from purr.tui.working import Working
 from purr.workers.recap import LAST_ACTIVE
 
@@ -90,7 +90,6 @@ class PurrApp(App):
     CSS_PATH = "purr.tcss"
     TITLE = "Purr"
     COMMANDS = {PurrSwitcher}
-    ansi_theme_dark, ansi_theme_light = ansi_themes()
     BINDINGS = [
         Binding("ctrl+q", "request_quit", "Quit", show=False, priority=True),  # q, from anywhere
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
@@ -106,7 +105,7 @@ class PurrApp(App):
 
     def __init__(self, purr: Purr, *, cwd: Path | None = None):
         super().__init__()
-        self.theme = THEME
+        self._use_theme(purr.config.theme)
         self.purr = purr
         self.bus = UIWorker(self)
         self.main = MainScreen()
@@ -127,6 +126,14 @@ class PurrApp(App):
         self._stopping = False
         self._last_active: datetime | None = None  # last key or voice turn
         self._last_reported: datetime | None = None
+
+    def _use_theme(self, name: str) -> None:
+        """The theme (settings), what the named colors are in it, and Purr's own colors."""
+        self.theme = name
+        if named := theme.ansi_themes(name):
+            self.set_reactive(PurrApp.ansi_theme_dark, named[0])
+            self.set_reactive(PurrApp.ansi_theme_light, named[1])
+        theme.use(name, self.get_css_variables(), dark=self.current_theme.dark)
 
     async def on_mount(self) -> None:
         await self.purr.start(self.bus)

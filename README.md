@@ -106,7 +106,7 @@ that repo's own versions instead.
 |---|---|
 | `~/.config/purr/review.md` | How you like reviews: what to raise, what to skip, tone |
 | `~/.config/purr/code.md` | What good code looks like to you; reviews hold PRs to it |
-| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, ... (`purr --help` for flags) |
+| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, colors (`theme = "nord"`), ... (`purr --help` for flags) |
 | `~/.claude/settings.json` | What the agents may run without asking (the file Claude Code uses too) |
 
 ## 💡 Good to know

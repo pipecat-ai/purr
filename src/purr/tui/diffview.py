@@ -51,6 +51,7 @@ from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import short_age
 from purr.tui.prompt import PromptArea
+from purr.tui.theme import palette
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -250,7 +251,11 @@ def _short(text: str, width: int = 60) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
-_INSIDE = "on #073642"  # a box's inside: Solarized's highlighted background
+def _box_style() -> str:
+    """A box's inside: the theme's panel (Solarized's highlighted background)."""
+    return f"on {palette().box}"
+
+
 _MENTION = re.compile(r"(?<![\w/])@[A-Za-z0-9][\w-]*(?:/[\w.-]+)?")  # @alice, @org/team
 
 
@@ -280,9 +285,9 @@ def _indent(said: Said) -> str:
 
 def _inside(line: Text, width: int, color: str, indent: str) -> Text:
     """A line of a box: between its sides, on its background, padded to its width."""
-    inside = Text(" ", style=_INSIDE)
+    inside = Text(" ", style=_box_style())
     inside.append_text(line)
-    inside.append(" " * (width - line.cell_len + 1), style=_INSIDE)
+    inside.append(" " * (width - line.cell_len + 1), style=inside.style)
     return Text.assemble((f"{indent}│", color), inside, ("│", color))
 
 
@@ -296,7 +301,7 @@ def _wrapped(text: str) -> list[Text]:
 
 def _mentions(line: str) -> Text:
     """A line with its @mentions in bold blue."""
-    text = Text(line, style=_INSIDE)
+    text = Text(line, style=_box_style())
     text.highlight_regex(_MENTION, "bold blue")
     return text
 

@@ -37,9 +37,11 @@ def test_settings_from_the_file(dirs):
         review_model = "claude-opus-5-5"
         signature = ""           # unsigned
         review_budget_usd = 2
+        theme = "nord"
         """,
     )
     config = Config.load(config_dir=dirs)
+    assert config.theme == "nord"
     assert config.max_reviews == 5 and config.away_after == 600
     assert config.lead_model is None and config.review_model == "claude-opus-5-5"
     assert config.signature == "" and config.review_budget_usd == 2.0
@@ -54,6 +56,9 @@ def test_what_the_file_cant_say(dirs):
         Config.load(config_dir=dirs)
     write(dirs, "max_reviews = \n")
     with pytest.raises(SettingsError, match=SETTINGS_FILE):
+        Config.load(config_dir=dirs)
+    write(dirs, 'theme = "solarised"\n')  # one of Textual's, which it says
+    with pytest.raises(SettingsError, match="theme = 'solarised': one of .*solarized-dark"):
         Config.load(config_dir=dirs)
     write(dirs, 'config_dir = "/elsewhere"\n')  # where the file is can't be in it
     with pytest.raises(SettingsError, match="unknown setting 'config_dir'"):
