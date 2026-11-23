@@ -179,11 +179,10 @@ def test_code_in_its_languages_colors_and_changed_lines_on_green_or_red():
         '    """New',
         '    doc."""',
     ]
-    # A docstring over two lines is colored as one, on each side; and with no background
-    # of its own (the diff's goes behind it).
-    styles = [{str(span.style.color) for span in text.spans} for text in colored[2:]]
-    assert len({frozenset(s) for s in styles if s}) <= 2
-    assert all(span.style.bgcolor is None for text in colored[1:] for span in text.spans)
+    # A docstring over two lines is a string all along, on each side, in one color, and
+    # no background of its own (the diff's goes behind it).
+    docstring = {str(span.style) for text in colored[2:] for span in text.spans}
+    assert len(docstring) == 1 and "on #" not in docstring.pop()
 
     view = rows([file], {0}, [])
     lines = {row.line.kind: row for row in view if row.kind == "line"}
@@ -191,6 +190,24 @@ def test_code_in_its_languages_colors_and_changed_lines_on_green_or_red():
     assert _changed(lines["+"]) == Style(bgcolor=palette().added)
     assert _changed(lines["-"]) == Style(bgcolor=palette().removed)
     assert _changed(lines[" "]) == Style() == _changed(view[0])
+
+
+def test_only_what_the_language_marks_is_colored():
+    from purr.tui.code import highlighted
+
+    [file] = parse(
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n"
+        "-x = y.z(1)  # old\n+x = y.z(2)  # new\n"
+    )
+
+    def looks(index: int) -> dict[str, str]:
+        text = highlighted(file, "solarized-dark")[index]
+        return {text.plain[span.start : span.end]: str(span.style) for span in text.spans}
+
+    # Names, operators and punctuation in the regular color (Solarized's own makes the
+    # operators its comment color); numbers colored; the comment dim.
+    marked = looks(2)
+    assert set(marked) == {"2", "# new"} and marked["# new"] == "dim"
 
 
 def test_code_in_no_known_language_is_plain():

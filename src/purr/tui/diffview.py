@@ -304,9 +304,11 @@ def _numbered(line: Line, words: Text | None = None) -> Text:
     style = LINE_STYLES.get(line.kind, "")
     if line.kind not in ("+", "-", " "):
         return gutter.append(line.text.expandtabs(4), style)
-    return gutter.append(line.text[:1], style).append_text(
-        words if words is not None else Text(code(line))
-    )
+    # The code bright, as a list's titles are: what's read here (the theme's own text
+    # color reads dimmed on the green and red). What its language marks, colored.
+    words = words.copy() if words is not None else Text(code(line))
+    words.stylize_before(palette().name)
+    return gutter.append(line.text[:1], style).append_text(words)
 
 
 _INDENT = " " * 12  # under the code, past the line numbers
