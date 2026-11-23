@@ -8,8 +8,7 @@
 
 **Purr** is a human-in-the-loop agentic code reviewer. It watches your GitHub repos, and
 Claude reviews the pull requests assigned to you in the background. You read what it found,
-ask it questions, and decide what gets posted. **Nothing goes to GitHub until you approve
-it.**
+ask it questions, and decide what gets posted. **Nothing goes to GitHub until you say so.**
 
 ![Purr: a review that needs you, a question to the agent, a comment on a line of the diff, and posting the review](https://raw.githubusercontent.com/pipecat-ai/purr/main/docs/purr.gif)
 
@@ -60,7 +59,9 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
    (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
    Comments show in boxes under their lines, yours, the agent's and GitHub's: `enter` on one
-   edits it, or replies to it on GitHub. `esc` or `d` closes the diff, `z` makes it full screen.
+   edits it, or replies to it on GitHub. A reply, or an edit to your comment on GitHub, is
+   posted when you save it; everything else waits for `a`. `esc` or `d` closes the diff, `z`
+   makes it full screen.
 5. **Decide**: `a` posts the review with your comments, `x` dismisses it. Once you've
    approved, `m` merges.
 
@@ -111,7 +112,9 @@ that repo's own versions instead.
 ## 💡 Good to know
 
 - **Purr never posts on its own.** The agents can read GitHub but not change it: they propose,
-  and Purr posts what you approve, as you, signed "Sent from Purr."
+  and Purr posts what you approve, as you, signed "Sent from Purr." Reviews and line comments
+  go out with `a`; a reply in a GitHub thread, or an edit to your own comment there, goes out
+  when you save it.
 - **The agents ask before anything risky.** Reading code and safe commands just run; anything
   else waits for your OK, and `A` keeps a rule so it doesn't ask again. This is the Agent SDK's
   permission system (Claude Code's, underneath), so the rules go in `~/.claude/settings.json`.
