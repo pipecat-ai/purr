@@ -67,7 +67,6 @@ from purr.workers.recap import LAST_ACTIVE
 _NOWHERE = object()
 # The app's keys that the screen on top (a dialog, the diff) gets instead.
 _GIVEN_WAY = {"next_alert", "command_palette"}
-_REPOS = Binding.Group("Repo", compact=True)  # 1-9
 
 
 def _claude_settings() -> Path:
@@ -100,14 +99,14 @@ class PurrApp(App):
     BINDINGS = [
         Binding("ctrl+q", "request_quit", "Quit", show=False, priority=True),  # q, from anywhere
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
-        # The keys that work everywhere: the footer shows them after the page's.
-        Binding("ctrl+p", "command_palette", "Find", priority=True),  # a repo or PR
-        Binding("ctrl+n", "next_alert", "News", priority=True),  # the latest
-        Binding("w", "recap", "Recap"),
-        Binding("i", "instructions", "Settings"),
-        Binding("0", "home", "Home"),
-        *[Binding(str(n), f"jump({n})", "Repo 1–9", group=_REPOS) for n in range(1, 10)],
-        Binding("q", "request_quit", "Quit"),
+        # The keys that work everywhere: ? lists them; the footer has the place's own.
+        Binding("ctrl+p", "command_palette", "Find", show=False, priority=True),  # repo, PR
+        Binding("ctrl+n", "next_alert", "News", show=False, priority=True),  # the latest
+        Binding("w", "recap", "Recap", show=False),
+        Binding("i", "instructions", "Settings", show=False),
+        Binding("0", "home", "Home", show=False),
+        *[Binding(str(n), f"jump({n})", "Repo 1–9", show=False) for n in range(1, 10)],
+        Binding("q", "request_quit", "Quit", show=False),
         Binding("question_mark", "keys", "Keys", show=False),  # each page shows its own
     ]
 

@@ -325,8 +325,8 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(
             pilot, lambda: {"Home", "Ask", "Review", "Thinking", "Claude Code"} <= footer(app)
         )
-        # (every key that works here: the list's too, and those that work everywhere)
-        assert {"Mark", "Search", "Settings", "Quit"} <= footer(app) and "Back" not in footer(app)
+        # (the repo's keys, the list's too; not those that work everywhere: ? has them)
+        assert {"Mark", "Search"} <= footer(app) and not footer(app) & {"Back", "Settings", "Quit"}
         await pilot.press("t")  # the pane's keys work from the list too, and back
         assert app.full_thinking
         await pilot.press("tab", "t", "tab")
@@ -348,7 +348,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
         # ...and in the list, the list's.
         await until(pilot, lambda: {"Home", "PR", "Search", "Mark", "Approve"} <= footer(app))
-        assert {"Claude Code", "Thinking", "Quit"} <= footer(app) and "Ask" not in footer(app)
+        assert {"Claude Code", "Thinking"} <= footer(app) and not footer(app) & {"Ask", "Quit"}
 
         # The / suggestions close first.
         await pilot.press("enter")
