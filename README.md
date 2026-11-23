@@ -4,29 +4,32 @@
 
 [![Tests](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml/badge.svg)](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml) [![Docs](https://img.shields.io/badge/Documentation-blue)](https://docs.pipecat.ai) [![Discord](https://img.shields.io/discord/1239284677165056021)](https://discord.gg/pipecat)
 
-# ᓚᘏᗢ Purr: PR reviews with Claude, you in the loop
+# ᓚᘏᗢ Purr
 
-**Purr** watches your GitHub repos, and Claude reviews the pull requests assigned to you in the
-background. You read what it found, ask it questions, and decide what gets posted.
-**Nothing goes to GitHub until you approve it.**
+**Purr** is a human-in-the-loop agentic code reviewer. It watches your GitHub repos, and
+Claude reviews the pull requests assigned to you in the background. You read what it found,
+ask it questions, and decide what gets posted. **Nothing goes to GitHub until you approve
+it.**
 
 ![Purr: a review that needs you, a question to the agent, a comment on a line of the diff, and posting the review](docs/purr.gif)
 
 ## ✨ What it does
 
-- **Reviews what's assigned to you**, as it comes in, a few at a time. A quick planning step
-  decides how deep: small changes get a quick look, risky ones a full review.
-- **Knows what's waiting on you.** PRs are grouped: *Needs you* (a review to post, a question
-  from the agent, someone replying to you on GitHub), *Reviewing*, *Review requested*,
-  *Others reviewing*, *Done*, *Not reviewed*. News from other repos shows at the top.
-- **Each PR is a conversation**: a Claude Code session you keep talking to ("is that race
-  real?", "drop the nit"), with a suggestion of what to ask next, as in Claude Code.
-- **The diff, with comments on lines**: yours and the agent's, posted together as one review.
-- **One key to post, one to merge.** `a` posts the review as you. `m` shows the checks, the
-  other reviewers and conflicts first, then merges what you approved.
-- **Many repos, one place**, and a recap of what happened while you were away.
-- **Safe by default**: Claude Code's own permissions, an optional sandbox, and the repo's
-  rules read from its main branch, so a PR can't change what it's reviewed against.
+- **It reviews what's assigned to you** as it comes in, a few at a time. A quick planning
+  step decides how deep: small changes get a quick look, risky ones a full review.
+- **It knows what's waiting on you.** PRs are grouped: *Needs you* (a review to post, a
+  question from the agent, someone replying to you on GitHub), *Reviewing*, *Review
+  requested*, *Others reviewing*, *Done*, *Not reviewed*. News from other repos shows at the
+  top.
+- **Every review is a conversation.** It's a Claude Code session you can keep talking to ("is
+  that race real?", "drop the nit"), and Purr suggests what to ask next, as Claude Code does.
+- **You can comment on lines of the diff.** Your comments go out with the agent's, in one
+  review.
+- **Posting and merging are a key each.** `a` posts the review as you. `m` shows the checks,
+  the other reviewers and any conflicts, then merges what you approved.
+- **It follows several repos at once**, and recaps what happened while you were away.
+- **It's safe by default.** It uses Claude Code's own permissions, an optional sandbox, and
+  the repo's rules from its main branch, so a PR can't change what it's reviewed against.
 
 ## 🚀 Setup
 

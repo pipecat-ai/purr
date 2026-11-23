@@ -18,7 +18,7 @@ from purr.config import Config, SettingsError
 
 app = typer.Typer(
     name="purr",
-    help="ᓚᘏᗢ Purr: review GitHub pull requests with Claude, you in the loop.",
+    help="ᓚᘏᗢ Purr is a human-in-the-loop agentic code reviewer.",
     add_completion=False,
     rich_markup_mode="rich",
 )
