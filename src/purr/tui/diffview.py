@@ -308,6 +308,9 @@ def first_opened(files: Sequence[File], diff: str, comments: Sequence[Said]) -> 
     return {i for i, file in enumerate(files) if file.path in short or file.path in commented}
 
 
+_SELECT = Binding.Group("Select", compact=True)
+
+
 class DiffView(ScrollView, can_focus=True):
     """The diff's lines, a cursor on one, and a selection; long lines scroll sideways.
 
@@ -329,10 +332,10 @@ class DiffView(ScrollView, can_focus=True):
         Binding("pagedown,ctrl+v", "page(1)", "Page down", show=False),
         Binding("home", "move(-1000000)", "Top", show=False),
         Binding("end", "move(1000000)", "Bottom", show=False),
-        Binding("shift+up", "select(-1)", "Select up", show=False),
-        Binding("shift+down", "select(1)", "Select down", show=False),
+        Binding("shift+up", "select(-1)", "Select up", group=_SELECT),
+        Binding("shift+down", "select(1)", "Select down", group=_SELECT),
         Binding("ctrl+space,ctrl+@", "mark", "Mark", show=False),
-        Binding("escape,ctrl+g", "unselect", "Unselect", show=False),
+        Binding("escape,ctrl+g", "unselect", "Unselect"),  # only while selecting
         # Here rather than on the pane: tab would move the focus otherwise.
         Binding("tab,space", "toggle_here", "Open/close", key_display="tab"),
     ]
@@ -350,7 +353,7 @@ class DiffView(ScrollView, can_focus=True):
         self._known: set[str] = set()  # the comments seen so far
         self.cursor = 0
         self._here = (0, 0)  # the rows the cursor's on: its row, or a comment's box
-        self.anchor: int | None = None  # where the selection starts; None: there's none
+        self._anchor: int | None = None
         self.marking = False  # the anchor's a mark (ctrl+space): moving keeps selecting
         self._rows: list[Row] = []
         self._strips: dict[int, Strip] = {}
@@ -458,6 +461,17 @@ class DiffView(ScrollView, can_focus=True):
         self.marking = self.anchor is None
         self.anchor = self.cursor if self.marking else None
         self.refresh()
+
+    @property
+    def anchor(self) -> int | None:
+        """Where the selection starts (the cursor's its other end); None: there's none."""
+        return self._anchor
+
+    @anchor.setter
+    def anchor(self, line: int | None) -> None:
+        if (line is None) != (self._anchor is None):
+            self.refresh_bindings()  # esc: unselect while selecting, else close
+        self._anchor = line
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         # Nothing selected, esc is the pane's: it closes the diff.
@@ -639,7 +653,7 @@ class DiffPane(Vertical):
         Binding("e", "toggle_all", "All"),
         Binding("n", "next_file(1)", "Next file", group=_FILES),
         Binding("p", "next_file(-1)", "Previous file", group=_FILES),
-        Binding("escape,d", "close", "Close", key_display="esc"),
+        Binding("escape,d", "close", "Close"),  # selecting, esc unselects: d, then
         *pane_keys(["zoom", "approve", "merge"]),
         Binding("shift+tab", "repo('switch_pane')", "Review", key_display="⇧tab"),
     ]

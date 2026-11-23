@@ -40,7 +40,7 @@ def key_groups(app: "App") -> list[tuple[str, list[tuple[str, str]]]]:
     groups: dict[str, dict[str, list[str]]] = {}
     for active in app.screen.active_bindings.values():
         node, binding = active.node, active.binding
-        if not active.enabled or not binding.description or not _ours(node):
+        if not active.enabled or not binding.description or not _ours(node, binding):
             continue
         section = _SECTIONS.get(type(node).__name__, type(node).__name__)
         keys = groups.setdefault(section, {}).setdefault(binding.description, [])
@@ -51,9 +51,18 @@ def key_groups(app: "App") -> list[tuple[str, list[tuple[str, str]]]]:
     ]
 
 
-def _ours(node: object) -> bool:
-    """Purr's own bindings, not Textual's widgets' (a list's arrows, a text box's)."""
-    return type(node).__module__.startswith("purr.")
+def _ours(node: object, binding: Binding) -> bool:
+    """Purr's own bindings, not Textual's widgets' (a list's arrows, a text box's), nor
+    those Purr's widgets inherit from them."""
+    return any(
+        cls.__module__.startswith("purr.") and _declares(cls, binding) for cls in type(node).__mro__
+    )
+
+
+def _declares(cls: type, binding: Binding) -> bool:
+    """Whether the class's own BINDINGS has it (Textual copies them, one per key)."""
+    own = [b for b in cls.__dict__.get("BINDINGS", []) if isinstance(b, Binding)]
+    return any((b.action, b.description) == (binding.action, binding.description) for b in own)
 
 
 def _together(keys: list[str]) -> str:

@@ -16,6 +16,7 @@ from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import short_age
 from purr.tui.session import NUMBER_STYLE
+from purr.tui.theme import NAME
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -86,7 +87,7 @@ class PRList(GroupedList):
     BINDINGS = [
         KEYS,
         *pane_keys(
-            ["open", "search", "review", "mark", "approve", "dismiss", "merge", "diff", "zoom"]
+            ["search", "review", "mark", "approve", "dismiss", "merge", "diff", "zoom"]
             + ["shell", "open_claude"]
         ),
         Binding("tab", "repo('toggle_group')", "Fold/open"),  # first, where it applies
@@ -202,7 +203,7 @@ def _line() -> Option:
     return Option(Rule(style="dim"), disabled=True)
 
 
-GROUP_GAP = 1  # empty lines between groups
+GROUP_GAP = 2  # empty lines between groups: after a group's last row, more than between rows
 HEADING = "group:"  # a group heading's id: "group:done"
 
 
@@ -236,9 +237,9 @@ def pr_row(pr: PR, mark: Text, *, unread: bool, number_width: int) -> Table:
         mark,
         Text(f"#{pr.number}", style=NUMBER_STYLE),
         # Something happened since you last looked: like unread mail.
-        Text(pr.title, style="bold" if unread else ""),
+        Text(pr.title, style=f"bold {NAME}" if unread else NAME),
         _assignees(pr),
-        Text(pr.author, style="dim"),
-        Text(short_age(pr.created_at), style="dim"),
+        Text(pr.author),
+        Text(short_age(pr.created_at)),
         number_width=number_width,
     )

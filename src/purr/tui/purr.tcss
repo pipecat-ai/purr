@@ -70,8 +70,8 @@
 }
 
 #search {
-    height: 1;
-    border: none;
+    height: 3;
+    border: round $accent;
     padding: 0 1;
     margin: 0 0 1 0;
     background: $boost;
@@ -204,4 +204,10 @@ AddRepoScreen, ConfirmScreen, RecapScreen, InstructionsScreen, HistorySearchScre
     border: none;
     text-wrap: nowrap;
     text-overflow: ellipsis;
+}
+
+/* The compact footer (less space between keys, so a pane's keys fit) leaves a group's
+   label (n p Next/previous) against the next key: a space after it. */
+Footer.-compact FooterLabel {
+    margin-right: 1;
 }

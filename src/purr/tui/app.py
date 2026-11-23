@@ -96,8 +96,8 @@ class PurrApp(App):
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
         Binding("ctrl+n", "next_alert", "Latest news", show=False, priority=True),
         Binding("w", "recap", "Recap", show=False),
-        Binding("i", "instructions", "Review style"),
-        Binding("q", "request_quit", "Quit"),
+        Binding("i", "instructions", "Review style", show=False),  # home's footer shows it
+        Binding("q", "request_quit", "Quit", show=False),  # home's footer shows it
         Binding("0", "home", "Home", show=False),
         *[Binding(str(n), f"jump({n})", "Repo 1–9", show=False) for n in range(1, 10)],
         Binding("ctrl+p", "command_palette", "Find a repo or PR", show=False, priority=True),

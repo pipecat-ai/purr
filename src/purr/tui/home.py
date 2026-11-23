@@ -16,6 +16,7 @@ from purr.models import RepoSummary
 from purr.tui.dialogs import AddRepoScreen, ConfirmScreen
 from purr.tui.keyhelp import KEYS
 from purr.tui.lists import GROUP_GAP, GroupedList, blank, separated, titled_line
+from purr.tui.theme import NAME
 from purr.tui.views import PurrView
 
 _REPO_COLUMNS = ("", "REPO", "NEEDS YOU", "REVIEWING", "NOT REVIEWED", "LAST ACTIVITY")
@@ -68,6 +69,12 @@ class ReposView(PurrView):
         Binding("p", "move(-1)", "Previous", show=False),
         Binding("plus", "add", "Watch repo"),
         Binding("minus", "remove", "Stop watching"),
+        # Keys that work anywhere, shown here, where there's room (the app's own run).
+        Binding("ctrl+p", "app.command_palette", "Find a repo or PR", priority=True),
+        Binding("ctrl+n", "app.next_alert", "Latest news", priority=True),
+        Binding("w", "app.recap", "Recap"),
+        Binding("i", "app.instructions", "Review style"),
+        Binding("q", "app.request_quit", "Quit"),
     ]
 
     def __init__(self, **kwargs):
@@ -138,7 +145,7 @@ class ReposView(PurrView):
 
     @staticmethod
     def _cells(i: int, summary: RepoSummary, alerted: bool) -> list:
-        name = Text(summary.name)
+        name = Text(summary.name, style=NAME)
         if alerted:
             name.append(" ●", style="bold yellow")
         needs = Text(_count(summary.needs_you), style="bold yellow" if summary.needs_you else "")

@@ -13,6 +13,9 @@ BASE0, BASE1, BASE2, BASE3 = "#839496", "#93a1a1", "#eee8d5", "#fdf6e3"
 YELLOW, ORANGE, RED, MAGENTA = "#b58900", "#cb4b16", "#dc322f", "#d33682"
 VIOLET, BLUE, CYAN, GREEN = "#6c71c4", "#268bd2", "#2aa198", "#859900"
 
+# What a list row is about (a PR's title, a repo's name): as bright as under the cursor.
+NAME = BASE2
+
 THEME = "solarized-dark"
 CODE_THEME = "solarized-dark"  # Pygments', for code in descriptions and replies
 

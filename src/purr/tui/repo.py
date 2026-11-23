@@ -41,6 +41,18 @@ from purr.tui.working import COLOR, FRAME_SECONDS, FRAMES
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
 
 
+class SearchBox(Input):
+    """The PR list's search: enter or esc goes back to the list, the search kept."""
+
+    BINDINGS = [
+        Binding("enter", "submit", "Done"),
+        Binding("escape", "leave", "Back"),
+    ]
+
+    async def action_leave(self) -> None:
+        await self.action_submit()  # as enter (its own action, for the footer to show)
+
+
 class RepoView(PRKeys):
     """A repo: its PRs grouped by state on the left, the selected PR's session on the right.
 
@@ -71,7 +83,7 @@ class RepoView(PRKeys):
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
             with Vertical(id="prs-pane"):
-                yield Input(id="search", placeholder="Search: number, title, author…")
+                yield SearchBox(id="search", placeholder="Search: number, title, author…")
                 yield PRList(id="prs")
             yield DiffPane(id="diff-pane")  # in the list's place, while it's shown (d)
             yield PRSession(id="session")
@@ -81,6 +93,7 @@ class RepoView(PRKeys):
         self.query_one("#search").display = False
         self.query_one(DiffPane).display = False
         self._left = "list"  # what's on the left: the PR list, or a PR's diff
+        self._zoomed_from_left = False  # z on the PR's pane was pressed from the left one
         # PRs whose agent is at work: their mark spins, like the PR pane's line.
         self._spinning: set[str] = set()
         self._frame = 0
@@ -501,14 +514,19 @@ class RepoView(PRKeys):
         self.notify(f"The agent's reasoning: {what}", timeout=2)
 
     def action_zoom(self) -> None:
-        """Full screen: the diff, from it, or else the PR's pane; and back."""
+        """Full screen: the diff, from it, or else the PR's pane; and back, the focus where
+        it was before."""
         if self.diff_shown and not self.session.has_focus_within:
             self.session.display = not self.session.display
             self.diff.set_class(not self.session.display, "-wide")  # all the width, zoomed
             return
         left = self.diff if self.diff_shown else self.query_one("#prs-pane")
-        left.display = not left.display
-        if left.display:
-            self._focus_left()
-        elif not self.session.has_focus_within:
-            self.session.focus_transcript()
+        if left.display:  # zooming the PR's pane: from it, or from the list
+            self._zoomed_from_left = not self.session.has_focus_within
+            left.display = False
+            if self._zoomed_from_left:
+                self.session.focus_transcript()
+        else:  # and back, the focus where it was
+            left.display = True
+            if self._zoomed_from_left:
+                self._focus_left()

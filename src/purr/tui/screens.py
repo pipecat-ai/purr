@@ -32,7 +32,7 @@ class MainScreen(Screen):
             yield ReposView(id="repos")
             yield RepoView(id="repo")
         # ctrl+p is Purr's finder (the README says), not the "palette" Textual would show.
-        yield Footer(show_command_palette=False)
+        yield Footer(compact=True, show_command_palette=False)
 
     @property
     def repos(self) -> ReposView:

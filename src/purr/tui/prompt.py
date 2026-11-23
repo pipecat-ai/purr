@@ -55,7 +55,10 @@ class PromptArea(TextArea):
     # As in Emacs (and readline): moving, killing and yanking. Textual's own cover the
     # rest: ctrl+a/e, ctrl+d, ctrl+z (undo).
     BINDINGS = [
-        Binding("up,ctrl+p", "older", "Older", show=False),
+        # What the footer shows while you type (enter and ctrl+j come through _on_key).
+        Binding("enter", "send", "Send"),
+        Binding("ctrl+j", "newline", "New line"),
+        Binding("up,ctrl+p", "older", "History"),
         Binding("down,ctrl+n", "newer", "Newer", show=False),
         Binding("ctrl+a", "line_start", "Start of the line", show=False),
         Binding("ctrl+b", "cursor_left", "Back a character", show=False),
@@ -102,23 +105,24 @@ class PromptArea(TextArea):
                 event.prevent_default()
                 self.set_text(choice + " ")
                 return
-        if event.key == "enter":
+        if event.key == "enter" or event.key in NEWLINE_KEYS:
             event.stop()
             event.prevent_default()
-            row, column = self.cursor_location
-            if column and self.document.get_line(row)[column - 1] == "\\":
-                # Like Claude Code: a backslash at the end continues on a new line.
-                self.delete((row, column - 1), (row, column))
-                self.insert("\n")
-            else:
-                self.post_message(self.Submitted(self, self.text))
-            return
-        if event.key in NEWLINE_KEYS:
-            event.stop()
-            event.prevent_default()
-            self.insert("\n")
+            self.action_send() if event.key == "enter" else self.action_newline()
             return
         await super()._on_key(event)
+
+    def action_send(self) -> None:
+        """What's written goes; or, after a backslash, a new line (as in Claude Code)."""
+        row, column = self.cursor_location
+        if column and self.document.get_line(row)[column - 1] == "\\":
+            self.delete((row, column - 1), (row, column))
+            self.insert("\n")
+        else:
+            self.post_message(self.Submitted(self, self.text))
+
+    def action_newline(self) -> None:
+        self.insert("\n")
 
     # -- Emacs: the start and end, killing and yanking -------------------------------
 

@@ -324,14 +324,24 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert app.full_thinking
         await pilot.press("tab", "t", "tab")
         assert not app.full_thinking and focused(app) == "transcript"
+        # z zooms the PR's pane, and back: the focus stays where it was, here or the list.
+        await pilot.press("z")
+        assert not app.main.repo.query_one("#prs-pane").display
+        await pilot.press("z")
+        assert app.main.repo.query_one("#prs-pane").display and focused(app) == "transcript"
+        await pilot.press("tab", "z")
+        assert focused(app) == "transcript"
+        await pilot.press("z")
+        assert focused(app) == "prs"
+        await pilot.press("tab")
         await pilot.press("escape")
         await until(pilot, lambda: home(app))
         await pilot.press("o")
         await until(pilot, lambda: in_repo(app))
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
         # ...and in the list, the list's.
-        await until(pilot, lambda: {"Home", "Open", "Search", "Mark", "Approve"} <= footer(app))
-        assert "Claude Code" in footer(app) and not footer(app) & {"Ask", "Thinking"}
+        await until(pilot, lambda: {"Home", "PR", "Search", "Mark", "Approve"} <= footer(app))
+        assert "Claude Code" in footer(app) and not footer(app) & {"Ask", "Thinking", "Quit"}
 
         # The / suggestions close first.
         await pilot.press("enter")
