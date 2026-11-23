@@ -155,6 +155,12 @@ uv run python scripts/record_demo.py   # the GIF above, from made-up PRs
 
 How Purr works and why: [`docs/purr.md`](https://github.com/pipecat-ai/purr/blob/main/docs/purr.md).
 
+Changes are recorded as [towncrier](https://towncrier.readthedocs.io/) fragments in
+`changelog/`: a file per change, `<PR number>.<type>.md` (`added`, `changed`, `deprecated`,
+`removed`, `fixed`, `performance`, `security` or `other`), with a bullet saying what changed.
+`uv run towncrier build --draft --version X.Y.Z` shows what the next release's notes in
+[`CHANGELOG.md`](https://github.com/pipecat-ai/purr/blob/main/CHANGELOG.md) will say.
+
 ## 📄 License
 
 BSD 2-Clause. See [LICENSE](https://github.com/pipecat-ai/purr/blob/main/LICENSE).
