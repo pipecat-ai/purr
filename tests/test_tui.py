@@ -1743,6 +1743,16 @@ async def test_answering_on_the_pr_and_dropping_the_agents_comments(tmp_path):
         writer = app.purr._writer
         await until(pilot, lambda: writer.pr_comments)
         assert writer.pr_comments[0][1].startswith("@alice looking now")
+        # r on a comment: a reply, starting with its words quoted (r is Review elsewhere).
+        await until(pilot, lambda: "Reply" in footer(app))
+        await pilot.press("r")
+        await until(pilot, lambda: isinstance(app.screen, CommentScreen))
+        assert app.screen.query_one("#comment-body").text == "> Can you look?\n\n"
+        await pilot.press(*"Yes", "enter")
+        await until(pilot, lambda: len(writer.pr_comments) == 2)
+        assert writer.pr_comments[1][1].startswith("> Can you look?\n\nYes")
+        await pilot.press("home")
+        await until(pilot, lambda: "Review" in footer(app) and "Reply" not in footer(app))
         # x on someone's does nothing; on the agent's proposed comment, it's left out.
         await pilot.press("home", "down", "x")
         assert not writer.deleted

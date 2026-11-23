@@ -14,10 +14,10 @@ from datetime import UTC, datetime
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
-from rich.padding import Padding
 from rich.text import Text
 
 from purr.models import PR, PRComment, PRDetails
+from purr.tui.boxes import CommentBox
 from purr.tui.theme import palette
 
 # CI moves on without the PR's updated_at changing, so details also expire.
@@ -197,17 +197,18 @@ def render_overview(details: PRDetails | None, error: str | None = None) -> Rend
 
 CONVERSATION_SHOWN = 5  # the latest things said on the PR, under its description
 
-# A review's state, said next to who wrote it.
-_VERDICTS = {
-    "APPROVED": ("approved", "green"),
-    "CHANGES_REQUESTED": ("changes requested", "red"),
-    "COMMENTED": ("reviewed", "dim"),
+# A review's state, said in its box's title.
+VERDICTS = {
+    "APPROVED": "approved",
+    "CHANGES_REQUESTED": "changes requested",
+    "COMMENTED": "review",
+    "DISMISSED": "review, dismissed",
 }
 
 
 def render_conversation(conversation: Sequence[PRComment]) -> list[RenderableType]:
-    """What's said on the PR itself, the latest few: who, when, what. Answering, changing
-    or deleting is the diff's (d), where all of it is, at the top."""
+    """What's said on the PR itself, the latest few, in boxes as the diff has them (who,
+    when, its words). Answering, changing or deleting is the diff's (d), at its top."""
     if not conversation:
         return []
     out: list[RenderableType] = [
@@ -217,18 +218,15 @@ def render_conversation(conversation: Sequence[PRComment]) -> list[RenderableTyp
         )
     ]
     if len(conversation) > CONVERSATION_SHOWN:
-        out.append(Text(f"  {len(conversation) - CONVERSATION_SHOWN} earlier", style="dim"))
-    for comment in conversation[-CONVERSATION_SHOWN:]:
-        verdict, color = _VERDICTS.get(comment.state, ("", ""))
-        out.append(
-            Text.assemble(
-                ("│ ", "dim"),
-                (comment.author, "bold"),
-                (" (you)" if comment.mine else "", "dim"),
-                (f" · {short_age(comment.at)}", "dim"),
-                (f" · {verdict}" if verdict else "", color),
-            )
-        )
-        out.append(Padding(Markdown(comment.body, code_theme=palette().code), (0, 0, 0, 2)))
+        out.append(Text(f"{len(conversation) - CONVERSATION_SHOWN} earlier", style="dim"))
+    latest = conversation[-CONVERSATION_SHOWN:]
+    out += [CommentBox(comment_title(comment), comment.body, "cyan") for comment in latest]
     out.append(Text(""))
     return out
+
+
+def comment_title(comment: PRComment) -> str:
+    """``alice · 3h ago · approved``, ``me (you) · now``."""
+    notes = [f"{short_age(comment.at)} ago" if short_age(comment.at) != "now" else "now"]
+    notes += [VERDICTS[comment.state]] if comment.state in VERDICTS else []
+    return " · ".join([comment.author + (" (you)" if comment.mine else ""), *notes])

@@ -60,7 +60,7 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
    (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
    Comments show in boxes under their lines (yours, the agent's and GitHub's), and what's
    said on the PR itself is at the top. Yours go to GitHub when you save them: `enter` on one
-   edits it there and `x` deletes it (after asking); `enter` on someone else's answers it.
+   edits it there and `x` deletes it (after asking); `r` on anyone's replies, quoting it.
    `esc` or `d` closes the diff, `z` makes it full screen.
 5. **Decide**: `a` posts the agent's review, `x` dismisses it (in the diff, `x` drops one of
    its comments). Once you've approved, `m` merges.

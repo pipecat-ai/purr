@@ -67,31 +67,59 @@ def test_a_box_for_each_comment_under_its_line():
     assert len(comments) == 6  # the agent's without a line can't be shown
     reply = next(c for c in comments if c.id == "C2")
     assert (reply.thread, reply.reply, reply.yours) == ("T1", True, True)
-    text = plain(rows(files, {0}, comments, shut={"github:T2:0"}))
+    text = plain(rows(files, {0}, comments, shut={"github:T2:0"}, width=36))
     assert text[0] == "▾ src/bus.py  +1 −1  ✎ 6"
-    assert text[2:] == [
+    assert text[2:] == [  # boxes all the same width, under the code
         "    1    1   def subscribe(self):",
-        "            ╭─ ▾ alice ─────────────────────╮",  # a thread: a box a comment
-        "            │ Should subscribe take a lock? │",
-        "            ╰───────────────────────────────╯",
-        "            ╭─ ▾ me (you) · reply ─╮",  # a reply: its title says so
-        "            │ Done.                │",
-        "            ╰──────────────────────╯",
+        "            ╭─ ▾ alice ────────────────────────╮",  # a thread: a box a comment
+        "            │ Should subscribe take a lock?    │",
+        "            ╰──────────────────────────────────╯",
+        "            ╭─ ▾ me (you) · reply ─────────────╮",  # a reply: its title says so
+        "            │ Done.                            │",
+        "            ╰──────────────────────────────────╯",
         "    2       -    pass",
-        "            ╭─ ▾ you ────────╮",  # on the deleted line: the base's side
-        "            │ Why drop this? │",
-        "            ╰────────────────╯",
+        "            ╭─ ▾ you ──────────────────────────╮",  # on the deleted line: the base's
+        "            │ Why drop this?                   │",
+        "            ╰──────────────────────────────────╯",
         "         2  +    self._subscribers.append(x)",
-        "            ╭─ ▾ agent, proposed ─╮",
-        "            │ Race here           │",
-        "            ╰─────────────────────╯",
+        "            ╭─ ▾ agent, proposed ──────────────╮",
+        "            │ Race here                        │",
+        "            ╰──────────────────────────────────╯",
         "            ╶─ ▸ carol · resolved ─ Typo ─╴",  # shut: its top line, and how it starts
-        "            ╭─ ▾ dave · outdated ─╮",  # on no line of this diff: at the end
-        "            │ Old code            │",
-        "            ╰─────────────────────╯",
+        "            ╭─ ▾ dave · outdated ──────────────╮",  # on no line of this diff: last
+        "            │ Old code                         │",
+        "            ╰──────────────────────────────────╯",
         "▸ uv.lock  +1 −1",
         "▸ docs/new.md  +1 −0  new file",
     ]
+
+
+def test_the_conversation_comes_first_its_boxes_not_under_code():
+    from purr.models import PRComment
+    from purr.tui.diffview import CONVERSATION
+
+    files = (CONVERSATION, *parse(DIFF))
+    alice = PRComment("IC1", "comment", "alice", "Can you **rebase**?", "2020-01-01T00:00:00Z")
+    bob = PRComment("R1", "review", "bob", "- one\n- two", "2020-01-02T00:00:00Z",
+                    state="APPROVED")  # fmt: skip
+    text = plain(rows(files, {0}, said([], [], [], conversation=(alice, bob)), width=36))
+    assert text[:8] == [  # boxes as on lines, the same width, but not indented
+        "▾ Conversation  on the PR  · c writes on it  ✎ 2",
+        "╭─ ▾ alice · 6y ago ───────────────╮",
+        "│ Can you rebase?                  │",  # its words as Markdown
+        "╰──────────────────────────────────╯",
+        "╭─ ▾ bob · 6y ago · approved ──────╮",  # a review's text, with its verdict
+        "│  • one                           │",
+        "│  • two                           │",
+        "╰──────────────────────────────────╯",
+    ]
+    assert text[8] == "▸ src/bus.py  +1 −1"
+
+
+def test_a_reply_starts_with_what_it_answers_quoted():
+    from purr.tui.diffview import quoted
+
+    assert quoted("Should it?\n\nI think so.") == "> Should it?\n>\n> I think so.\n\n"
 
 
 def test_which_files_start_opened():

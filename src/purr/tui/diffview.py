@@ -15,14 +15,11 @@ each in a box under its line, which ``tab`` closes to a line (resolved threads
 start that way) and opens again.
 """
 
-import re
-import textwrap
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
-from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 from textual import events, on
@@ -53,17 +50,16 @@ from purr.messages import (
     SaveComment,
 )
 from purr.models import PR, DraftComment, PRComment, Quote
+from purr.tui.boxes import BOX_WIDTH, comment_box
 from purr.tui.dialogs import ConfirmScreen
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
-from purr.tui.overview import short_age
+from purr.tui.overview import VERDICTS, short_age
 from purr.tui.prompt import PromptArea
-from purr.tui.theme import palette
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
-_WRAP = 100  # a comment's lines, at most this wide
 SHORT_DIFF = 60  # a diff this short starts with its files opened
 
 
@@ -92,14 +88,6 @@ LINE_STYLES = {"@@": "cyan", "+": "green", "-": "red", "\\": "dim"}
 # What's said on the PR itself, not on a line: the first "file" of the view, its comments
 # boxes like those on lines.
 CONVERSATION = File("", ())
-
-# A review's state, said in its box's title.
-_REVIEW_STATES = {
-    "APPROVED": "approved",
-    "CHANGES_REQUESTED": "changes requested",
-    "COMMENTED": "review",
-    "DISMISSED": "review, dismissed",
-}
 
 
 @dataclass(frozen=True)
@@ -169,7 +157,7 @@ def _on_pr(comment: PRComment) -> Said:
     """A comment on the PR itself, or a review's text."""
     return Said("", 0, "", comment.author, comment.body, "github", f"pr:{comment.id}",
                 yours=comment.mine, id=comment.id, at=comment.at, kind=comment.kind,
-                note=_REVIEW_STATES.get(comment.state, ""))  # fmt: skip
+                note=VERDICTS.get(comment.state, ""))  # fmt: skip
 
 
 def _yours(comment: DraftComment) -> Said:
@@ -193,16 +181,20 @@ def _thread(thread: dict) -> list[Said]:
 
 
 def rows(
-    files: Sequence[File], opened: set[int], comments: Sequence[Said], shut: set[str] = frozenset()
+    files: Sequence[File],
+    opened: set[int],
+    comments: Sequence[Said],
+    shut: set[str] = frozenset(),
+    width: int = BOX_WIDTH,
 ) -> list[Row]:
     """The view's lines: each file's, then, if it's opened, its lines and their comments
-    (those in ``shut`` as a line each)."""
+    (those in ``shut`` as a line each; the others in boxes ``width`` wide)."""
     out: list[Row] = []
     for index, file in enumerate(files):
         on_file = [c for c in comments if c.path == file.path]
         out.append(Row("file", _file_text(file, index in opened, on_file), index))
         if index in opened:
-            out += _file_rows(index, file, on_file, shut)
+            out += _file_rows(index, file, on_file, shut, width)
     return out
 
 
@@ -218,19 +210,21 @@ def _file_text(file: File, opened: bool, comments: list[Said]) -> Text:
     return text
 
 
-def _file_rows(index: int, file: File, comments: list[Said], shut: set[str]) -> list[Row]:
+def _file_rows(
+    index: int, file: File, comments: list[Said], shut: set[str], width: int
+) -> list[Row]:
     if not file.path:  # the conversation: its comments, oldest first
-        return [row for comment in comments for row in _said_rows(index, comment, shut)]
+        return [row for comment in comments for row in _said_rows(index, comment, shut, width)]
     if file.generated:
         return [Row("note", Text("  generated, not shown", style="dim"), index)]
     out: list[Row] = []
     for line in file.lines:
         out.append(Row("line", _numbered(line), index, line))
         for comment in (c for c in comments if (c.line, c.side) == line.target()):
-            out += _said_rows(index, comment, shut)
+            out += _said_rows(index, comment, shut, width)
     placed = {line.target() for line in file.lines}
     for comment in (c for c in comments if (c.line, c.side) not in placed):
-        out += _said_rows(index, comment, shut, where=True)
+        out += _said_rows(index, comment, shut, width, where=True)
     return out
 
 
@@ -244,9 +238,11 @@ _INDENT = " " * 12  # under the code, past the line numbers
 _COLORS = {"you": "yellow", "agent": "magenta", "github": "cyan"}
 
 
-def _said_rows(index: int, said: Said, shut: set[str], *, where: bool = False) -> list[Row]:
+def _said_rows(
+    index: int, said: Said, shut: set[str], width: int, *, where: bool = False
+) -> list[Row]:
     """A comment under its line: in a box, or (shut) a line saying who and how it starts."""
-    texts = [_shut_line(said, where)] if said.key in shut else _box(said, where)
+    texts = [_shut_line(said, where)] if said.key in shut else _box(said, where, width)
     return [Row("said", text, index, said=said) for text in texts]
 
 
@@ -291,59 +287,16 @@ def _short(text: str, width: int = 60) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
-def _box_style() -> str:
-    """A box's inside: the theme's panel (Solarized's highlighted background)."""
-    return f"on {palette().box}"
-
-
-_MENTION = re.compile(r"(?<![\w/])@[A-Za-z0-9][\w-]*(?:/[\w.-]+)?")  # @alice, @org/team
-
-
-def _box(said: Said, where: bool) -> list[Text]:
-    """The comment in a box, wrapped: its border and title (who wrote it) in its color
-    (yours, the agent's, GitHub's), resolved or not; the words in the text's, with
-    mentions picked out."""
-    color = _COLORS[said.source]
-    body = _wrapped(said.text)
+def _box(said: Said, where: bool, width: int) -> list[Text]:
+    """The comment in a box (see purr.tui.boxes): its title (who wrote it, when) on the
+    top border, all of it in its color (yours, the agent's, GitHub's), resolved or not."""
     title = f"▾ {_title(said, where)}"
-    width = max([line.cell_len for line in body] + [cell_len(title) + 2])
-    indent = _indent(said)
-    top = Text.assemble(
-        (f"{indent}╭─ ", color),
-        (title, f"bold {color}"),
-        (f" {'─' * (width - cell_len(title) - 1)}╮", color),
-    )
-    middle = [_inside(line, width, color, indent) for line in body]
-    bottom = Text(f"{indent}╰{'─' * (width + 2)}╯", style=color)
-    return [top, *middle, bottom]
+    return comment_box(title, said.text, _COLORS[said.source], width, _indent(said))
 
 
 def _indent(said: Said) -> str:
-    """Under the code (a reply too: it's on the same line, and its title says so)."""
-    return _INDENT
-
-
-def _inside(line: Text, width: int, color: str, indent: str) -> Text:
-    """A line of a box: between its sides, on its background, padded to its width."""
-    inside = Text(" ", style=_box_style())
-    inside.append_text(line)
-    inside.append(" " * (width - line.cell_len + 1), style=inside.style)
-    return Text.assemble((f"{indent}│", color), inside, ("│", color))
-
-
-def _wrapped(text: str) -> list[Text]:
-    """A comment's lines, wrapped, with its mentions picked out."""
-    lines = [
-        line for paragraph in text.splitlines() for line in textwrap.wrap(paragraph, _WRAP) or [""]
-    ] or [""]
-    return [_mentions(line) for line in lines]
-
-
-def _mentions(line: str) -> Text:
-    """A line with its @mentions in bold blue."""
-    text = Text(line, style=_box_style())
-    text.highlight_regex(_MENTION, "bold blue")
-    return text
+    """On a line, under the code (a reply too: its title says so); on the PR, none."""
+    return _INDENT if said.path else ""
 
 
 def first_opened(files: Sequence[File], diff: str, comments: Sequence[Said]) -> set[int]:
@@ -357,6 +310,8 @@ _SELECT = Binding.Group("Select", compact=True)
 
 
 class DiffView(ScrollView, can_focus=True):
+    _on_comment = False  # the cursor's on a comment (the footer says what r does there)
+
     """The diff's lines, a cursor on one, and a selection; long lines scroll sideways.
 
     ``shift+↑``/``shift+↓`` select, as in most editors; ``ctrl+space`` sets a mark that
@@ -413,12 +368,24 @@ class DiffView(ScrollView, can_focus=True):
         self._known |= {c.key for c in new}
         if opened is not None:
             self.opened = opened
-        self._rows = rows(self.files, self.opened, comments, self.shut)
+        self._laid_out_at = self._box_width()
+        self._rows = rows(self.files, self.opened, comments, self.shut, self._laid_out_at)
         self._strips.clear()
         width = max((row.text.cell_len for row in self._rows), default=0)
         self.virtual_size = Size(width, len(self._rows))
         self.anchor, self.marking = None, False
         self._place(self._find(here))  # where you're looking stays: no jump to the cursor
+
+    def _box_width(self) -> int:
+        """Comments' boxes: the same width, all of them, as wide as the view leaves for one
+        under the code (BOX_WIDTH at most)."""
+        room = self.size.width - len(_INDENT) - 2  # past the line numbers, a scrollbar
+        return max(40, min(BOX_WIDTH, room)) if self.size.width else BOX_WIDTH
+
+    def on_resize(self) -> None:
+        """Wider or narrower (z, the terminal): the boxes laid out again, to fit."""
+        if self._rows and self._box_width() != self._laid_out_at:
+            self.show(self.comments)
 
     def current(self) -> Row | None:
         return self._rows[self.cursor] if 0 <= self.cursor < len(self._rows) else None
@@ -543,6 +510,10 @@ class DiffView(ScrollView, can_focus=True):
         self._here = self._unit(index)
         self.cursor = self._here[0]
         self.refresh()
+        on_comment = bool(self._rows and self._rows[self.cursor].said)
+        if on_comment != self._on_comment:  # r: reply on a comment, review elsewhere
+            self._on_comment = on_comment
+            self.refresh_bindings()
 
     # The mouse wheel scrolls; the cursor comes along, so keys act where you look.
     def on_mouse_scroll_down(self) -> None:
@@ -694,6 +665,7 @@ class DiffPane(Vertical):
         KEYS,
         Binding("enter", "ask", "Ask"),
         Binding("c", "comment", "Comment"),
+        Binding("r", "reply", "Reply"),  # on a comment on GitHub; elsewhere, the repo's r
         Binding("x", "remove", "Delete"),
         Binding("e", "toggle_all", "All"),
         Binding("n", "next_file(1)", "Next file", group=_FILES),
@@ -768,6 +740,27 @@ class DiffPane(Vertical):
 
     async def action_repo(self, action: str) -> None:
         await self.purr_app.main.repo.run_action(action)
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "reply":  # on a comment on GitHub; elsewhere r reviews (the repo's)
+            row = self.view.current()
+            return bool(row and row.said and row.said.source == "github")
+        return True
+
+    def action_reply(self) -> None:
+        """r on a comment on GitHub: your answer, starting with its words quoted (as
+        GitHub's quote reply does), posted when you save it: in its thread, or on the PR."""
+        row = self.view.current()
+        if not (self.pr and row and row.said):
+            return
+        said = row.said
+        quote = quoted(unsigned(said.text, self.purr_app.purr.config.signature))
+        if said.path:
+            heading = f"Your reply on GitHub, to {said.who} on {said.path}:{said.line}"
+            self._write(CommentScreen(heading, quote), partial(self._reply, said))
+        else:
+            heading = f"Your comment on the PR, to {said.who}"
+            self._write(CommentScreen(heading, quote), partial(self._on_pr, said))
 
     def action_close(self) -> None:
         self.post_message(self.Closed())
@@ -970,6 +963,12 @@ class DiffPane(Vertical):
         finally:
             await self.reload()
         return True
+
+
+def quoted(text: str) -> str:
+    """``> `` before each of its lines, as a reply quoting it starts; then room to answer."""
+    lines = text.strip().splitlines() or [""]
+    return "\n".join(f"> {line}".rstrip() for line in lines) + "\n\n"
 
 
 def _where_text(quote: Quote) -> str:
