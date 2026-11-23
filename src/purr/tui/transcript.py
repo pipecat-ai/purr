@@ -3,9 +3,14 @@
 from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
+from textual import events
+from textual.message import Message
 from textual.selection import Selection
 from textual.strip import Strip
+from textual.timer import Timer
 from textual.widgets import RichLog
+
+REWRAP_AFTER = 0.15  # seconds of no more resizing (dragging a terminal's edge sends many)
 
 
 class Transcript(RichLog):
@@ -15,6 +20,22 @@ class Transcript(RichLog):
     can't tell what the mouse is over and selecting does nothing. This marks
     it, like Textual's :class:`~textual.widgets.Log` does.
     """
+
+    class Rewrap(Message):
+        """Its width changed: what's written is wrapped for the old one (RichLog wraps a
+        line once, as it's written), so whoever wrote it should write it again."""
+
+    _width: int | None = None
+    _rewrap: Timer | None = None
+
+    def on_resize(self, event: events.Resize) -> None:
+        # Its whole width: a scrollbar coming or going mustn't start another rewrap.
+        width = self.outer_size.width
+        if self._width not in (None, width):
+            if self._rewrap:
+                self._rewrap.stop()
+            self._rewrap = self.set_timer(REWRAP_AFTER, lambda: self.post_message(self.Rewrap()))
+        self._width = width
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         text = "\n".join(line.text.rstrip() for line in self.lines)

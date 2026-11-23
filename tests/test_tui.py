@@ -9,7 +9,7 @@ from textual.widgets import Input, OptionList
 from purr.app import Purr
 from purr.config import Config
 from purr.messages import DismissAction, WatchRepo
-from purr.models import PRState
+from purr.models import PRDetails, PRRef, PRState
 from purr.store import Store
 from purr.tui import PurrApp
 from purr.tui.dialogs import AddRepoScreen, ConfirmScreen
@@ -725,6 +725,34 @@ async def test_folding_a_group(tmp_path):
         # Searching shows every match, folded or not.
         await pilot.press("p", "p", "tab", "slash", "2")
         await until(pilot, lambda: pr_ids(app) == ["pipecat-ai/pipecat#2"])
+
+
+async def test_zooming_rewraps_the_pr(tmp_path, monkeypatch):
+    # Textual's console, which RichLog measures what it writes against, is as wide as
+    # the terminal: headless, COLUMNS (80 unless said).
+    monkeypatch.setenv("COLUMNS", "160")
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1)]
+    github.details[PRRef("pipecat-ai/pipecat", 1)] = PRDetails(body="word " * 200)
+    async with app.run_test(size=(160, 40)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        log = app.main.repo.session.query_one("#transcript")
+
+        def widest() -> int:
+            return max((line.cell_length for line in log.lines), default=0)
+
+        await until(pilot, lambda: "word word" in transcript(app))
+        narrow = widest()
+        assert narrow <= log.size.width
+        # Zoomed, the description fills the width; and back, it fits the pane again.
+        await pilot.press("tab", "z")
+        await until(pilot, lambda: widest() > narrow + 40)
+        await pilot.press("z")
+        await until(pilot, lambda: widest() <= log.size.width)
+        assert focused(app) == "transcript"
 
 
 async def test_moving_around_and_searching(tmp_path):

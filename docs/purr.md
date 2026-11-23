@@ -465,7 +465,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `a` / `x` answer the decision box: approve or dismiss a pending action, allow or deny a permission request (`A`: always allow); `x` also says replies to you need no answer
 - `m` merge a PR you approved: once to see where it stands, again to merge (see Merging)
 - `t` the agent's reasoning in full, or a line per thought again
-- `z` zoom the PR session to full screen, and back, the focus where it was (the PR's pane, or the list)
+- `z` zoom the PR session to full screen, and back, the focus where it was (the PR's pane, or the list). The transcript is written again to fill its new width (a RichLog wraps each line once, as it's written; `Transcript.Rewrap`), as when the terminal's resized
 - `c` open the PR's session in Claude Code, `!` a shell in its worktree
 - `i` edit your review style or code style (this repo's inside a repo, the general ones at home), your standing permissions (`p`), the repo's review skill (`s`), or Purr's settings (`o`)
 - `w` open the latest "while you were away" recap

@@ -721,6 +721,12 @@ class PRSession(Vertical):
         self.query_one(Working).stop()
         self.query_one(PromptArea).suggest("")
 
+    @on(Transcript.Rewrap)
+    def _rewrap(self) -> None:
+        """Wider or narrower (z, or the terminal resized): written again, to fill it."""
+        if self.pr is not None:
+            self.redraw(keep_place=True)
+
     def redraw(self, *, keep_place: bool = False) -> None:
         """Rewrite the transcript: the overview, then the session.
 
