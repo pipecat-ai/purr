@@ -317,7 +317,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
         # ...and in the list, the list's.
         await until(pilot, lambda: {"Home", "Open", "Search", "Mark", "Approve"} <= footer(app))
-        assert not footer(app) & {"Ask", "Thinking", "Claude Code"}
+        assert "Claude Code" in footer(app) and not footer(app) & {"Ask", "Thinking"}
 
         # The / suggestions close first.
         await pilot.press("enter")
@@ -728,6 +728,22 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         claude = command.index("claude")
         assert command[claude + 1] == "--resume" and cwd == worktree
         assert "/exit goes back to Purr." in env["PURR_BANNER"]
+
+        # No Claude Code to run, or it doesn't start: a dialog says so.
+        from purr.tui.screens import NoticeScreen
+
+        monkeypatch.setattr("purr.tui.screens.claude_cli", lambda: None)
+        await pilot.press("c")
+        await until(pilot, lambda: isinstance(app.screen, NoticeScreen))
+        await pilot.press("escape")
+        monkeypatch.setattr("purr.tui.screens.claude_cli", lambda: "claude")
+
+        async def not_found(command, cwd, env=None):
+            return 127
+
+        app.run_outside = not_found
+        await pilot.press("c")
+        await until(pilot, lambda: isinstance(app.screen, NoticeScreen))
 
 
 async def test_slash_commands(tmp_path):

@@ -25,7 +25,7 @@ from textual.widget import Widget
 from textual.widgets import ContentSwitcher, Footer, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
-from purr.claude import claude_cli
+from purr.claude import NO_CLAUDE_CODE, claude_cli
 from purr.jobs import PurrError
 from purr.messages import (
     REVIEW_WORKER,
@@ -118,7 +118,7 @@ class PRList(GroupedList):
 
     BINDINGS = pane_keys(
         ["open", "search", "review", "mark", "approve", "dismiss", "merge", "diff", "zoom"]
-        + ["shell", "switch_pane"],
+        + ["shell", "open_claude", "switch_pane"],
         switch_pane="PR",
     )
 
@@ -424,6 +424,8 @@ def _announced(command: list[str], banner: str) -> tuple[list[str], dict[str, st
     script = 'printf "%s\\n" "$PURR_BANNER"; exec "$@"'
     return ["/bin/sh", "-c", script, "purr", *command], {"PURR_BANNER": banner}
 
+
+_NOT_RUN = (126, 127)  # the shell's exit status: it couldn't run, or find, the command
 
 MERGE_RECHECK = 10.0  # seconds between asking GitHub again while checks run
 
@@ -941,10 +943,15 @@ class RepoView(PurrView):
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
-        claude = claude_code_command(review.session_id, str(pr.ref), claude_cli())
+        if not (cli := claude_cli()):
+            self.app.push_screen(NoticeScreen("There's no Claude Code to open.", NO_CLAUDE_CODE))
+            return
+        claude = claude_code_command(review.session_id, str(pr.ref), cli)
         banner = f"Claude Code, in {pr.ref}'s review session. /exit goes back to Purr."
         command, env = _announced(claude, banner)
-        await self.purr_app.run_outside(command, worktree, env)
+        if await self.purr_app.run_outside(command, worktree, env) in _NOT_RUN:
+            self.app.push_screen(NoticeScreen(f"Claude Code didn't start ({cli}).", NO_CLAUDE_CODE))
+            return
         # The session may have grown in Claude Code: reload its transcript.
         self.purr_app.sessions.pop(str(pr.ref), None)
         self.session.pr = None
@@ -1027,7 +1034,8 @@ class MainScreen(Screen):
         with ContentSwitcher(initial="repos", id="views"):
             yield ReposView(id="repos")
             yield RepoView(id="repo")
-        yield Footer()
+        # ctrl+p is Purr's finder (the README says), not the "palette" Textual would show.
+        yield Footer(show_command_palette=False)
 
     @property
     def repos(self) -> ReposView:
@@ -1118,6 +1126,27 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def action_answer(self, yes: bool) -> None:
         self.dismiss(yes)
+
+
+class NoticeScreen(ModalScreen[None]):
+    """Something you should know (it went wrong), until you close it."""
+
+    BINDINGS = [Binding("escape,enter", "close", "Close")]
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__()
+        self._message = message
+        self._detail = detail
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label(self._message)
+            if self._detail:
+                yield Label(self._detail, classes="hint")
+            yield Label("enter or esc closes", classes="hint")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class AlwaysScreen(ModalScreen[str | None]):

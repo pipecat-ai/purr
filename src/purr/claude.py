@@ -14,11 +14,15 @@ import claude_agent_sdk
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from loguru import logger
 
+# What to do when there's no Claude Code to run (it should come with the Agent SDK).
+NO_CLAUDE_CODE = "Install it: curl -fsSL https://claude.ai/install.sh | bash"
 
-def claude_cli() -> str:
+
+def claude_cli() -> str | None:
     """The Claude Code to run yourself (``c``, ``purr --login``): yours, if it's installed;
-    else the one the Agent SDK comes with, which reviews run on."""
-    return shutil.which("claude") or str(bundled_claude())
+    else the one the Agent SDK comes with, which reviews run on. None: neither."""
+    bundled = bundled_claude()
+    return shutil.which("claude") or (str(bundled) if bundled.exists() else None)
 
 
 def bundled_claude() -> Path:

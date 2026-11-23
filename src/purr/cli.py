@@ -10,7 +10,7 @@ from pathlib import Path
 from loguru import logger
 
 from purr import __version__
-from purr.claude import claude_cli
+from purr.claude import NO_CLAUDE_CODE, claude_cli
 from purr.config import Config, SettingsError
 
 
@@ -87,9 +87,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _login() -> int:
+def _login() -> int | str:
     """Log in to Claude, as Claude Code does: reviews use that login (or ANTHROPIC_API_KEY)."""
-    return subprocess.call([claude_cli(), "auth", "login"])
+    if not (claude := claude_cli()):
+        return f"purr: no Claude Code to log in with. {NO_CLAUDE_CODE}"
+    return subprocess.call([claude, "auth", "login"])
 
 
 def _config(args: argparse.Namespace) -> Config:

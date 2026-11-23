@@ -1,6 +1,7 @@
 """Turning SDK messages and stored transcripts into transcript entries."""
 
 import io
+from pathlib import Path
 from types import SimpleNamespace
 
 from rich.console import Console
@@ -48,7 +49,9 @@ def test_claude_code_is_yours_or_the_one_purr_comes_with(monkeypatch):
     assert purr.claude.claude_cli() == "/usr/local/bin/claude"
     monkeypatch.setattr(purr.claude.shutil, "which", lambda name: None)
     bundled = purr.claude.claude_cli()
-    assert bundled.endswith("/_bundled/claude") and purr.claude.bundled_claude().exists()
+    assert bundled and bundled.endswith("/_bundled/claude")
+    monkeypatch.setattr(purr.claude, "bundled_claude", lambda: Path("/nowhere/claude"))
+    assert purr.claude.claude_cli() is None  # neither
 
 
 def test_purr_login_logs_in_with_claude_code(monkeypatch):
@@ -62,6 +65,10 @@ def test_purr_login_logs_in_with_claude_code(monkeypatch):
     with pytest.raises(SystemExit) as exit:
         purr.cli.main(["--login"])
     assert exit.value.code == 0 and ran == [["claude", "auth", "login"]]
+    monkeypatch.setattr(purr.cli, "claude_cli", lambda: None)
+    with pytest.raises(SystemExit) as exit:
+        purr.cli.main(["--login"])
+    assert "no Claude Code to log in with" in str(exit.value.code)
 
 
 def test_claude_code_command_resumes_safely():
