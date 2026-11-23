@@ -22,8 +22,9 @@ from purr.messages import (
     MergeReadiness,
     PlanReviews,
     PostComments,
+    StopAgent,
 )
-from purr.models import PR, CheckState, PRRef
+from purr.models import PR, CheckState, PRRef, ReviewStatus
 from purr.review.agent import claude_code_command
 from purr.tui.dialogs import AlwaysScreen, ConfirmScreen, NoticeScreen
 from purr.tui.session import PRSession, SessionState
@@ -35,6 +36,16 @@ def _review_anyway(taken: list[PR]) -> ConfirmScreen:
     who = ", ".join(f"#{pr.number} ({', '.join(pr.assignees)})" for pr in taken)
     return ConfirmScreen(
         f"Someone's already on {who}. Review anyway?", "You'd be added as an assignee too."
+    )
+
+
+def _review_again(done: list[PR]) -> ConfirmScreen:
+    """Ask before reviewing PRs again from the start."""
+    which = " and ".join(f"#{pr.number}" for pr in done) if len(done) < 4 else f"{len(done)} PRs"
+    were = "was" if len(done) == 1 else "were"
+    return ConfirmScreen(
+        f"{which} {were} reviewed already. Review again, from the start?",
+        "What was proposed is set aside. esc while it works stops it, and brings it back.",
     )
 
 
@@ -78,6 +89,9 @@ class PRKeys(PurrView):
         taken = [pr for pr in targets if pr.others_on_it]
         if taken and not await self.app.push_screen_wait(_review_anyway(taken)):
             return
+        done = [pr for pr in targets if await self._reviewed(pr)]
+        if done and not await self.app.push_screen_wait(_review_again(done)):
+            return
         self._marked.clear()
         self.refresh_bindings()
         if not targets:
@@ -94,6 +108,28 @@ class PRKeys(PurrView):
             return
         for error in errors.values():
             self.notify(error, severity="warning")
+
+    async def _reviewed(self, pr: PR) -> bool:
+        """Whether the PR's latest review finished: r starts it over."""
+        review = await self.purr_app.purr.store.latest_review(pr.ref)
+        return bool(review and review.status == ReviewStatus.FINISHED)
+
+    def at_work(self) -> PR | None:
+        """The PR in view, if its agent's doing something: reviewing (or waiting its turn,
+        or for you), answering you, or the lead planning its review."""
+        pr = self.session.pr
+        state = self.purr_app.sessions.get(str(pr.ref)) if pr else None
+        return pr if state and state.progress else None
+
+    @work(group="stop", exclusive=True)
+    async def action_stop(self) -> None:
+        """Stop what the agent's doing on the PR in view (esc), as in Claude Code."""
+        if not (pr := self.at_work()):
+            return
+        try:
+            await self.purr_app.bus.request(StopAgent(pr=pr.ref))
+        except PurrError as e:
+            self.notify(str(e), severity="warning")
 
     async def _take(self, prs: list[PR]) -> None:
         """Taking PRs from the pool: assign yourself, so teammates see they're taken."""

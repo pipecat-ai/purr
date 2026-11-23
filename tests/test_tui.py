@@ -239,16 +239,19 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert writer.reviews[0]["event"] == "REQUEST_CHANGES"
         await until(pilot, lambda: not decision(app))
 
-        # Next review asks for permission first; a allows it, like approving.
+        # Next review (of the same PR: r asks first) asks for permission first; a allows
+        # it, like approving.
         agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
         await pilot.press("r")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
         await until(pilot, lambda: "[a] allow" in decision(app))
         assert "uv run pytest" in decision(app)
         await pilot.press("a")
         await until(pilot, lambda: agent.answers == [True])
         agent.ask = None
 
-        # o opens the PR's pane to read it; enter there (or right away on the list)
+        # tab opens the PR's pane to read it; enter there (or right away on the list)
         # goes to its prompt, and a follow-up continues the session. esc goes back
         # a step at a time.
         await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
@@ -1243,9 +1246,9 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
 
     assert [elapsed_text(s) for s in (0, 50, 62, 3725)] == ["0s", "50s", "1m 2s", "1h 2m"]
     line = render_working(since=100.0, now=162.5, frame=3).plain
-    assert line.startswith(FRAMES[3]) and line.endswith("… (1m 2s)")
+    assert line.startswith(FRAMES[3]) and line.endswith("… (1m 2s · esc to stop)")
     line = render_working(since=100.0, now=162.5, frame=3, background=2).plain
-    assert line.endswith("… (1m 2s · 2 in the background)")
+    assert line.endswith("… (1m 2s · 2 in the background · esc to stop)")
     assert any(verb in line for verb in VERBS)
 
     app, github = make_app(tmp_path)
@@ -1265,7 +1268,7 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         agent.gate = asyncio.Event()
         await pilot.press("r")
         await until(pilot, lambda: working.display)
-        assert re.search(r"… \(\d+s\)$", str(working.render()))
+        assert re.search(r"… \(\d+s · esc to stop\)$", str(working.render()))
         await until(pilot, lambda: mark() in FRAMES)
         first = mark()
         await until(pilot, lambda: mark() != first)  # it moves
@@ -1278,7 +1281,8 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         for running in (2, 1):
             message = {"kind": "background", "running": running}
             app.post_message(BusEvent(SessionMessage(source="reviews", pr=ref, message=message)))
-        await until(pilot, lambda: str(working.render()).endswith("s · 1 in the background)"))
+        background = "s · 1 in the background · esc to stop)"
+        await until(pilot, lambda: str(working.render()).endswith(background))
 
         # Waiting on you: still.
         agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
@@ -1290,6 +1294,49 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         await pilot.press("a")
         await until(pilot, lambda: "review: found 1 issue" in header(app))
         await until(pilot, lambda: not working.display and mark() not in FRAMES)
+
+
+async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_path):
+    app, github = make_app(tmp_path)
+    agent = app.purr.agent
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        working = app.main.repo.session.query_one("#working")
+        await pilot.press("r")
+        await until(pilot, lambda: "review: found 1 issue" in header(app))
+
+        # r on a reviewed PR asks first: n leaves it be.
+        agent.gate = asyncio.Event()
+        await pilot.press("r")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("n")
+        await pilot.pause(0.1)
+        assert len(agent.runs) == 1 and "Stop" not in footer(app)
+
+        # y starts over; esc in the list stops it, before going home, and the first
+        # review is back, with what it proposed.
+        await pilot.press("r")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
+        await until(pilot, lambda: working.display and "Stop" in footer(app))
+        assert "esc to stop" in str(working.render())
+        await pilot.press("escape")
+        await until(pilot, lambda: not working.display and "Stop" not in footer(app))
+        await until(pilot, lambda: "review: found 1 issue · 1 pending action" in header(app))
+        assert in_repo(app) and len(agent.runs) == 2
+
+        # In the prompt, esc stops your question first, then leaves the prompt.
+        await pilot.press("enter", "w", "h", "y", "enter")
+        await until(pilot, lambda: working.display and len(agent.runs) == 3)
+        await pilot.press("escape")
+        await until(pilot, lambda: "◼ Stopped" in transcript(app))
+        assert focused(app) == "prompt" and not working.display
+        await pilot.press("escape")
+        assert focused(app) == "transcript"
 
 
 async def test_the_latest_done_prs_come_before_the_pool(tmp_path):

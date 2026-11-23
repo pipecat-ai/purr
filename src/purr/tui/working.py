@@ -51,7 +51,8 @@ def elapsed_text(seconds: float) -> str:
 
 
 def render_working(since: float, now: float, frame: int, background: int = 0) -> Text:
-    """``✻ Prowling… (1m 12s · 2 in the background)``, with a shine sweeping across the verb."""
+    """``✻ Prowling… (1m 12s · 2 in the background · esc to stop)``, with a shine sweeping
+    across the verb."""
     elapsed = max(0.0, now - since)
     # Seeded by when the stretch began: each one starts on its own verb.
     verb = VERBS[(int(since * 10) + int(elapsed // VERB_SECONDS)) % len(VERBS)]
@@ -63,6 +64,7 @@ def render_working(since: float, now: float, frame: int, background: int = 0) ->
         lit_up = lit <= i < lit + _SHINE
         text.append(char, style=f"bold {colors.shine}" if lit_up else colors.working)
     details = elapsed_text(elapsed) + (f" · {background} in the background" if background else "")
+    details += " · esc to stop"
     text.append(f" ({details})", style="dim")
     return text
 

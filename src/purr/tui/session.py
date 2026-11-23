@@ -63,6 +63,7 @@ from purr.tui.prompt import HistorySearchScreen, PromptArea
 from purr.tui.theme import palette, theme_names
 from purr.tui.transcript import Transcript
 from purr.tui.working import Working
+from purr.workers.reviews import STOPPED
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -307,6 +308,11 @@ def _render_error(entry: dict, options: _RenderOptions) -> RenderableType:
     return Text(f"✗ {entry.get('text', '')}", style="red")
 
 
+def _render_stopped(entry: dict, options: _RenderOptions) -> RenderableType:
+    """You stopped the agent (esc)."""
+    return Text("◼ Stopped", style="bold yellow")
+
+
 def _render_task(entry: dict, options: _RenderOptions) -> RenderableType:
     """A background agent (or command) starting or reporting back."""
     # Stopped isn't failed: the agent stops what it no longer needs.
@@ -328,6 +334,7 @@ _RENDERERS: dict[str, Callable[[dict, _RenderOptions], RenderableType | None]] =
     "tool_result": _render_tool_result,
     "result": _render_result,
     "error": _render_error,
+    "stopped": _render_stopped,
     "task": _render_task,
     "permission_auto": _render_permission_auto,
 }
@@ -350,6 +357,8 @@ def _review_status(
         return Text(f"⟳ {_short(state.progress, 80)}", style="bold cyan")
     if review is None:
         return _not_reviewed(pr)
+    if review.status == ReviewStatus.FAILED and review.error == STOPPED:
+        return Text.assemble(("◼ Review stopped", "bold yellow"), (" · r to review it", "dim"))
     if review.status == ReviewStatus.FAILED:
         return Text(f"✗ Review failed: {review.error}", style="bold red")
     if review.status == ReviewStatus.FINISHED:

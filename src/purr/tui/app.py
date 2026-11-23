@@ -34,6 +34,7 @@ from purr.messages import (
     ReviewFinished,
     ReviewProgress,
     ReviewStarted,
+    ReviewStopped,
     SessionMessage,
     SkillChosen,
     SkillQuestion,
@@ -557,6 +558,14 @@ class PurrApp(App):
         self._tell(event)
         self._review_ended(event.pr)
 
+    def _review_stopped(self, event: ReviewStopped) -> None:
+        """You stopped it. A review that gave way to the one before: that one's conversation."""
+        self._review_ended(event.pr)
+        if event.dropped:
+            state = self._session_state(event.pr)
+            state.entries, state.ask = None, None  # the earlier review's, read again
+            self._session_changed(event.pr, new=True)
+
     def _review_ended(self, pr: str) -> None:
         state = self._session_state(pr)
         state.progress, state.waiting, state.since = None, False, None
@@ -602,6 +611,7 @@ class PurrApp(App):
         ReviewProgress: _review_progress,
         ReviewFinished: _review_finished,
         ReviewFailed: _review_failed,
+        ReviewStopped: _review_stopped,
         PermissionRequest: _permission_asked,
         PermissionResolved: _permission_answered,
         ActionPending: _action_changed,

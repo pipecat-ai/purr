@@ -35,12 +35,14 @@ from purr.messages import (
     ReviewProgress,
     ReviewSkills,
     ReviewStarted,
+    ReviewStopped,
     SendMessage,
     SessionMessage,
     SetModel,
     SkillChosen,
     SkillQuestion,
     StartReview,
+    StopAgent,
 )
 from purr.models import (
     PR,
@@ -49,6 +51,7 @@ from purr.models import (
     Depth,
     Finding,
     GHState,
+    PendingAction,
     Priority,
     PRRef,
     PRState,
@@ -74,6 +77,9 @@ from purr.review.agent import (
 from purr.review.skills import repo_skills, review_skills
 from purr.store import Store
 from purr.workers.slots import Slots
+
+STOPPED = "Stopped by you"  # a first review you stopped: its error
+STOP_AHEAD = 180  # seconds a stop before a run waits for it: the lead's planning, at most
 
 
 def _repo(repo: str) -> str:
@@ -110,6 +116,7 @@ class _Run:
     id: int = 0  # the store's, once it's recorded
     plugin: Path | None = None  # the repo's skills and agents, if they loaded
     submitted: dict = field(default_factory=dict)  # the agent's summary and findings
+    superseded: list[PendingAction] = field(default_factory=list)  # a new review's: back if stopped
 
     @property
     def ref(self) -> PRRef:
@@ -128,6 +135,7 @@ class ReviewWorker(BaseWorker):
     - ``Rereview {pr, plan}`` has a finished review of a PR assigned to you
       look at its new commits, in the same session.
     - ``SendMessage {pr, text}`` says something in the PR's session.
+    - ``StopAgent {pr}`` stops what the PR's agent is doing (see :meth:`stop_agent`).
     - At most ``max_reviews`` reviews (and re-reviews) run at once; the rest
       wait in line by the plan's priority, then in order, saying where they
       are. Your own messages in a PR's session don't wait.
@@ -187,6 +195,9 @@ class ReviewWorker(BaseWorker):
         # What you write to a PR's agent while it works, for it to take up as it goes.
         self._inboxes: dict[PRRef, asyncio.Queue[str]] = {}
         self._run_ids: dict[PRRef, int] = {}
+        self._stopped: set[PRRef] = set()  # runs you stopped, as they stop
+        # Stopped while the lead planned them: until when their start is refused.
+        self._stop_ahead: dict[PRRef, float] = {}
         self._ask_rules: dict[str, str] = {}  # request id -> the rule "always" would keep
         self._slots = Slots(max_reviews)
         # Per repo (lowercase): its review skill question, and until when reviews wait for it.
@@ -231,6 +242,10 @@ class ReviewWorker(BaseWorker):
                 logger.info(f"Resuming the review of {pr.ref}")
                 self._launch(pr, review, prompt=RESUME_PROMPT, resume=True, kind="resume")
 
+    def _stopped_ahead(self, ref: PRRef) -> bool:
+        """Whether you stopped the PR's run before it started (see :meth:`stop_agent`)."""
+        return self._stop_ahead.pop(ref, 0) > time.monotonic()
+
     async def rereview(self, ref: PRRef, *, plan: ReviewPlan | None = None) -> bool:
         """Have a finished review look at the PR's new commits, in the same session.
 
@@ -242,7 +257,8 @@ class ReviewWorker(BaseWorker):
             pr = await self._store.get_pr(ref)
             review = await self._store.latest_review(ref)
             if (
-                ref in self._running
+                self._stopped_ahead(ref)
+                or ref in self._running
                 or pr is None
                 or not pr.assigned_to_me
                 or review is None
@@ -285,6 +301,25 @@ class ReviewWorker(BaseWorker):
         sent = await self.send_followup(request.pr, quoted + request.text)
         await self._store.add_prompt(request.pr, request.text)  # for the prompt's history
         return sent
+
+    @handles(StopAgent)
+    async def stop_agent(self, request: StopAgent) -> Done:
+        """Stop the PR's agent, as Claude Code's esc does, and answer once it has.
+
+        A turn in the PR's conversation (your question, a re-review) just ends: the
+        review stands. A review gives way to the one before it, and what that one
+        proposed is back; a PR's first review stays, cut short, and isn't started again
+        by itself (r does). Stopped before it starts (the lead's still planning it), it
+        doesn't.
+        """
+        task = self._running.get(request.pr)
+        if task is None:
+            self._stop_ahead[request.pr] = time.monotonic() + STOP_AHEAD
+            return Done()
+        self._stopped.add(request.pr)
+        task.cancel()
+        await asyncio.wait({task}, timeout=10)
+        return Done()
 
     @handles(AnswerPermission)
     async def answer_permission(self, request: AnswerPermission) -> PermissionAnswered:
@@ -332,13 +367,15 @@ class ReviewWorker(BaseWorker):
         """Start reviewing a PR in the background, following ``plan`` (default: a full review)."""
         plan = plan or ReviewPlan()
         async with self._start_lock:
+            if self._stopped_ahead(ref):
+                raise Invalid(f"You stopped {ref}'s review before it started")
             if ref in self._running:
                 raise Busy(f"{ref} is already being reviewed")
             pr = await self._store.get_pr(ref)
             if pr is None:
                 raise NotFound(f"Purr doesn't know {ref}")
             # A new review supersedes whatever the last one proposed.
-            await self._dismiss_pending(ref)
+            superseded = await self._dismiss_pending(ref)
             review = await self._store.start_review(
                 ref,
                 worktree_path=str(self._repos.worktree_path(ref)),
@@ -350,7 +387,7 @@ class ReviewWorker(BaseWorker):
             assert review is not None
             await self._store.set_pr_state(ref, PRState.REVIEWING)
             # The prompt depends on the repo's review skill, which may need asking.
-            self._launch(pr, review, prompt="", resume=False, kind="review")
+            self._launch(pr, review, prompt="", resume=False, kind="review", superseded=superseded)
         await self.send_bus_message(
             ReviewStarted(source=self.name, pr=str(ref), plan=plan.to_dict())
         )
@@ -454,6 +491,7 @@ class ReviewWorker(BaseWorker):
         queued: bool = True,
         kind: str,
         plan: ReviewPlan | None = None,
+        superseded: list[PendingAction] = (),
     ):
         """Run the agent on ``pr`` in the background, following ``plan`` (default: the review's).
 
@@ -474,6 +512,7 @@ class ReviewWorker(BaseWorker):
             followup=followup,
             queued=queued,
             skill=skill,
+            superseded=list(superseded),
         )
         self._inboxes[pr.ref] = asyncio.Queue()
         self._running[pr.ref] = self.create_task(self._run(run), f"{self}::review::{pr.ref}")
@@ -571,12 +610,16 @@ class ReviewWorker(BaseWorker):
                 raise Failed(result.error or "The agent session failed")
             await self._finished(run, result)
         except asyncio.CancelledError:
-            stopping = True
-            raise  # Purr is stopping; the review stays "running" and resumes next time
+            stopping = True  # either way, what you wrote that it didn't read isn't sent
+            if ref not in self._stopped:
+                raise  # Purr is stopping; the review stays "running" and resumes next time
+            asyncio.current_task().uncancel()  # you stopped it: it ends here, recorded
+            await self._stopped_by_you(run)
         except Exception as e:
             logger.exception(f"Review of {ref} failed")
             await self._failed(run, e, result)
         finally:
+            self._stopped.discard(ref)
             if slot:
                 self._slots.release()
             self._end_run(ref, stopping=stopping)
@@ -665,6 +708,50 @@ class ReviewWorker(BaseWorker):
         )
         await self._settle(run.ref, PRState.NEEDS_YOU)
 
+    async def _stopped_by_you(self, run: _Run) -> None:
+        """Record a run you stopped (see :meth:`stop_agent`), and settle the PR: a follow-up's
+        as it was, a review's back to how it was before it."""
+        entry = {"kind": "stopped"}
+        await self._store.add_message(run.id, run.ref, entry, author="you")
+        await self._store.finish_run(run.id, error=STOPPED)
+        await self.send_bus_message(
+            SessionMessage(source=self.name, pr=str(run.ref), message=entry)
+        )
+        dropped = False
+        if run.followup:
+            state = run.pr.state
+        else:
+            dropped = await self._stop_review(run)
+            # Resumed on starting Purr, it was "reviewing" before: as never reviewed.
+            reviewing = run.pr.state == PRState.REVIEWING
+            state = PRState.NOT_REVIEWED if reviewing else run.pr.state
+        await self.send_bus_message(
+            ReviewStopped(source=self.name, pr=str(run.ref), dropped=dropped)
+        )
+        await self._settle(run.ref, state)
+
+    async def _stop_review(self, run: _Run) -> bool:
+        """A review you stopped gives way to the one before it, with what that one proposed
+        back; a first review stays, cut short. Returns whether it gave way."""
+        if await self._store.review_before(run.review.id) is None:
+            await self._store.fail_review(run.review.id, error=STOPPED)
+            return False
+        await self._store.drop_review(run.review.id)
+        for action in run.superseded:
+            back = await self._store.transition_action(
+                action.id, expected=ActionStatus.DISMISSED, new=ActionStatus.PENDING
+            )
+            if back:
+                await self.send_bus_message(
+                    ActionPending(
+                        source=self.name,
+                        pr=str(run.ref),
+                        action_id=action.id,
+                        description=action.description,
+                    )
+                )
+        return True
+
     def _end_run(self, ref: PRRef, *, stopping: bool) -> None:
         """Forget the PR's run. What you wrote that its agent didn't read goes in a new
         turn, unless Purr is stopping."""
@@ -701,17 +788,21 @@ class ReviewWorker(BaseWorker):
             ReviewProgress(source=self.name, pr=str(ref), text=text, waiting=waiting)
         )
 
-    async def _dismiss_pending(self, ref: PRRef) -> None:
+    async def _dismiss_pending(self, ref: PRRef) -> list[PendingAction]:
+        """Dismiss what the PR's agent proposed; returns what was."""
+        dismissed = []
         for action in await self._store.pending_actions(ref):
             resolved = await self._store.transition_action(
                 action.id, expected=ActionStatus.PENDING, new=ActionStatus.DISMISSED
             )
             if resolved:
+                dismissed.append(action)
                 await self.send_bus_message(
                     ActionResolved(
                         source=self.name, pr=str(ref), action_id=action.id, approved=False
                     )
                 )
+        return dismissed
 
     # -- What the agent reports while it runs -------------------------------------------
 

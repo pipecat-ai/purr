@@ -1033,6 +1033,22 @@ class Store:
         )
         return _review(row) if row else None
 
+    async def review_before(self, review_id: int) -> Review | None:
+        """The PR's review before this one, if it had one."""
+        row = await self._fetchone(
+            f"""{self._REVIEW_SELECT}
+            WHERE reviews.pr_id = (SELECT pr_id FROM reviews WHERE id = ?) AND reviews.id < ?
+            ORDER BY reviews.id DESC LIMIT 1""",
+            (review_id, review_id),
+        )
+        return _review(row) if row else None
+
+    async def drop_review(self, review_id: int) -> None:
+        """Forget a review (and its findings): the one before it is the PR's latest again.
+        Its runs stay, for what they cost."""
+        await self._db.execute("DELETE FROM reviews WHERE id = ?", (review_id,))
+        await self._db.commit()
+
     async def interrupted_reviews(self) -> list[Review]:
         """Reviews left running by the previous process, to resume on startup."""
         rows = await self._fetchall(

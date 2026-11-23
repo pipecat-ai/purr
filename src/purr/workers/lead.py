@@ -195,8 +195,8 @@ class LeadWorker(BaseWorker):
                 errors[str(ref)] = f"{ref} is already being planned"
             elif pr is None:
                 errors[str(ref)] = f"Purr doesn't know {ref}"
-            elif requested or _due_review(pr):
-                prs.append(pr)
+            elif requested or (_due_review(pr) and not await self._store.latest_review(ref)):
+                prs.append(pr)  # never reviewed: none you stopped, either
         return prs, errors
 
     async def _to_rereview(self, refs: list[PRRef]) -> list[PR]:

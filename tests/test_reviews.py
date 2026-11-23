@@ -8,7 +8,7 @@ from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
-from purr.jobs import Busy, Done, NotFound, R, Request, request
+from purr.jobs import Busy, Done, Invalid, NotFound, R, Request, request
 from purr.messages import (
     REVIEW_WORKER,
     ActionPending,
@@ -28,18 +28,21 @@ from purr.messages import (
     ReviewFinished,
     ReviewProgress,
     ReviewStarted,
+    ReviewStopped,
     SendMessage,
     SessionMessage,
     SetModel,
     SkillChosen,
     SkillQuestion,
     StartReview,
+    StopAgent,
     Synced,
 )
 from purr.models import PR, ActionStatus, Depth, PRRef, PRState, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
 from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
+from purr.workers.reviews import STOPPED
 from tests.fakes import FakeAgent, FakeLead, FakeRepos, make_plugin
 
 REF = PRRef("pipecat-ai/pipecat", 2841)
@@ -308,6 +311,84 @@ async def test_stopping_leaves_the_review_to_resume(make):
     await s.runner.end()
     await asyncio.sleep(0.1)
     assert (await s.store.latest_review(REF)).status == ReviewStatus.RUNNING
+
+
+async def test_esc_stops_a_follow_up_and_the_review_stands(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(StartReview(pr=REF))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    review = await s.store.latest_review(REF)
+    s.agent.gate = asyncio.Event()
+    await s.client.request(SendMessage(pr=REF, text="Dig into the whole bus"))
+    await eventually(lambda: len(s.agent.runs) == 2)
+
+    assert await s.client.request(StopAgent(pr=REF)) == Done()
+    assert REF not in s.runner.get_worker(REVIEW_WORKER).running
+    [stopped] = s.client.of(ReviewStopped)
+    assert not stopped.dropped
+    assert s.client.of(SessionMessage)[-1].message == {"kind": "stopped"}
+    # The review stands; the PR's back as it was (its proposal set aside by writing).
+    assert (await s.store.latest_review(REF)).id == review.id
+    await eventually(lambda: _statuses(s, ["finished", "failed"]))
+    assert (await s.store.runs(REF))[1]["error"] == STOPPED
+    assert await s.state() == PRState.DONE
+
+
+async def test_esc_stops_a_review_again_and_brings_back_the_one_before(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(StartReview(pr=REF))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    first = await s.store.latest_review(REF)
+    [proposal] = await s.store.pending_actions(REF)
+    s.agent.gate = asyncio.Event()
+    await s.client.request(StartReview(pr=REF))  # r again: the proposal's set aside
+    await eventually(lambda: len(s.agent.runs) == 2)
+    assert not await s.store.pending_actions(REF)
+
+    await s.client.request(StopAgent(pr=REF))
+    assert s.client.of(ReviewStopped)[-1].dropped
+    # The first review is back, with what it proposed, and the PR needs you as before.
+    assert (await s.store.latest_review(REF)).id == first.id
+    assert [a.id for a in await s.store.pending_actions(REF)] == [proposal.id]
+    assert s.client.of(ActionPending)[-1].action_id == proposal.id
+    await eventually(lambda: s.state())
+    assert await s.state() == PRState.NEEDS_YOU
+
+
+async def test_a_first_review_stopped_stays_and_isnt_started_again_by_itself(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr(assigned_to_me=True))
+    s.agent.gate = asyncio.Event()
+    await s.client.send_bus_message(Synced(source="github"))
+    await eventually(lambda: s.agent.runs)
+
+    await s.client.request(StopAgent(pr=REF))
+    review = await s.store.latest_review(REF)
+    assert review.status == ReviewStatus.FAILED and review.error == STOPPED
+    assert not s.client.of(ReviewStopped)[-1].dropped
+    assert await s.state() == PRState.NOT_REVIEWED
+    # The next poll doesn't start it again; asking for it (r) does.
+    await s.client.send_bus_message(Synced(source="github"))
+    await asyncio.sleep(0.1)
+    assert len(s.agent.runs) == 1
+    s.agent.gate.set()
+    await s.client.request(PlanReviews(prs=[REF]))
+    await eventually(lambda: s.client.of(ReviewFinished))
+
+
+async def test_esc_while_the_lead_plans_keeps_the_review_from_starting(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    # Nothing's running yet (the lead's planning it): it won't start when asked to...
+    assert await s.client.request(StopAgent(pr=REF)) == Done()
+    with pytest.raises(Invalid, match="stopped"):
+        await s.client.request(StartReview(pr=REF))
+    assert s.agent.runs == []
+    # ...that once.
+    await s.client.request(StartReview(pr=REF))
+    await eventually(lambda: s.client.of(ReviewFinished))
 
 
 async def test_the_agent_waits_for_permission(make):

@@ -415,6 +415,15 @@ class SendMessage(Request[MessageSent]):
 
 
 @dataclass(kw_only=True)
+class StopAgent(Request[Done]):
+    """Stop what a PR's agent is doing (esc): its review, queued or under way, or its turn
+    in the PR's conversation. Answers once it's stopped."""
+
+    worker: ClassVar[str] = REVIEW_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class PermissionAnswered:
     rule: str | None = None  # the rule kept, if any: Bash(uv run pytest:*)
 
@@ -624,6 +633,16 @@ class ReviewFailed(PurrEvent):
     kind: ClassVar[str] = "review.failed"
     pr: str
     error: str
+
+
+@dataclass(kw_only=True)
+class ReviewStopped(PurrEvent):
+    """You stopped a PR's agent. ``dropped``: a review that gave way to the one before it,
+    whose conversation is back (else the review stays, cut short, or a turn ended)."""
+
+    kind: ClassVar[str] = "review.stopped"
+    pr: str
+    dropped: bool = False
 
 
 @dataclass(kw_only=True)

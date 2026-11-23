@@ -62,7 +62,10 @@ class RepoView(PRKeys):
 
     # Its keys work from either pane; each pane binds the ones it shows first (pane_keys).
     BINDINGS = [
-        Binding("escape,ctrl+g", "unmark", "Unmark"),  # while PRs are marked (first)
+        # While the agent's at work on the PR in view, esc stops it, before anything else
+        # esc does there (in the prompt and the diff too).
+        Binding("escape", "stop", "Stop", priority=True),
+        Binding("escape,ctrl+g", "unmark", "Unmark"),  # while PRs are marked
         Binding("escape", "clear_search", "Clear search"),  # while there's a search
         Binding("escape", "back", "Home"),
         *REPO_KEYS.values(),
@@ -207,6 +210,7 @@ class RepoView(PRKeys):
         """Some review started or stopped working: start or stop its spinning mark."""
         if not self.repo:
             return
+        self.refresh_bindings()  # esc stops the agent, or doesn't
         spinning = {key for key in self._prs if self._working(key)}
         changed, self._spinning = spinning ^ self._spinning, spinning
         prs = self.query_one(PRList)
@@ -316,6 +320,8 @@ class RepoView(PRKeys):
             return bool(self.selected_pr() or self.session.pr)
         if action in ("search", "move", "mark") and self.diff_shown:  # the list's away
             return False
+        if action == "stop":  # esc: the agent first (unless it closes the / suggestions)
+            return bool(self.at_work()) and not self.session.query_one("#suggestions").display
         if action == "unmark":  # esc: the marks go first, then the search, then home
             return bool(self._marked) and not self.diff_shown
         if action == "clear_search":
