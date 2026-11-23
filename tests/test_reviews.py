@@ -8,7 +8,7 @@ from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
-from purr.jobs import Busy, Done, NotFound, Request, request
+from purr.jobs import Busy, Done, NotFound, R, Request, request
 from purr.messages import (
     REVIEW_WORKER,
     ActionPending,
@@ -71,7 +71,7 @@ class Client(BaseWorker):
     def of(self, kind: type) -> list:
         return [e for e in self.events if isinstance(e, kind)]
 
-    async def request[R](self, req: Request[R]) -> R:
+    async def request(self, req: Request[R]) -> R:
         return await request(self, req, timeout=5)
 
 

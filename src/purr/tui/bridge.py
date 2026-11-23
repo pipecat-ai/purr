@@ -5,7 +5,7 @@ from pipecat.workers.base_worker import BaseWorker
 from textual.app import App
 from textual.message import Message
 
-from purr.jobs import Request, request
+from purr.jobs import R, Request, request
 from purr.messages import PurrEvent, UserActive
 
 
@@ -34,7 +34,7 @@ class UIWorker(BaseWorker):
         if isinstance(message, PurrEvent):
             self._app.post_message(BusEvent(message))
 
-    async def request[R](self, req: Request[R]) -> R:
+    async def request(self, req: Request[R]) -> R:
         """Send ``req`` and wait for its reply; raises the PurrError it came back with."""
         return await request(self, req)
 

@@ -16,7 +16,7 @@ cross a network bus if the components ever move to separate processes.
 import functools
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar, get_args, get_origin
+from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
 
 from loguru import logger
 from pipecat.bus import BusJobRequestMessage
@@ -61,7 +61,10 @@ class Done:
     """The reply to a request that has nothing to say but that it's done."""
 
 
-class Request[R]:
+R = TypeVar("R")  # what a request is answered with
+
+
+class Request(Generic[R]):
     """A job for ``worker``, answered with ``R``.
 
     Subclasses are dataclasses naming their reply: ``class SendMessage(Request[MessageSent])``.
@@ -87,7 +90,7 @@ def _error(error: PurrError) -> dict:
     return {"error": {"kind": type(error).__name__, "message": str(error)}}
 
 
-def handles[R](kind: type[Request[R]]) -> Callable:
+def handles(kind: type[Request[R]]) -> Callable:
     """Make ``async def method(self, request) -> reply`` a worker's handler of ``kind``.
 
     A :class:`PurrError` it raises goes back as itself; anything else is logged and
@@ -106,7 +109,7 @@ def handles[R](kind: type[Request[R]]) -> Callable:
     return decorate
 
 
-async def _response[R](
+async def _response(
     worker: BaseWorker,
     kind: type[Request[R]],
     method: Callable[[Any, Any], Awaitable[R]],
@@ -127,7 +130,7 @@ async def _response[R](
         return _error(PurrError(str(e) or type(e).__name__))
 
 
-async def request[R](sender: BaseWorker, req: Request[R], *, timeout: float | None = None) -> R:
+async def request(sender: BaseWorker, req: Request[R], *, timeout: float | None = None) -> R:
     """Send ``req`` from ``sender``, and wait for its reply.
 
     Raises the :class:`PurrError` it came back with, or :class:`Unanswered`.

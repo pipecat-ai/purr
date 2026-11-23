@@ -2,12 +2,12 @@
 
 import asyncio
 from dataclasses import replace
-from itertools import batched
 
 from loguru import logger
 from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 
+from purr.compat import batched
 from purr.git import GitRepos
 from purr.github import GitHub
 from purr.jobs import PurrError, handles, request

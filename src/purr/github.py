@@ -9,10 +9,11 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from itertools import batched
+from typing import TypeAlias
 
 from loguru import logger
 
+from purr.compat import batched
 from purr.models import (
     PR,
     Check,
@@ -197,7 +198,7 @@ def _failed_aliases(body: dict) -> set[str]:
 
 
 # Gets each page of search results as it arrives: ``(what was searched, prs)``.
-type OnPage = Callable[[str, list[RemotePR]], Awaitable[None]]
+OnPage: TypeAlias = Callable[[str, list[RemotePR]], Awaitable[None]]
 
 
 @dataclass

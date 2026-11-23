@@ -47,10 +47,14 @@ def _review_concerns(check: MergeCheck, me: str) -> list[str]:
     reviews = dict(check.reviews)
     others = [login for login in check.assignees if login.lower() != me.lower()]
     return [
-        f"{login} {_SAID.get(reviews.get(login, ''), "hasn't approved")}"
+        f"{login} {_said(reviews.get(login, ''))}"
         for login in others
         if reviews.get(login) != "APPROVED"
     ]
+
+
+def _said(state: str) -> str:
+    return _SAID.get(state, "hasn't approved")
 
 
 _SAID = {"CHANGES_REQUESTED": "requested changes"}
