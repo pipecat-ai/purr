@@ -90,6 +90,9 @@ The footer shows the keys for where you are, and `?` lists all of them. The main
 | `i` | Your review style, code style, permissions, the repo's review skill, settings |
 | `esc` / `q` | Back a step (out of the prompt, the search or the diff), then home / quit |
 
+The mouse works too: the wheel scrolls the list, the PR and the diff, and a click in the diff
+puts the cursor on a line (`shift`+click selects up to it).
+
 In the prompt: `ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go through what you asked,
 and `/` lists commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/compact`, and the
 repo's own skills. Reading, `ctrl+v` and `alt+v` page down and up, as in Emacs.

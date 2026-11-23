@@ -572,6 +572,64 @@ async def test_every_page_says_its_keys(tmp_path):
         assert "Latest news" not in diff_keys  # ctrl+n moves in the diff
 
 
+async def wheel(pilot, widget, *, down: bool = True, times: int = 5) -> None:
+    """The mouse wheel over a widget, as the terminal sends it."""
+    from textual import events
+
+    x, y = widget.region.x + 5, widget.region.y + 5
+    kind = events.MouseScrollDown if down else events.MouseScrollUp
+    for _ in range(times):
+        event = kind(None, x, y, 0, 0, 0, False, False, False, screen_x=x, screen_y=y)
+        pilot.app.post_message(event)
+        await pilot.pause(0.03)
+
+
+async def test_the_mouse_scrolls_the_list_and_the_diff(tmp_path):
+    from purr.models import PRRef
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(n) for n in range(1, 80)]
+    lines = "".join(f" line {i}\n" for i in range(200))
+    for n in range(1, 80):
+        github.diffs[PRRef("pipecat-ai/pipecat", n)] = (
+            f"diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,200 +1,200 @@\n{lines}"
+        )
+    async with app.run_test(size=(140, 40)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 79)
+        repo = app.main.repo
+
+        # The wheel scrolls the list, and it stays there when the list is drawn again.
+        prs = repo.query_one("#prs")
+        await wheel(pilot, prs)
+        scrolled = prs.scroll_offset.y
+        assert scrolled > 0
+        app.data_version += 1
+        await repo.reload()
+        await pilot.pause()
+        assert prs.scroll_offset.y == scrolled
+
+        # The diff: the wheel scrolls it, and the cursor comes along.
+        await pilot.press("d", "tab")
+        view = repo.diff.view
+        await until(pilot, lambda: len(view._rows) > 100)
+        await wheel(pilot, view, times=10)
+        top = view.scroll_offset.y
+        assert top > 0 and view.cursor >= top
+        # A click puts the cursor on a line; shift+click selects up to another.
+        await pilot.click("#diff", offset=(20, 3))
+        clicked = view.cursor
+        assert clicked == top + 3 and view.anchor is None
+        await pilot.click("#diff", offset=(20, 6), shift=True)
+        assert view.anchor == clicked and view.cursor == top + 6
+        assert len(view.selected()) == 4
+        # What it shows stays put when what's said on it changes (no jump to the cursor).
+        await repo.diff.reload()
+        assert view.scroll_offset.y == top
+
+
 async def test_the_list_stops_at_its_ends_and_shows_its_headings(tmp_path):
     app, github = make_app(tmp_path)
     taken = [remote(n, assignees=("bob",)) for n in range(100, 140)]

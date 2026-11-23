@@ -460,6 +460,7 @@ class RepoView(PurrView):
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
         self._outcomes: dict = {}  # PRRef -> what its latest review found
+        self._listed: str | None = None  # the repo whose PRs the list has
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -518,10 +519,15 @@ class RepoView(PurrView):
             options = []
 
         option_list = self.query_one(OptionList)
+        # Where you'd scrolled to (the wheel, say), for this repo's list drawn again.
+        scrolled = option_list.scroll_offset.y if self._listed == self.repo else None
+        self._listed = self.repo
         option_list.set_options(options)
         selected = self._selected.get(self.repo)
         if selected in self._prs:
             option_list.highlighted = option_list.get_option_index(selected)
+            if scrolled is not None:
+                option_list.scroll_to(y=scrolled, animate=False, immediate=True)  # stays put
         else:
             first = next((i for i, o in enumerate(options) if not o.disabled), None)
             option_list.highlighted = first

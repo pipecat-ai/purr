@@ -370,7 +370,7 @@ class DiffView(ScrollView, can_focus=True):
         width = max((row.text.cell_len for row in self._rows), default=0)
         self.virtual_size = Size(width, len(self._rows))
         self.anchor, self.marking = None, False
-        self._move_to(self._find(here))
+        self._place(self._find(here))  # where you're looking stays: no jump to the cursor
 
     def current(self) -> Row | None:
         return self._rows[self.cursor] if 0 <= self.cursor < len(self._rows) else None
@@ -475,11 +475,32 @@ class DiffView(ScrollView, can_focus=True):
 
     def _move_to(self, index: int) -> None:
         """The cursor to a row (a box's first, if it's in one), and all of it into view."""
+        self._place(index)
+        self._into_view(*self._here)
+
+    def _place(self, index: int) -> None:
+        """The cursor on a row (a box's first, if it's in one), wherever the view is."""
         index = min(max(index, 0), max(len(self._rows) - 1, 0))
         self._here = self._unit(index)
         self.cursor = self._here[0]
-        self._into_view(*self._here)
         self.refresh()
+
+    # The mouse wheel scrolls; the cursor comes along, so keys act where you look.
+    def on_mouse_scroll_down(self) -> None:
+        self.call_after_refresh(self._cursor_in_view)
+
+    def on_mouse_scroll_up(self) -> None:
+        self.call_after_refresh(self._cursor_in_view)
+
+    def _cursor_in_view(self) -> None:
+        """After the wheel: an out of view cursor onto the first (or last) row in view."""
+        top, height = round(self.scroll_offset.y), self.size.height
+        bottom = min(top + height, len(self._rows)) - 1
+        if self.cursor < top:
+            first, last = self._unit(top)
+            self._place(first if first >= top else last + 1)
+        elif height and self._here[1] > bottom:
+            self._place(self._unit(bottom)[0])
 
     def _into_view(self, first: int, last: int) -> None:
         top, height = self.scroll_offset.y, self.size.height
@@ -509,14 +530,16 @@ class DiffView(ScrollView, can_focus=True):
         return Quote(self.files[row.file].path, start, start_side, end, side, text)
 
     def on_click(self, event: events.Click) -> None:
+        """A click puts the cursor on a line (shift: selects up to it); on a file's line, it
+        opens or shuts the file."""
         offset = event.get_content_offset(self)
         index = self.scroll_offset.y + offset.y if offset else len(self._rows)
         if index >= len(self._rows):
             return
-        self._go(index)
-        if said := self._rows[index].said:
-            self.toggle_said(said)
-        elif self._rows[index].kind == "file":
+        if event.shift and self.anchor is None:
+            self.anchor = self.cursor
+        (self._move_to if event.shift else self._go)(index)
+        if self._rows[index].kind == "file" and not event.shift:
             self.toggle(self._rows[index].file)
 
     # -- Drawing ---------------------------------------------------------------------
