@@ -45,7 +45,7 @@ from purr.news import news
 from purr.review.instructions import Kind
 from purr.review.rules import CLAUDE_SETTINGS
 from purr.review.skills import RepoSkill, Skill
-from purr.tui import theme
+from purr.tui import browser, theme
 from purr.tui.bridge import BusEvent, UIWorker
 from purr.tui.clipboard import copy_command, system_copy, terminal_copies
 from purr.tui.dialogs import (
@@ -315,6 +315,15 @@ class PurrApp(App):
                 self.notify(str(e), severity="warning")
 
         return answer
+
+    def browse(self, url: str, what: str) -> None:
+        """Open ``what`` (``#123``, a repo) on GitHub, in your browser."""
+        try:
+            browser.open_page(url)
+        except OSError as e:
+            self.notify(f"Couldn't open your browser: {e}", severity="warning")
+            return
+        self.notify(f"Opening {what} on GitHub")
 
     async def run_outside(
         self, command: list[str], cwd: str, env: dict[str, str] | None = None, *, banner: str = ""

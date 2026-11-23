@@ -54,6 +54,12 @@ def _count(n: int) -> str:
     return str(n) if n else "-"
 
 
+class RepoList(GroupedList):
+    """The repos: enter opens one (the list's own select, shown)."""
+
+    BINDINGS = [Binding("enter", "select", "Open")]
+
+
 class ReposView(PurrView):
     """Home: the repos you watch, then those listed only because PRs there are yours.
 
@@ -64,7 +70,7 @@ class ReposView(PurrView):
 
     BINDINGS = [
         KEYS,
-        Binding("o", "open", "Open"),
+        Binding("o", "github", "GitHub"),
         Binding("n", "move(1)", "Next", show=False),
         Binding("p", "move(-1)", "Previous", show=False),
         Binding("plus", "add", "Watch repo"),
@@ -76,7 +82,7 @@ class ReposView(PurrView):
         self._watched: set[str] = set()
 
     def compose(self) -> ComposeResult:
-        yield GroupedList(id="repo-list")
+        yield RepoList(id="repo-list")
         yield Static(id="empty")
         yield Static("[yellow]●[/] something new you haven't looked at", id="legend")
 
@@ -165,6 +171,11 @@ class ReposView(PurrView):
     async def action_open(self) -> None:
         if repo := self.selected_repo():
             await self.purr_app.open_repo(repo)
+
+    def action_github(self) -> None:
+        """The repo on GitHub, in your browser (o)."""
+        if repo := self.selected_repo():
+            self.purr_app.browse(f"https://github.com/{repo}", repo)
 
     def action_move(self, delta: int) -> None:
         repo_list = self.query_one(OptionList)

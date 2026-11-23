@@ -312,8 +312,8 @@ class RepoView(PRKeys):
         return None
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        if action == "open":  # in the PR's pane, it's already open
-            return not self.session.has_focus_within
+        if action == "open":
+            return bool(self.selected_pr() or self.session.pr)
         if action in ("search", "move", "mark") and self.diff_shown:  # the list's away
             return False
         if action == "unmark":  # esc: the marks go first, then the search, then home
@@ -325,9 +325,9 @@ class RepoView(PRKeys):
         return True
 
     def action_open(self) -> None:
-        """Into the selected PR's pane, to read it (o)."""
-        if self.selected_pr():
-            self.session.focus_transcript()
+        """The PR on GitHub, in your browser (o): the selected one, or the one shown."""
+        if pr := self.selected_pr() or self.session.pr:
+            self.purr_app.browse(pr.url, f"#{pr.number}")
 
     @on(OptionList.OptionSelected)
     def _ask(self, event: OptionList.OptionSelected) -> None:

@@ -14,7 +14,7 @@ _NEXT = Binding.Group("Next/prev", compact=True)
 
 # By action: RepoView's.
 REPO_KEYS = {
-    "open": Binding("o", "open", "Open"),
+    "open": Binding("o", "open", "GitHub"),  # the PR's page, in your browser
     "search": Binding("slash", "search", "Search", key_display="/"),
     "review": Binding("r", "review", "Review"),
     "mark": Binding("space", "mark", "Mark"),

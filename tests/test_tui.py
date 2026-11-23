@@ -253,7 +253,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         # a step at a time.
         await until(pilot, lambda: reviewed not in app.purr.runner.get_worker("reviews").running)
         session = app.main.repo.session
-        await pilot.press("o")
+        await pilot.press("tab")
         assert focused(app) == "transcript" and session.has_focus_within
         await pilot.press("enter")
         assert focused(app) == "prompt"
@@ -357,7 +357,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("tab")
         await pilot.press("escape")
         await until(pilot, lambda: home(app))
-        await pilot.press("o")
+        await pilot.press("enter")
         await until(pilot, lambda: in_repo(app))
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
         # ...and in the list, the list's.
@@ -597,7 +597,7 @@ async def test_every_page_says_its_keys(tmp_path):
         list_keys = await keys("The PR list", "The repo", "Everywhere")
         assert "Mark" in list_keys and "Thinking" in list_keys  # hidden from its footer
 
-        await pilot.press("o")
+        await pilot.press("tab")
         pane_keys = await keys("The PR", "The repo", "Everywhere")
         assert "Page down" in pane_keys and "Ask" in pane_keys
 
@@ -664,6 +664,23 @@ async def test_the_mouse_scrolls_the_list_and_the_diff(tmp_path):
         # What it shows stays put when what's said on it changes (no jump to the cursor).
         await repo.diff.reload()
         assert view.scroll_offset.y == top
+
+
+async def test_o_opens_the_pr_on_github(tmp_path, opened):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7)]
+    async with app.run_test(size=(140, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        assert {"Open", "GitHub"} <= footer(app)
+        await pilot.press("o")  # at home, the repo's page
+        assert opened == ["https://github.com/pipecat-ai/pipecat"] and home(app)
+        await pilot.press("enter")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        await pilot.press("o")  # in the list, the PR's
+        await pilot.press("tab", "o")  # and in its pane, where the focus stays
+        assert opened[1:] == ["https://github.com/pipecat-ai/pipecat/pull/7"] * 2
+        assert focused(app) == "transcript" and "GitHub" in footer(app)
 
 
 async def test_the_list_stops_at_its_ends_and_shows_its_headings(tmp_path):
@@ -826,7 +843,7 @@ async def test_moving_around_and_searching(tmp_path):
     async with app.run_test(size=(160, 45)) as pilot:
         await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
-        await pilot.press("o")  # o opens the repo, like enter
+        await pilot.press("enter")
         await until(pilot, lambda: len(pr_ids(app)) == 3)
         repo = app.main.repo
 
@@ -838,7 +855,7 @@ async def test_moving_around_and_searching(tmp_path):
         await pilot.press("n")
         await until(pilot, lambda: shown() == 2)
         # ...and from the PR's pane too, which keeps the focus.
-        await pilot.press("o")
+        await pilot.press("tab")
         assert focused(app) == "transcript"
         await pilot.press("n")
         await until(pilot, lambda: shown() == 1)
@@ -855,7 +872,7 @@ async def test_moving_around_and_searching(tmp_path):
         assert focused(app) == "prompt"
         await pilot.press("shift+tab")
         assert focused(app) == "prs"
-        await pilot.press("o")
+        await pilot.press("tab")
         assert focused(app) == "transcript" and shown() == 3
 
         # / searches the list (title, author, number).
@@ -875,7 +892,7 @@ async def test_moving_around_and_searching(tmp_path):
         assert in_repo(app) and focused(app) == "prs" and pr_ids(app) == bus
         await pilot.press("0")
         await until(pilot, lambda: home(app))
-        await pilot.press("o")
+        await pilot.press("enter")
         await until(pilot, lambda: in_repo(app))
         assert pr_ids(app) == bus and repo.query_one("#search").value == "bus"
         assert repo.query_one("#search").display and focused(app) == "prs"
@@ -888,7 +905,7 @@ async def test_moving_around_and_searching(tmp_path):
         await until(pilot, lambda: "Home" in footer(app))
         await pilot.press("escape")
         await until(pilot, lambda: home(app))
-        await pilot.press("o")
+        await pilot.press("enter")
         await until(pilot, lambda: in_repo(app))
 
         # Deleting it clears it too.

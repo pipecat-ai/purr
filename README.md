@@ -53,7 +53,8 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 1. **Pick a repo** at home (`enter`, or its number). Purr lists the repos with PRs assigned to
    you; `+` watches one, to see all its open PRs.
 2. **Pick a PR.** On the right, its description, where it changes things, and the
-   conversation with the agent. `r` reviews one that isn't yours yet (and assigns you).
+   conversation with the agent. `r` reviews one that isn't yours yet (and assigns you); `o` opens
+   it on GitHub.
 3. **Talk to the agent** (`enter` goes to the prompt): ask, dig in, or change what it
    proposes. `tab` takes the suggestion.
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
@@ -77,7 +78,8 @@ work everywhere. The main ones:
 | Key | Does |
 |---|---|
 | `?` | Every key, grouped |
-| `enter` / `o` / `tab` | Ask the agent / read the PR / switch between the list and the PR (on a group's heading: fold or open it) |
+| `enter` / `tab` | Ask the agent / switch between the list and the PR (on a group's heading: fold or open it) |
+| `o` | The PR on GitHub, in your browser (at home, the repo) |
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR / mark several first (`esc` unmarks them) |
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |

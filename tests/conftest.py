@@ -1,5 +1,6 @@
 """Tests never reach real Claude (every way Purr calls it raises instead), nor your own
-Purr config and data (they point at a temporary directory instead)."""
+Purr config and data (they point at a temporary directory instead), nor your browser
+(pages Purr opens are kept in ``opened`` instead)."""
 
 import pytest
 
@@ -23,3 +24,13 @@ def no_real_config(monkeypatch, tmp_path_factory):
     home = tmp_path_factory.mktemp("purr-home")
     monkeypatch.setenv("PURR_CONFIG_DIR", str(home / "config"))
     monkeypatch.setenv("PURR_DATA_DIR", str(home / "data"))
+
+
+@pytest.fixture(autouse=True)
+def opened(monkeypatch) -> list[str]:
+    """The pages Purr opened in your browser, as it would have."""
+    import purr.tui.browser
+
+    pages: list[str] = []
+    monkeypatch.setattr(purr.tui.browser, "open_page", pages.append)
+    return pages
