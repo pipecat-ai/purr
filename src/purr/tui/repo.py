@@ -282,6 +282,10 @@ class RepoView(PRKeys):
             # cursor has moved on.
             await asyncio.shield(asyncio.gather(*fetches))
 
+    async def refresh_details(self, pr: PR) -> None:
+        """A PR's details read again (what's said on it changed: you wrote there)."""
+        await self._fetch_details([pr])
+
     async def _fetch_details(self, prs: list[PR]) -> None:
         try:
             request = FetchDetails(prs=[pr.ref for pr in prs])

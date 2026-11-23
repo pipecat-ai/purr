@@ -20,6 +20,7 @@ from purr.models import (
     FileChange,
     GHState,
     MergeCheck,
+    PRComment,
     PRDetails,
     PRRef,
     Reply,
@@ -242,7 +243,20 @@ async def test_pr_details():
                 "labels": {"nodes": [{"name": "bug"}]},
                 "files": {"nodes": [{"path": "bus.py", "additions": 22, "deletions": 4}]},
                 "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]},
-            }
+                # What's said on the PR: comments, and reviews' text (empty ones left out).
+                "comments": {"nodes": [
+                    {"id": "IC2", "author": {"login": "me"}, "body": "Done",
+                     "createdAt": "2026-11-20T12:00:00Z", "viewerDidAuthor": True},
+                    {"id": "IC1", "author": {"login": "bob"}, "body": "Any news?",
+                     "createdAt": "2026-11-20T10:00:00Z", "viewerDidAuthor": False},
+                ]},
+                "reviews": {"nodes": [
+                    {"id": "R1", "author": {"login": "alice"}, "body": "Looks good",
+                     "submittedAt": "2026-11-20T11:00:00Z", "state": "APPROVED"},
+                    {"id": "R2", "author": {"login": "carol"}, "body": "",
+                     "submittedAt": "2026-11-20T11:30:00Z", "state": "COMMENTED"},
+                ]},
+            }  # fmt: skip
             return {"data": {"t0": {"pullRequest": pr}, "t1": {"pullRequest": None}}}
 
     details = await Details().pr_details([PRRef("a/b", 1), PRRef("a/b", 2)])
@@ -257,6 +271,13 @@ async def test_pr_details():
             files=(FileChange("bus.py", 22, 4),),
             labels=("bug",),
             checks="FAILURE",
+            conversation=(  # oldest first
+                PRComment("IC1", "comment", "bob", "Any news?", "2026-11-20T10:00:00Z"),
+                PRComment(
+                    "R1", "review", "alice", "Looks good", "2026-11-20T11:00:00Z", state="APPROVED"
+                ),
+                PRComment("IC2", "comment", "me", "Done", "2026-11-20T12:00:00Z", mine=True),
+            ),  # fmt: skip
         )
     }
 

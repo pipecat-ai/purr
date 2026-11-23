@@ -1,5 +1,7 @@
 """Test doubles shared across tests."""
 
+from dataclasses import replace
+
 from purr.github import RemotePR, Snapshot
 
 
@@ -227,15 +229,22 @@ class FakeAgent:
 
 
 class FakeWriter:
-    """Stands in for purr.actions.GhWriter: records reviews instead of posting them."""
+    """Stands in for purr.actions.GhWriter: records reviews instead of posting them. Given
+    the FakeGitHub, the comments it posts, changes and deletes are there too, as on GitHub:
+    in its review threads, and in what's said on the PR (its details)."""
 
-    def __init__(self):
+    def __init__(self, github: "FakeGitHub | None" = None):
+        self.github = github
         self.reviews: list[dict] = []
         self.assigned: list = []
         self.replies: list[tuple[str, str]] = []
         self.merges: list[tuple] = []  # (ref, method, sha)
         self.fail_with: list[str] = []  # errors to raise, one per call, before succeeding
         self.fail_replies = False
+        self.line_comments: list[tuple] = []  # (ref, comment, commit_id)
+        self.pr_comments: list[tuple] = []  # (ref, body)
+        self.pr_edits: list[tuple] = []  # (comment_id, body)
+        self.deleted: list[tuple] = []  # (comment_id, on_line)
 
     async def submit_review(self, ref, *, event, body, comments, commit_id):
         from purr.actions import ActionError
@@ -252,6 +261,10 @@ class FakeWriter:
 
     async def edit_review_comment(self, comment_id, body):
         self.edits = [*getattr(self, "edits", []), (comment_id, body)]
+        for thread in getattr(self.github, "threads", []):
+            for comment in thread["comments"]:
+                if comment.get("id") == comment_id:
+                    comment["body"] = body
         return f"https://github.com/comment/{comment_id}"
 
     async def merge(self, ref, *, method, sha):
@@ -260,6 +273,62 @@ class FakeWriter:
         if self.fail_with:
             raise ActionError(self.fail_with.pop(0))
         self.merges.append((ref, method, sha))
+
+    async def post_line_comment(self, ref, comment, *, commit_id):
+        self._failing()
+        self.line_comments.append((ref, comment, commit_id))
+        n = len(self.line_comments)
+        if self.github is not None:  # a thread of its own, yours
+            mine = {"id": f"LC{n}", "author": "me", "by_user": True, "body": comment["body"],
+                    "at": "2026-11-23T10:00:00Z"}  # fmt: skip
+            thread = {"id": f"LT{n}", "path": comment["path"], "line": comment["line"],
+                      "side": comment["side"], "resolved": False, "comments": [mine]}  # fmt: skip
+            self.github.threads = [*getattr(self.github, "threads", []), thread]
+        return f"https://github.com/{ref.repo}/pull/{ref.number}#line-{n}"
+
+    async def post_pr_comment(self, ref, body):
+        from purr.models import PRComment
+
+        self._failing()
+        self.pr_comments.append((ref, body))
+        n = len(self.pr_comments)
+        said = PRComment(f"IC{n}", "comment", "me", body, "2026-11-23T10:00:00Z", mine=True)
+        self._on_pr(ref, lambda conversation: (*conversation, said))
+        return f"https://github.com/{ref.repo}/pull/{ref.number}#comment-{n}"
+
+    async def edit_pr_comment(self, comment_id, body):
+        self._failing()
+        self.pr_edits.append((comment_id, body))
+        for ref in list(getattr(self.github, "details", {})):
+            self._on_pr(ref, lambda said: tuple(
+                replace(c, body=body) if c.id == comment_id else c for c in said
+            ))  # fmt: skip
+        return f"https://github.com/comment/{comment_id}"
+
+    async def delete_comment(self, comment_id, *, on_line):
+        self._failing()
+        self.deleted.append((comment_id, on_line))
+        if self.github is None:
+            return
+        for thread in getattr(self.github, "threads", []):
+            thread["comments"] = [c for c in thread["comments"] if c.get("id") != comment_id]
+        self.github.threads = [t for t in getattr(self.github, "threads", []) if t["comments"]]
+        for ref in list(self.github.details):
+            self._on_pr(ref, lambda said: tuple(c for c in said if c.id != comment_id))
+
+    def _on_pr(self, ref, change) -> None:
+        """What's said on the PR (its details at the FakeGitHub), changed."""
+        from purr.models import PRDetails
+
+        if self.github is not None:
+            details = self.github.details.get(ref) or PRDetails()
+            self.github.details[ref] = replace(details, conversation=change(details.conversation))
+
+    def _failing(self):
+        from purr.actions import ActionError
+
+        if self.fail_with:
+            raise ActionError(self.fail_with.pop(0))
 
     async def reply_to_thread(self, thread_id, body):
         from purr.actions import ActionError

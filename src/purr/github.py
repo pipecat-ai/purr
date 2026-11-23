@@ -21,6 +21,7 @@ from purr.models import (
     FileChange,
     GHState,
     MergeCheck,
+    PRComment,
     PRDetails,
     PRRef,
     Reply,
@@ -67,6 +68,8 @@ _DETAILS_FIELDS = """
     labels(first: 10) { nodes { name } }
     files(first: 100) { nodes { path additions deletions } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+    comments(last: 30) { nodes { id author { login } body createdAt viewerDidAuthor } }
+    reviews(last: 30) { nodes { id author { login } body submittedAt state viewerDidAuthor } }
 """
 # Who said what on a PR, for replies to you (see replies_to).
 _CONVERSATION_FIELDS = """
@@ -653,7 +656,28 @@ def _details(pr: dict) -> PRDetails:
         labels=tuple(label["name"] for label in _nodes(pr.get("labels"))),
         review_decision=pr.get("reviewDecision"),
         checks=(rollup or {}).get("state"),
+        conversation=_conversation(pr),
     )
+
+
+def _conversation(pr: dict) -> tuple[PRComment, ...]:
+    """The PR's comments, and its reviews' text (those that say something), oldest first."""
+    said = [
+        PRComment(c["id"], "comment", _login(c), _clip(c.get("body") or ""), c["createdAt"],
+                  mine=bool(c.get("viewerDidAuthor")))
+        for c in _nodes(pr.get("comments"))
+    ]  # fmt: skip
+    said += [
+        PRComment(r["id"], "review", _login(r), _clip(r["body"]), r["submittedAt"],
+                  mine=bool(r.get("viewerDidAuthor")), state=r.get("state") or "")
+        for r in _nodes(pr.get("reviews"))
+        if (r.get("body") or "").strip() and r.get("submittedAt")
+    ]  # fmt: skip
+    return tuple(sorted(said, key=lambda comment: comment.at))
+
+
+def _login(node: dict) -> str:
+    return (node.get("author") or {}).get("login") or "ghost"
 
 
 def _clip(text: str, limit: int = 1500) -> str:

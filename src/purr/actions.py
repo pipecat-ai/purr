@@ -42,6 +42,14 @@ class GitHubWriter(Protocol):
 
     async def edit_review_comment(self, comment_id: str, body: str) -> str: ...
 
+    async def post_line_comment(self, ref: PRRef, comment: dict, *, commit_id: str) -> str: ...
+
+    async def post_pr_comment(self, ref: PRRef, body: str) -> str: ...
+
+    async def edit_pr_comment(self, comment_id: str, body: str) -> str: ...
+
+    async def delete_comment(self, comment_id: str, *, on_line: bool) -> None: ...
+
     async def merge(self, ref: PRRef, *, method: str, sha: str) -> None: ...
 
 
@@ -178,6 +186,18 @@ _EDIT = (
 )
 
 
+_EDIT_PR = (
+    "mutation($id: ID!, $body: String!) {"
+    " updateIssueComment(input: {id: $id, body: $body}) { issueComment { url } } }"
+)
+# Deleting a comment of yours: on a line (in a review thread), or on the PR itself.
+_DELETE = {
+    True: "mutation($id: ID!) { deletePullRequestReviewComment(input: {id: $id})"
+    " { clientMutationId } }",
+    False: "mutation($id: ID!) { deleteIssueComment(input: {id: $id}) { clientMutationId } }",
+}
+
+
 class GhWriter:
     """Writes to GitHub with the GitHub CLI.
 
@@ -224,6 +244,27 @@ class GhWriter:
         data = await self._mutation(_EDIT, id=comment_id, body=body)
         edited = data.get("updatePullRequestReviewComment") or {}
         return (edited.get("pullRequestReviewComment") or {}).get("url", "")
+
+    async def post_line_comment(self, ref: PRRef, comment: dict, *, commit_id: str) -> str:
+        """A comment on lines of the PR (``path``, ``line``, ``side``, ``body``; on several,
+        ``start_line`` and ``start_side`` too), at ``commit_id``: posted now, on its own."""
+        request = {**comment, "commit_id": commit_id}
+        result = await self._api(f"repos/{ref.repo}/pulls/{ref.number}/comments", request)
+        return result.get("html_url", "")
+
+    async def post_pr_comment(self, ref: PRRef, body: str) -> str:
+        """A comment on the PR itself (its conversation), now."""
+        result = await self._api(f"repos/{ref.repo}/issues/{ref.number}/comments", {"body": body})
+        return result.get("html_url", "")
+
+    async def edit_pr_comment(self, comment_id: str, body: str) -> str:
+        """New words for a comment of yours on the PR itself (its node id)."""
+        data = await self._mutation(_EDIT_PR, id=comment_id, body=body)
+        return ((data.get("updateIssueComment") or {}).get("issueComment") or {}).get("url", "")
+
+    async def delete_comment(self, comment_id: str, *, on_line: bool) -> None:
+        """Delete a comment of yours (its node id): on a line, or on the PR itself."""
+        await self._mutation(_DELETE[on_line], id=comment_id)
 
     async def _mutation(self, query: str, **variables: str) -> dict:
         """A GraphQL mutation through gh (-f: values as they are, never read from files)."""

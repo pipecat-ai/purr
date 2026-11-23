@@ -185,6 +185,61 @@ class EditGitHubComment(Request[Posted]):
 
 
 @dataclass(kw_only=True)
+class PostLineComment(Request[Posted]):
+    """Post your comment on lines of the PR, now, at its head (you wrote it and saved it).
+    On several lines, ``start_line`` and ``start_side`` say where it starts."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    path: str
+    line: int
+    side: str
+    body: str
+    head_sha: str
+    start_line: int | None = None
+    start_side: str | None = None
+
+
+@dataclass(kw_only=True)
+class PostPRComment(Request[Posted]):
+    """Post your comment on the PR itself (its conversation), now."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    body: str
+
+
+@dataclass(kw_only=True)
+class EditPRComment(Request[Posted]):
+    """New words for a comment of yours on the PR itself (its node id), now."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    comment_id: str
+    body: str
+
+
+@dataclass(kw_only=True)
+class DeleteGitHubComment(Request[Done]):
+    """Delete a comment of yours on GitHub (its node id): on lines (``on_line``), or on the
+    PR itself. You said so, having been asked."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    comment_id: str
+    on_line: bool
+
+
+@dataclass(kw_only=True)
+class DropProposedComment(Request[Done]):
+    """Leave one of the inline comments the agent proposes out of its proposal (its index)."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    index: int
+
+
+@dataclass(kw_only=True)
 class PostComments(Request[Posted]):
     """Post your inline comments on the PR, as a review of their own (a comment)."""
 

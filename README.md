@@ -22,8 +22,8 @@ ask it questions, and decide what gets posted. **Nothing goes to GitHub until yo
   top.
 - **Every review is a conversation.** You can keep talking to the agent about the PR ("is that
   race real?", "drop the nit"), and Purr suggests what to ask next.
-- **You can comment on lines of the diff.** Your comments go out with the agent's, in one
-  review.
+- **You can comment on lines of the diff, and on the PR.** Yours go to GitHub as you save
+  them; the agent's wait for you to approve its review.
 - **Posting and merging are a key each.** `a` posts the review as you. `m` shows the checks,
   the other reviewers and any conflicts, then merges what you approved.
 - **It follows several repos at once**, and recaps what happened while you were away.
@@ -58,12 +58,12 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
    proposes. `tab` takes the suggestion.
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
    (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
-   Comments show in boxes under their lines, yours, the agent's and GitHub's: `enter` on one
-   edits it, or replies to it on GitHub. A reply, or an edit to your comment on GitHub, is
-   posted when you save it; everything else waits for `a`. `esc` or `d` closes the diff, `z`
-   makes it full screen.
-5. **Decide**: `a` posts the review with your comments, `x` dismisses it. Once you've
-   approved, `m` merges.
+   Comments show in boxes under their lines (yours, the agent's and GitHub's), and what's
+   said on the PR itself is at the top. Yours go to GitHub when you save them: `enter` on one
+   edits it there and `x` deletes it (after asking); `enter` on someone else's answers it.
+   `esc` or `d` closes the diff, `z` makes it full screen.
+5. **Decide**: `a` posts the agent's review, `x` dismisses it (in the diff, `x` drops one of
+   its comments). Once you've approved, `m` merges.
 
 When the agent asks before doing something risky, `a` allows it, `A` always, `x` says no (or
 write what to do instead). When someone replies to you on GitHub, the PR is back in
@@ -123,9 +123,9 @@ list; it applies at once.
 ## 💡 Good to know
 
 - **Purr never posts on its own.** The agents can read GitHub but not change it: they propose,
-  and Purr posts what you approve, as you, signed "Sent from Purr." Reviews and line comments
-  go out with `a`; a reply in a GitHub thread, or an edit to your own comment there, goes out
-  when you save it.
+  and Purr posts what you approve, as you, signed "Sent from Purr." The agent's review goes out
+  with `a`; your own comments, replies and edits go out when you save them, and deleting one
+  asks first.
 - **The agents ask before anything risky.** Reading code and safe commands just run; anything
   else waits for your OK, and `A` keeps a rule so it doesn't ask again. This is the Agent SDK's
   permission system (Claude Code's, underneath), so the rules go in `~/.claude/settings.json`.

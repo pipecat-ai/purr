@@ -169,6 +169,19 @@ class FileChange:
 
 
 @dataclass(frozen=True)
+class PRComment:
+    """What's said on a PR itself, not on a line: a comment, or a review's text."""
+
+    id: str  # GitHub's node id
+    kind: str  # "comment", or "review" (a review's text, which can't be changed here)
+    author: str
+    body: str
+    at: str  # when (ISO)
+    mine: bool = False
+    state: str = ""  # a review's: APPROVED, CHANGES_REQUESTED, COMMENTED
+
+
+@dataclass(frozen=True)
 class PRDetails:
     """What you look at before deciding to review a PR. Fetched on demand.
 
@@ -186,6 +199,7 @@ class PRDetails:
     labels: tuple[str, ...] = ()
     review_decision: str | None = None
     checks: str | None = None
+    conversation: tuple[PRComment, ...] = ()  # what's said on it (not on lines), oldest first
 
 
 class CheckState(StrEnum):

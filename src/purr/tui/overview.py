@@ -8,14 +8,16 @@ import posixpath
 import re
 import time
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.text import Text
 
-from purr.models import PR, PRDetails
+from purr.models import PR, PRComment, PRDetails
 from purr.tui.theme import palette
 
 # CI moves on without the PR's updated_at changing, so details also expire.
@@ -189,4 +191,44 @@ def render_overview(details: PRDetails | None, error: str | None = None) -> Rend
             ("  · d to read them and comment", "dim"),
         ),
         Text(""),
+        *render_conversation(details.conversation),
     )
+
+
+CONVERSATION_SHOWN = 5  # the latest things said on the PR, under its description
+
+# A review's state, said next to who wrote it.
+_VERDICTS = {
+    "APPROVED": ("approved", "green"),
+    "CHANGES_REQUESTED": ("changes requested", "red"),
+    "COMMENTED": ("reviewed", "dim"),
+}
+
+
+def render_conversation(conversation: Sequence[PRComment]) -> list[RenderableType]:
+    """What's said on the PR itself, the latest few: who, when, what. Answering, changing
+    or deleting is the diff's (d), where all of it is, at the top."""
+    if not conversation:
+        return []
+    out: list[RenderableType] = [
+        Text.assemble(
+            (f"Conversation ({len(conversation)})", "bold"),
+            ("  · d to answer, edit or delete, at the top of the diff", "dim"),
+        )
+    ]
+    if len(conversation) > CONVERSATION_SHOWN:
+        out.append(Text(f"  {len(conversation) - CONVERSATION_SHOWN} earlier", style="dim"))
+    for comment in conversation[-CONVERSATION_SHOWN:]:
+        verdict, color = _VERDICTS.get(comment.state, ("", ""))
+        out.append(
+            Text.assemble(
+                ("│ ", "dim"),
+                (comment.author, "bold"),
+                (" (you)" if comment.mine else "", "dim"),
+                (f" · {short_age(comment.at)}", "dim"),
+                (f" · {verdict}" if verdict else "", color),
+            )
+        )
+        out.append(Padding(Markdown(comment.body, code_theme=palette().code), (0, 0, 0, 2)))
+    out.append(Text(""))
+    return out

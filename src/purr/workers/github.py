@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import dataclasses
 import time
+from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
@@ -20,9 +21,12 @@ from purr.messages import (
     AssignMe,
     CheckMerge,
     CommentsChanged,
+    DeleteGitHubComment,
     DismissAction,
     DismissReplies,
+    DropProposedComment,
     EditGitHubComment,
+    EditPRComment,
     EditProposedComment,
     FetchDetails,
     FetchedDetails,
@@ -33,6 +37,8 @@ from purr.messages import (
     MergeReadiness,
     PostComments,
     Posted,
+    PostLineComment,
+    PostPRComment,
     PRChanged,
     PRListUpdated,
     RemoveComment,
@@ -49,6 +55,7 @@ from purr.models import (
     ActionStatus,
     DraftComment,
     GHState,
+    PendingAction,
     PRChange,
     PRRef,
     PRState,
@@ -469,14 +476,9 @@ class GitHubWorker(BaseWorker):
     async def edit_proposed_comment(self, request: EditProposedComment) -> Done:
         if not request.body.strip():
             raise Invalid("A comment needs some words")
-        actions = await self._store.pending_actions(request.pr)
-        comments = list(actions[0].payload.get("comments") or []) if actions else []
-        if not 0 <= request.index < len(comments):
-            raise NotFound("That proposed comment isn't there any more")
+        action, comments = await self._proposed(request.pr, request.index)
         comments[request.index] = {**comments[request.index], "body": request.body}
-        payload = {**actions[0].payload, "comments": comments}
-        await self._store.set_action_payload(actions[0].id, payload)
-        await self.send_bus_message(CommentsChanged(source=self.name, pr=str(request.pr)))
+        await self._propose(action, comments)
         return Done()
 
     @handles(ReplyToThread)
@@ -500,6 +502,66 @@ class GitHubWorker(BaseWorker):
         except ActionError as e:
             raise Failed(f"GitHub didn't take it: {e}") from e
         return Posted(url=url)
+
+    @handles(PostLineComment)
+    async def post_line_comment(self, request: PostLineComment) -> Posted:
+        if not request.body.strip():
+            raise Invalid("A comment needs some words")
+        comment = {"path": request.path, "line": request.line, "side": request.side,
+                   "body": signed(request.body, self._signature)}  # fmt: skip
+        if request.start_line is not None and request.start_line != request.line:
+            comment |= {"start_line": request.start_line, "start_side": request.start_side}
+        return await self._posting(
+            self._writer.post_line_comment(request.pr, comment, commit_id=request.head_sha)
+        )
+
+    @handles(PostPRComment)
+    async def post_pr_comment(self, request: PostPRComment) -> Posted:
+        if not request.body.strip():
+            raise Invalid("A comment needs some words")
+        body = signed(request.body, self._signature)
+        return await self._posting(self._writer.post_pr_comment(request.pr, body))
+
+    @handles(EditPRComment)
+    async def edit_pr_comment(self, request: EditPRComment) -> Posted:
+        if not request.body.strip():
+            raise Invalid("A comment needs some words")
+        body = signed(request.body, self._signature)
+        return await self._posting(self._writer.edit_pr_comment(request.comment_id, body))
+
+    @handles(DeleteGitHubComment)
+    async def delete_github_comment(self, request: DeleteGitHubComment) -> Done:
+        await self._posting(
+            self._writer.delete_comment(request.comment_id, on_line=request.on_line)
+        )
+        return Done()
+
+    async def _posting(self, writing: Awaitable[str | None]) -> Posted:
+        """What writing to GitHub came to (its URL), or why it didn't."""
+        try:
+            return Posted(url=await writing or "")
+        except ActionError as e:
+            raise Failed(f"GitHub didn't take it: {e}") from e
+
+    @handles(DropProposedComment)
+    async def drop_proposed_comment(self, request: DropProposedComment) -> Done:
+        action, comments = await self._proposed(request.pr, request.index)
+        del comments[request.index]
+        await self._propose(action, comments)
+        return Done()
+
+    async def _proposed(self, ref: PRRef, index: int) -> tuple[PendingAction, list[dict]]:
+        """The pending proposal on a PR and its inline comments, which has one at ``index``."""
+        actions = await self._store.pending_actions(ref)
+        comments = list(actions[0].payload.get("comments") or []) if actions else []
+        if not 0 <= index < len(comments):
+            raise NotFound("That proposed comment isn't there any more")
+        return actions[0], comments
+
+    async def _propose(self, action: PendingAction, comments: list[dict]) -> None:
+        """The proposal with these inline comments now."""
+        await self._store.set_action_payload(action.id, {**action.payload, "comments": comments})
+        await self.send_bus_message(CommentsChanged(source=self.name, pr=str(action.pr)))
 
     @handles(PostComments)
     async def post_your_comments(self, request: PostComments) -> Posted:

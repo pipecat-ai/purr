@@ -298,7 +298,7 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
         github=github,
         agent=DemoAgent(),
         repos=FakeRepos(data),
-        writer=FakeWriter(),
+        writer=FakeWriter(github),
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=DemoSuggester(),
@@ -348,11 +348,13 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await record.type("Why not keep waiting on calls marked uninterruptible?")
     await pilot.press("enter")
     await until(pilot, lambda: not isinstance(app.screen, CommentScreen))
-    await record.shot(2.5)  # your comment, in a box under the line
+    mine = "Why not keep waiting"
+    await until(pilot, lambda: any(mine in row.text.plain for row in view._rows))
+    await record.shot(2.5)  # on GitHub as you saved it, yours, in a box under the line
 
     await pilot.press("escape")  # the list again
-    await until(pilot, lambda: "your 1 comment" in str(decision.render()))
-    await record.shot(2.5)  # posting it is your call
+    await until(pilot, lambda: "Request changes?" in str(decision.render()))
+    await record.shot(2.5)  # the agent's review: posting it is your call
     await pilot.press("a")
     await until(pilot, lambda: bool(app.purr._writer.reviews) and not decision.display)
     await pilot.pause(0.6)

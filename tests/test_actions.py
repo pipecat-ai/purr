@@ -14,12 +14,17 @@ from purr.messages import (
     ApproveAction,
     AssignMe,
     CheckMerge,
+    DeleteGitHubComment,
     DismissAction,
+    DropProposedComment,
     EditGitHubComment,
+    EditPRComment,
     EditProposedComment,
     Merged,
     MergePR,
     PostComments,
+    PostLineComment,
+    PostPRComment,
     RemoveComment,
     ReplyToThread,
     SaveComment,
@@ -205,6 +210,44 @@ async def test_rewriting_the_agents_comment_and_replying_in_a_thread(setup):
     # A comment of yours there, changed.
     await request(client, EditGitHubComment(pr=REF, comment_id="C1", body="Fixed"), timeout=5)
     assert writer.edits == [("C1", "Fixed")]
+
+
+async def test_comments_go_to_github_when_you_save_them(setup):
+    store, writer, client, pending = setup
+    # On lines: now, on their own, at the PR's head.
+    on_one = PostLineComment(
+        pr=REF, path="bus.py", line=4, side="RIGHT", body="Lock?", head_sha="abc"
+    )
+    on_several = PostLineComment(
+        pr=REF, path="bus.py", line=9, side="RIGHT", body="All of this", head_sha="abc",
+        start_line=6, start_side="RIGHT",
+    )  # fmt: skip
+    await request(client, on_one, timeout=5)
+    await request(client, on_several, timeout=5)
+    assert writer.line_comments == [
+        (REF, {"path": "bus.py", "line": 4, "side": "RIGHT", "body": "Lock?"}, "abc"),
+        (REF, {"path": "bus.py", "line": 9, "side": "RIGHT", "body": "All of this",
+               "start_line": 6, "start_side": "RIGHT"}, "abc"),
+    ]  # fmt: skip
+    # On the PR itself: posted, changed; and yours of either kind, deleted.
+    with pytest.raises(Invalid):
+        await request(client, PostPRComment(pr=REF, body=" "), timeout=5)
+    await request(client, PostPRComment(pr=REF, body="Thanks!"), timeout=5)
+    await request(client, EditPRComment(pr=REF, comment_id="IC1", body="Thanks a lot!"), timeout=5)
+    await request(client, DeleteGitHubComment(pr=REF, comment_id="IC1", on_line=False), timeout=5)
+    await request(client, DeleteGitHubComment(pr=REF, comment_id="RC1", on_line=True), timeout=5)
+    assert writer.pr_comments == [(REF, "Thanks!")]
+    assert writer.pr_edits == [("IC1", "Thanks a lot!")]
+    assert writer.deleted == [("IC1", False), ("RC1", True)]
+    # GitHub saying no says why.
+    writer.fail_with = ["locked"]
+    with pytest.raises(Failed, match="locked"):
+        await request(client, PostPRComment(pr=REF, body="Hi"), timeout=5)
+    # One of the agent's proposed comments, left out of what approving posts.
+    with pytest.raises(NotFound):
+        await request(client, DropProposedComment(pr=REF, index=3), timeout=5)
+    await request(client, DropProposedComment(pr=REF, index=0), timeout=5)
+    assert (await store.get_pending_action(pending.id)).payload["comments"] == []
 
 
 async def test_your_comments_on_their_own(setup):

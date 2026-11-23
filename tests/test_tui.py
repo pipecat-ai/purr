@@ -36,7 +36,7 @@ def make_app(tmp_path, cwd=None, **settings) -> tuple[PurrApp, FakeGitHub]:
         github=github,
         agent=FakeAgent(),
         repos=FakeRepos(tmp_path / "data"),
-        writer=FakeWriter(),
+        writer=FakeWriter(github),
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=FakeSuggester(),
@@ -648,7 +648,7 @@ async def test_the_mouse_scrolls_the_list_and_the_diff(tmp_path):
         assert prs.scroll_offset.y == scrolled
 
         # The diff: the wheel scrolls it, and the cursor comes along.
-        await pilot.press("d", "tab")
+        await pilot.press("d", "down", "tab")  # (past the conversation, at the top)
         view = repo.diff.view
         await until(pilot, lambda: len(view._rows) > 100)
         await wheel(pilot, view, times=10)
@@ -1503,6 +1503,7 @@ async def test_merging_with_m_after_approving(tmp_path):
 
 async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
     from purr.models import PRDetails, PRRef
+    from purr.tui.dialogs import ConfirmScreen
     from purr.tui.diffview import CommentScreen, DiffView
 
     app, github = make_app(tmp_path)
@@ -1568,18 +1569,20 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert app.purr._writer.edits[0][0] == "C9"
         assert app.purr._writer.edits[0][1].startswith("Gone, right?")
         await pilot.press("end")
-        await pilot.press("home", "n", "tab", "home")  # and the README's file shuts
-        await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
-        await pilot.press("tab")  # tab (or space) opens the file, and shuts it
-        await until(pilot, lambda: len(view._rows) > 2)
+        await pilot.press("home", "n", "n", "tab", "home")  # and the README's file shuts
+        # (first, what's said on the PR itself: the conversation, nothing yet)
+        await until(pilot, lambda: len(view._rows) == 3 and view.cursor == 0)
+        assert "Conversation" in view.current().text.plain
+        await pilot.press("down", "tab")  # tab (or space) opens the file, and shuts it
+        await until(pilot, lambda: len(view._rows) > 3)
         await pilot.press("down", "tab")
-        await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
+        await until(pilot, lambda: len(view._rows) == 3 and view.cursor == 1)
         await pilot.press("space")
-        await until(pilot, lambda: len(view._rows) > 2)
+        await until(pilot, lambda: len(view._rows) > 3)
         await pilot.press("ctrl+v")  # a page down, and back up, as in Emacs
-        assert view.cursor == view.size.height - 1
+        assert view.cursor == view.size.height
         await pilot.press("alt+v")
-        assert view.cursor == 0
+        assert view.cursor == 1
         await pilot.press("down", "ctrl+n", "ctrl+n", "ctrl+p", "down")  # ctrl+n/p as ↓/↑
         assert view.current().line.target() == (1, "RIGHT")  # @@, -    pass, +    self.lock
         assert focused(app) == "diff"  # not the switcher, nor news
@@ -1620,17 +1623,23 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert focused(app) == "transcript"
         await pilot.press("tab")
         assert focused(app) == "diff"
-        await pilot.press("home", "down", "down", "down")
+        await pilot.press("home", "down", "down", "down", "down")
 
-        # c: a comment on that line, in a box under it; c on it rewrites it.
+        # c: a comment on that line, posted on GitHub when you save it (on its own, signed,
+        # at the PR's head): then it's there, in a box under the line, yours.
+        writer = app.purr._writer
         await pilot.press("c")
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press(*"Why a lock?", "enter")
+        await until(pilot, lambda: writer.line_comments)
+        _, posted, commit = writer.line_comments[0]
+        assert (posted["path"], posted["line"], posted["side"]) == ("src/bus.py", 1, "RIGHT")
+        assert posted["body"].startswith("Why a lock?") and commit == "abc"
         await until(pilot, lambda: rows(view, "│ Why a lock? "))
-        await pilot.press("down", "enter")  # enter on your box: the editor, to rewrite it
+        await pilot.press("down", "enter")  # enter on your box: the editor, to change it there
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         body = app.screen.query_one("#comment-body")
-        assert body.text == "Why a lock?"  # its words, to change
+        assert body.text == "Why a lock?"  # its words (not the signature), to change
         # The ask box's keys, as in Emacs: ctrl+a/e, ctrl+b/f, alt+b/f, ctrl+k/u.
         await pilot.press("ctrl+a", "alt+f", "alt+f", "alt+f")
         assert body.cursor_location == (0, 10)
@@ -1638,43 +1647,111 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert body.text == "Why a loc"
         await pilot.press("ctrl+e", "ctrl+u", *"Why a lock here?", "enter")
         await until(pilot, lambda: rows(view, "│ Why a lock here?"))
-        # One on the deleted line goes on the base's side; x removes it.
+        # One on the deleted line goes on the base's side; x deletes it, on GitHub, once
+        # you've said so.
         await pilot.press("up", "up", "c")
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press(*"Gone?", "enter")
         await until(pilot, lambda: rows(view, "│ Gone?"))
-        assert [(c.line, c.side) for c in await app.purr.store.draft_comments(ref)] == [
+        assert [(c["line"], c["side"]) for _, c, _ in writer.line_comments] == [
             (1, "RIGHT"), (1, "LEFT")
         ]  # fmt: skip
         await pilot.press("down", "x")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
         await until(pilot, lambda: not rows(view, "Gone?"))
+        assert writer.deleted == [("LC2", True)]
 
         # A comment on several lines (a selection) goes on all of them.
-        assert view.current().line.target() == (1, "RIGHT")  # where the removed one was
+        await until(pilot, lambda: view.current().line is not None)
+        assert view.current().line.target() == (1, "RIGHT")  # where the deleted one was
         await pilot.press("shift+down", "c")  # over the comment under it, to line 2
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press(*"Both?", "enter")
-        await until(pilot, lambda: rows(view, "▾ you · now · lines 1–2"))
-        both = (await app.purr.store.draft_comments(ref))[-1]
-        assert (both.start_line, both.line) == (1, 2)
-        await pilot.press("down", "x")  # it's under the last of them
-        await until(pilot, lambda: not rows(view, "Both?"))
+        await until(pilot, lambda: len(writer.line_comments) == 3)
+        both = writer.line_comments[-1][1]
+        assert (both["start_line"], both["line"]) == (1, 2)
+        await until(pilot, lambda: rows(view, "│ Both?"))
 
-        # d (or esc) closes it: the list again. Posting them is the decision: with the
-        # agent's proposal (asking made it propose again), or on their own.
+        # The conversation, at the top: c there writes on the PR itself, posted when you
+        # save it; enter on yours changes it there, and x deletes it (once you've said so).
+        await pilot.press("home", "c")
+        await until(pilot, lambda: isinstance(app.screen, CommentScreen))
+        await pilot.press(*"Thanks for this!", "enter")
+        await until(pilot, lambda: writer.pr_comments)
+        assert writer.pr_comments[0][1].startswith("Thanks for this!")
+        await until(pilot, lambda: rows(view, "│ Thanks for this!"))
+        # (the PR's pane shows it too, under the description)
+        await until(pilot, lambda: "Conversation (1)" in transcript(app))
+        await pilot.press("down", "enter")
+        await until(pilot, lambda: isinstance(app.screen, CommentScreen))
+        assert app.screen.query_one("#comment-body").text == "Thanks for this!"
+        await pilot.press("ctrl+u", *"Thanks!", "enter")
+        await until(pilot, lambda: rows(view, "│ Thanks! "))
+        assert writer.pr_edits[0][0] == "IC1"
+        await pilot.press("x")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
+        await until(pilot, lambda: not rows(view, "Thanks!"))
+        assert writer.deleted[-1] == ("IC1", False)
+
+        # d (or esc) closes it: the list again. Nothing of yours waits to be posted: it
+        # went as you saved it.
         await pilot.press("d")
         assert not repo.diff_shown and focused(app) == "prs"
-        await until(pilot, lambda: "and your 1 comment" in decision(app))
-        await pilot.press("x")  # not the agent's: then yours alone
-        await until(pilot, lambda: "Post your 1 comment?" in decision(app))
-        await pilot.press("a")
+        assert "your" not in decision(app)
+        assert await app.purr.store.draft_comments(ref) == []
+
+
+async def test_answering_on_the_pr_and_dropping_the_agents_comments(tmp_path):
+    from purr.models import ActionKind, PRComment, PRDetails, PRRef
+    from purr.tui.diffview import CommentScreen, DiffView
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    alice = PRComment("IC5", "comment", "alice", "Can you look?", "2026-11-20T10:00:00Z")
+    bob = PRComment("R5", "review", "bob", "Ship it", "2026-11-20T11:00:00Z", state="APPROVED")
+    github.details[ref] = PRDetails(body="Fixes the bus.", conversation=(alice, bob))
+    github.diffs[ref] = (
+        "diff --git a/bus.py b/bus.py\n--- a/bus.py\n+++ b/bus.py\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        store = app.purr.store
+        comments = [{"path": "bus.py", "line": 1, "body": "Nit: name it"}]
+        await store.add_pending_action(
+            ref, kind=ActionKind.COMMENT, description="Comment", payload={"comments": comments}
+        )
+        await pilot.press("1")
+        await until(pilot, lambda: app.main.repo.selected_pr() is not None)
+        # The PR's pane: what's said on it, under the description.
+        await until(pilot, lambda: "Conversation (2)" in transcript(app))
+        assert "Can you look?" in transcript(app) and "approved" in transcript(app)
+
+        # The diff: the conversation at the top, open, a box for each.
+        await pilot.press("d")
+        view = app.main.repo.query_one(DiffView)
+        await until(pilot, lambda: rows(view, "│ Ship it"))
+        assert rows(view, "bob · ") and "approved" in rows(view, "bob · ")[0].text.plain
+        # enter on someone's: your comment on the PR, to them, posted when you save it.
+        await pilot.press("home", "down", "enter")
+        await until(pilot, lambda: isinstance(app.screen, CommentScreen))
+        assert app.screen.query_one("#comment-body").text == "@alice "
+        await pilot.press(*"looking now", "enter")
         writer = app.purr._writer
-        await until(pilot, lambda: writer.reviews)
-        assert writer.reviews[0]["event"] == "COMMENT" and writer.reviews[0]["comments"] == [
-            {"path": "src/bus.py", "line": 1, "side": "RIGHT", "body": "Why a lock here?"},
-        ]
-        assert writer.reviews[0]["commit_id"] == "abc"
-        await until(pilot, lambda: not decision(app))
+        await until(pilot, lambda: writer.pr_comments)
+        assert writer.pr_comments[0][1].startswith("@alice looking now")
+        # x on someone's does nothing; on the agent's proposed comment, it's left out.
+        await pilot.press("home", "down", "x")
+        assert not writer.deleted
+        await until(pilot, lambda: rows(view, "│ Nit: name it"))
+        agents = [i for i, row in enumerate(view._rows) if row.said and row.said.source == "agent"]
+        view._move_to(agents[0])
+        await pilot.press("x")
+        await until(pilot, lambda: not rows(view, "Nit: name it"))
+        assert (await store.pending_actions(ref))[0].payload["comments"] == []
 
 
 async def pending(app, ref):
