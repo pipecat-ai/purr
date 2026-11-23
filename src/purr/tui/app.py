@@ -225,21 +225,28 @@ class PurrApp(App):
         return answer
 
     async def run_outside(
-        self, command: list[str], cwd: str, env: dict[str, str] | None = None
-    ) -> int:
-        """Hand the terminal to another program (Claude Code, a shell) until it exits; its
-        exit status (127: it couldn't be found, 126: run).
+        self, command: list[str], cwd: str, env: dict[str, str] | None = None, *, banner: str = ""
+    ) -> int | None:
+        """Hand the terminal to another program (Claude Code, a shell) until it exits, after a
+        line saying where you are and how to come back (``banner``). Its exit status; None if
+        it couldn't be started (not there).
 
         Purr keeps running underneath: polls, reviews.
         """
         with self.suspend():
-            process = await asyncio.create_subprocess_exec(
-                *command, cwd=cwd, env={**os.environ, **(env or {})}
-            )
+            if banner:
+                print(banner, flush=True)
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *command, cwd=cwd, env={**os.environ, **(env or {})}
+                )
+            except OSError:
+                return None
             return await process.wait()
 
     async def _edit(self, path: Path, *, applies: str = "from the agents' next turn") -> None:
-        editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi")
+        fallback = "notepad" if os.name == "nt" else "vi"
+        editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or fallback)
         with self.suspend():
             process = await asyncio.create_subprocess_exec(*editor, str(path))
             await process.wait()

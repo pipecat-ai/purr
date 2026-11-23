@@ -8,6 +8,7 @@ Dialogs are modal screens on top.
 
 import asyncio
 import os
+import shutil
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
@@ -418,14 +419,14 @@ class ReposView(PurrView):
             self.notify(str(e), severity="warning")
 
 
-def _announced(command: list[str], banner: str) -> tuple[list[str], dict[str, str]]:
-    """``command`` with its environment, run after a line on the terminal saying where you
-    are and how to get back to Purr (``!``, ``c``)."""
-    script = 'printf "%s\\n" "$PURR_BANNER"; exec "$@"'
-    return ["/bin/sh", "-c", script, "purr", *command], {"PURR_BANNER": banner}
+def _shell() -> str:
+    """Your shell: $SHELL, or Windows' (%COMSPEC%), or sh."""
+    if shell := os.environ.get("SHELL"):
+        return shell
+    if os.name == "nt":
+        return os.environ.get("COMSPEC") or "cmd.exe"
+    return "/bin/sh"
 
-
-_NOT_RUN = (126, 127)  # the shell's exit status: it couldn't run, or find, the command
 
 MERGE_RECHECK = 10.0  # seconds between asking GitHub again while checks run
 
@@ -948,8 +949,7 @@ class RepoView(PurrView):
             return
         claude = claude_code_command(review.session_id, str(pr.ref), cli)
         banner = f"Claude Code, in {pr.ref}'s review session. /exit goes back to Purr."
-        command, env = _announced(claude, banner)
-        if await self.purr_app.run_outside(command, worktree, env) in _NOT_RUN:
+        if await self.purr_app.run_outside(claude, worktree, banner=banner) is None:
             self.app.push_screen(NoticeScreen(f"Claude Code didn't start ({cli}).", NO_CLAUDE_CODE))
             return
         # The session may have grown in Claude Code: reload its transcript.
@@ -971,10 +971,9 @@ class RepoView(PurrView):
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
-        shell = os.environ.get("SHELL") or "/bin/sh"
         banner = f"{pr.ref} at {pr.head_sha[:7]}, in {worktree}. Exit the shell to go back to Purr."
-        command, env = _announced([shell], banner)
-        await self.purr_app.run_outside(command, worktree, {**env, "PURR_PR": str(pr.ref)})
+        env = {"PURR_PR": str(pr.ref)}
+        await self.purr_app.run_outside([_shell()], worktree, env, banner=banner)
         self.purr_app.data_version += 1  # its header says whether it has a worktree now
         await self.session.refresh_status()
 
@@ -997,7 +996,8 @@ class RepoView(PurrView):
         if not pr:
             return
         env = dict(os.environ)
-        env.setdefault("PAGER", "less")
+        if shutil.which("less"):  # gh's own choice otherwise (Windows has none)
+            env.setdefault("PAGER", "less")
         # gh's default LESS=FRX quits at once on a diff that fits the screen,
         # which would hand the terminal straight back to Purr.
         env.setdefault("LESS", "R")

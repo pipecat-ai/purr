@@ -34,7 +34,7 @@ it.**
 
 ## 🚀 Setup
 
-You need a Mac or Linux terminal, [uv](https://docs.astral.sh/uv/), the
+You need a terminal on macOS, Linux or Windows (Windows hasn't been tried yet), [uv](https://docs.astral.sh/uv/), the
 [GitHub CLI](https://cli.github.com) and git. You don't need Claude Code: Purr runs its
 agents with the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview).
 
@@ -108,8 +108,8 @@ that repo's own versions instead.
 - **The agents ask before anything risky.** Reading code and safe commands just run; anything
   else waits for your OK, and `A` keeps a rule so it doesn't ask again. This is the Agent SDK's
   permission system (Claude Code's, underneath), so the rules go in `~/.claude/settings.json`.
-  `--sandbox` confines the agents' commands to the PR's checkout (on Ubuntu 24.04+, AppArmor
-  has to allow it, so it's off by default).
+  `--sandbox` confines the agents' commands to the PR's checkout, on macOS and Linux (on
+  Ubuntu 24.04+, AppArmor has to allow it, so it's off by default).
 - **Costs.** `/cost` shows what each PR has cost. Quick reviews run on Sonnet;
   `--max-reviews 1` keeps things small.
 - **Where things live**: the database, log and PR checkouts in `~/.local/share/purr`.

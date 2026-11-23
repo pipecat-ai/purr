@@ -698,8 +698,9 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     ran: list[tuple] = []
 
-    async def run_outside(command, cwd, env=None):
-        ran.append((command, cwd, env or {}))
+    async def run_outside(command, cwd, env=None, *, banner=""):
+        ran.append((command, cwd, env or {}, banner))
+        return 0
 
     app.run_outside = run_outside
     worktree = str(tmp_path / "data/worktrees/pipecat-ai/pipecat/1")
@@ -714,9 +715,9 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         # ! works before any review: the worktree is made for it.
         await pilot.press("exclamation_mark")
         await until(pilot, lambda: ran)
-        command, cwd, env = ran[-1]
+        command, cwd, env, banner = ran[-1]
         assert cwd == worktree and env["PURR_PR"] == "pipecat-ai/pipecat#1"
-        assert "Exit the shell to go back to Purr." in env["PURR_BANNER"]
+        assert "Exit the shell to go back to Purr." in banner
 
         # After a review, the header says where its worktree is; c opens its session there.
         await pilot.press("r")
@@ -724,10 +725,9 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         assert header(app).endswith(f"\nWorktree {worktree}")  # just where, no key hints
         await pilot.press("c")
         await until(pilot, lambda: len(ran) == 2)
-        command, cwd, env = ran[-1]
-        claude = command.index("claude")
-        assert command[claude + 1] == "--resume" and cwd == worktree
-        assert "/exit goes back to Purr." in env["PURR_BANNER"]
+        command, cwd, env, banner = ran[-1]
+        assert command[:2] == ["claude", "--resume"] and cwd == worktree
+        assert "/exit goes back to Purr." in banner
 
         # No Claude Code to run, or it doesn't start: a dialog says so.
         from purr.tui.screens import NoticeScreen
@@ -738,8 +738,8 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         await pilot.press("escape")
         monkeypatch.setattr("purr.tui.screens.claude_cli", lambda: "claude")
 
-        async def not_found(command, cwd, env=None):
-            return 127
+        async def not_found(command, cwd, env=None, *, banner=""):
+            return None  # it couldn't be started
 
         app.run_outside = not_found
         await pilot.press("c")
@@ -755,8 +755,9 @@ async def test_slash_commands(tmp_path):
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     ran: list[tuple] = []
 
-    async def run_outside(command, cwd, env=None):
+    async def run_outside(command, cwd, env=None, *, banner=""):
         ran.append((command, cwd))
+        return 0
 
     app.run_outside = run_outside
 
