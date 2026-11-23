@@ -164,8 +164,8 @@ class DiffView(ScrollView, can_focus=True):
     DiffView > .diff-view--cursor { background: $accent 30%; }
     """
     BINDINGS = [
-        Binding("up,k", "move(-1)", "Up", show=False),
-        Binding("down,j", "move(1)", "Down", show=False),
+        Binding("up,k,ctrl+p", "move(-1)", "Up", show=False),
+        Binding("down,j,ctrl+n", "move(1)", "Down", show=False),
         Binding("pageup", "page(-1)", "Page up", show=False),
         Binding("pagedown", "page(1)", "Page down", show=False),
         Binding("home", "move(-1000000)", "Top", show=False),

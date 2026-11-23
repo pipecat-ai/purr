@@ -57,6 +57,8 @@ from purr.tui.working import Working
 from purr.workers.recap import LAST_ACTIVE
 
 _NOWHERE = object()
+# The app's keys that the screen on top (a dialog, the diff) gets instead.
+_GIVEN_WAY = {"next_alert", "command_palette"}
 
 
 def _claude_settings() -> Path:
@@ -268,6 +270,12 @@ class PurrApp(App):
 
     def _modal_open(self) -> bool:
         return isinstance(self.screen, ModalScreen)
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # Over a dialog or the diff, ctrl+n and ctrl+p are theirs: the diff moves with them.
+        if action in _GIVEN_WAY and self._modal_open():
+            return False
+        return super().check_action(action, parameters)
 
     async def open_repo(self, name: str, *, remember: bool = True) -> None:
         if self.location == name:

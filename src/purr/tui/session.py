@@ -345,8 +345,11 @@ def _review_status(
         return Text(f"✗ Review failed: {review.error}", style="bold red")
     if review.status == ReviewStatus.FINISHED:
         mark = outcome_mark(outcome)
+        # How deep it went: a quick look deserves less trust than a full review.
+        kind = f"{review.plan.depth.value.capitalize()} review" if review.plan else "Review"
         pending = f" · {len(actions)} pending action" if actions else ""
-        return Text.assemble(mark, (f" Review: {outcome.text()}", mark.style), (pending, "yellow"))
+        said = f" {kind}: {outcome.text()}"
+        return Text.assemble(mark, (said, mark.style), (pending, "yellow"))
     return Text()
 
 
@@ -364,19 +367,20 @@ def _not_reviewed(pr: PR) -> Text:
     return text
 
 
-def _worktree_note(worktree_path: str) -> str:
-    """Where the review's worktree is, and what ! does there."""
+def _worktree_note(worktree_path: str) -> str | None:
+    """Where the review's worktree is (~/... for your home); None once it's removed."""
     path = Path(worktree_path)
+    if not path.exists():
+        return None
     home = str(Path.home())
-    shown = "~" + str(path)[len(home) :] if str(path).startswith(home) else str(path)
-    where = "! opens a shell there" if path.exists() else "removed; ! makes it again"
-    return f"Worktree {shown} · {where}"
+    return "Worktree " + ("~" + str(path)[len(home) :] if str(path).startswith(home) else str(path))
 
 
 def _plan_note(plan: ReviewPlan) -> str:
-    """What the lead planned, and why."""
-    line = f"{plan.depth.value.capitalize()} review · {plan.priority.value} priority"
-    return line + (f" · {plan.why}" if plan.why else "")
+    """What the lead planned, and why: while the review waits or runs (its place in line,
+    how deep it goes)."""
+    line = f"Planned: a {plan.depth.value} review, {plan.priority.value} priority"
+    return line + (f". {plan.why}" if plan.why else "")
 
 
 def _decision(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
@@ -810,9 +814,9 @@ class PRSession(Vertical):
         text.append(_review_status(pr, review, outcome, actions, state))
         if pr.replies and review is not None:
             text.append(f" · {replied(pr.replies)}", style="yellow")
-        if review and review.worktree_path:
-            text.append(f"\n{_worktree_note(review.worktree_path)}", style="dim")
-        if review and review.plan and pr.state != PRState.NOT_REVIEWED:
+        if review and review.worktree_path and (where := _worktree_note(review.worktree_path)):
+            text.append(f"\n{where}", style="dim")
+        if review and review.plan and pr.state == PRState.REVIEWING:
             text.append(f"\n{_plan_note(review.plan)}", style="dim")
         return text
 

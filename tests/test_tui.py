@@ -210,9 +210,9 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert writer.assigned == [reviewed]
         assert "Bash(gh pr diff)" in transcript(app)
         assert "[a] approve" in decision(app)
-        # What it found, and what the lead planned (you asked: high priority).
-        await until(pilot, lambda: "Review: found 1 issue" in header(app))
-        assert "Full review · high priority · Looks real." in header(app)
+        # What it found, and how deep it went (the plan shows only while it's under way).
+        await until(pilot, lambda: "review: found 1 issue" in header(app))
+        assert "Full review: found 1 issue" in header(app) and "Planned" not in header(app)
 
         # a posts the proposed review.
         await pilot.press("a")
@@ -718,10 +718,10 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         assert cwd == worktree and env["PURR_PR"] == "pipecat-ai/pipecat#1"
         assert "Exit the shell to go back to Purr." in env["PURR_BANNER"]
 
-        # After a review, the header says where it is; c opens its session there.
+        # After a review, the header says where its worktree is; c opens its session there.
         await pilot.press("r")
         await until(pilot, lambda: "[a] approve" in decision(app))
-        assert "Worktree " in header(app) and "! opens a shell there" in header(app)
+        assert header(app).endswith(f"\nWorktree {worktree}")  # just where, no key hints
         await pilot.press("c")
         await until(pilot, lambda: len(ran) == 2)
         command, cwd, env = ran[-1]
@@ -981,7 +981,7 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
 
         # Done: still.
         await pilot.press("a")
-        await until(pilot, lambda: "Review: found 1 issue" in header(app))
+        await until(pilot, lambda: "review: found 1 issue" in header(app))
         await until(pilot, lambda: not working.display and mark() not in FRAMES)
 
 
@@ -1246,8 +1246,9 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
         await pilot.press("enter")
         await until(pilot, lambda: len(view._rows) > 2)
-        await pilot.press("down", "down", "down")  # @@, -    pass, +    self.lock
-        assert view.current().line.target() == (1, "RIGHT")
+        await pilot.press("down", "ctrl+n", "ctrl+n", "ctrl+p", "down")  # ctrl+n/p as ↓/↑
+        assert view.current().line.target() == (1, "RIGHT")  # @@, -    pass, +    self.lock
+        assert isinstance(app.screen, DiffScreen)  # not the switcher, nor news
 
         # c: a comment on that line, shown under it; c on it rewrites it.
         await pilot.press("c")
