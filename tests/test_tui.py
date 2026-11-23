@@ -1315,7 +1315,7 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await pilot.press("end")  # a box is one step, highlighted whole
         assert view.current().said.thread == "T1" and view.current().text.plain.endswith("╮")
         await pilot.press("tab")
-        await until(pilot, lambda: rows(view, "▸ ✎ carol: Say why"))
+        await until(pilot, lambda: rows(view, "▸ carol ─ Say why"))
         await pilot.press("tab")
         await until(pilot, lambda: rows(view, "│ Say why"))
         # enter on it: your reply, posted to the thread on GitHub when you save it.
@@ -1413,7 +1413,7 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await pilot.press("shift+down", "c")  # over the comment under it, to line 2
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press(*"Both?", "enter")
-        await until(pilot, lambda: rows(view, "✎ you · lines 1–2"))
+        await until(pilot, lambda: rows(view, "▾ you · now · lines 1–2"))
         both = (await app.purr.store.draft_comments(ref))[-1]
         assert (both.start_line, both.line) == (1, 2)
         await pilot.press("down", "x")  # it's under the last of them

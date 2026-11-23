@@ -49,6 +49,7 @@ from purr.messages import (
 from purr.models import PR, DraftComment, Quote
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
+from purr.tui.overview import short_age
 from purr.tui.prompt import PromptArea
 
 if TYPE_CHECKING:
@@ -100,6 +101,7 @@ class Said:
     reply: bool = False
     yours: bool = False
     id: str = ""  # on GitHub
+    at: str = ""  # when it was written (ISO)
 
 
 @dataclass(frozen=True)
@@ -119,13 +121,17 @@ class Row:
 
 
 def said(
-    mine: Sequence[DraftComment], proposed: Sequence[dict], threads: Sequence[dict] = ()
+    mine: Sequence[DraftComment],
+    proposed: Sequence[dict],
+    threads: Sequence[dict] = (),
+    proposed_at: str = "",
 ) -> list[Said]:
-    """Your comments, the agent's proposed ones, and the PR's review threads on GitHub."""
+    """Your comments, the agent's proposed ones (``proposed_at``), and the PR's review
+    threads on GitHub."""
     yours = [_yours(comment) for comment in mine]
     theirs = [
         Said(str(c["path"]), int(c["line"]), "RIGHT", "agent", str(c.get("body") or ""),
-             "agent", f"agent:{i}")
+             "agent", f"agent:{i}", at=proposed_at)
         for i, c in enumerate(proposed)
         if c.get("path") and c.get("line")
     ]  # fmt: skip
@@ -136,7 +142,9 @@ def said(
 def _yours(comment: DraftComment) -> Said:
     start = comment.start_line if comment.start_line != comment.line else None
     where = (comment.path, comment.line, comment.side)
-    return Said(*where, "you", comment.body, "you", f"you:{comment.id}", mine=comment, start=start)
+    key = f"you:{comment.id}"
+    return Said(*where, "you", comment.body, "you", key, mine=comment, start=start,
+                at=comment.created_at)  # fmt: skip
 
 
 def _thread(thread: dict) -> list[Said]:
@@ -146,7 +154,7 @@ def _thread(thread: dict) -> list[Said]:
         Said(*where, comment.get("author") or "?", comment.get("body") or "", "github",
              f"github:{thread.get('id')}:{i}", resolved=bool(thread.get("resolved")),
              thread=str(thread.get("id")), reply=i > 0, yours=bool(comment.get("by_user")),
-             id=str(comment.get("id") or ""))
+             id=str(comment.get("id") or ""), at=str(comment.get("at") or ""))
         for i, comment in enumerate(thread["comments"])
     ]  # fmt: skip
 
@@ -203,14 +211,22 @@ def _said_rows(index: int, said: Said, shut: set[str], *, where: bool = False) -
 
 
 def _title(said: Said, where: bool) -> str:
-    """``you``, ``agent, proposed``, ``alice · reply · resolved`` (and where, if not here)."""
+    """Who wrote it and when, and what else to know: ``alice · 3h ago · reply · resolved``,
+    ``agent, proposed · now``, ``you · lines 4–9`` (and where, if it isn't on a line here)."""
     title = "agent, proposed" if said.source == "agent" else said.who
     title += " (you)" if said.yours else ""
-    notes = [f"lines {said.start}–{said.line}"] if said.start else []
+    notes = [_when(said.at)] if said.at else []
+    notes += [f"lines {said.start}–{said.line}"] if said.start else []
     notes += ["reply"] if said.reply else []
     notes += ["resolved"] if said.resolved else []
     notes += [_where(said)] if where else []
     return " · ".join([title, *notes])
+
+
+def _when(at: str) -> str:
+    """``3h ago``, ``2d ago``, ``now``."""
+    age = short_age(at)
+    return age if age == "now" else f"{age} ago"
 
 
 def _where(said: Said) -> str:
@@ -218,11 +234,14 @@ def _where(said: Said) -> str:
 
 
 def _shut_line(said: Said, where: bool) -> Text:
+    """A shut box: its top line, who wrote it and when, and how it starts."""
     color = _COLORS[said.source]
     return Text.assemble(
-        (f"{_indent(said)}▸ ✎ ", color),
+        (f"{_indent(said)}╶─ ▸ ", color),
         (_title(said, where), f"bold {color}"),
-        (f": {_short(said.text)}", "dim" if said.resolved else ""),
+        (" ─ ", color),
+        (_short(said.text), "dim" if said.resolved else ""),
+        (" ─╴", color),
     )
 
 
@@ -241,7 +260,7 @@ def _box(said: Said, where: bool) -> list[Text]:
     mentions picked out."""
     color = _COLORS[said.source]
     body = _wrapped(said.text)
-    title = f"✎ {_title(said, where)}"
+    title = f"▾ {_title(said, where)}"
     width = max([line.cell_len for line in body] + [cell_len(title) + 2])
     indent = _indent(said)
     top = Text.assemble(
@@ -653,7 +672,7 @@ class DiffPane(Vertical):
         mine = [c for c in await store.draft_comments(self.pr.ref) if c.head_sha == head]
         actions = await store.pending_actions(self.pr.ref)
         proposed = actions[0].payload.get("comments") or [] if actions else []
-        return said(mine, proposed, self._threads)
+        return said(mine, proposed, self._threads, actions[0].created_at if actions else "")
 
     async def action_repo(self, action: str) -> None:
         await self.purr_app.main.repo.run_action(action)

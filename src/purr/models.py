@@ -422,6 +422,7 @@ class DraftComment:
     head_sha: str
     start_line: int | None = None
     start_side: str | None = None
+    created_at: str = ""
 
     def for_github(self) -> dict:
         comment = {"path": self.path, "line": self.line, "side": self.side, "body": self.body}

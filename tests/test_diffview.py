@@ -71,22 +71,22 @@ def test_a_box_for_each_comment_under_its_line():
     assert text[0] == "▾ src/bus.py  +1 −1  ✎ 6"
     assert text[2:] == [
         "    1    1   def subscribe(self):",
-        "            ╭─ ✎ alice ─────────────────────╮",  # a thread: a box a comment
+        "            ╭─ ▾ alice ─────────────────────╮",  # a thread: a box a comment
         "            │ Should subscribe take a lock? │",
         "            ╰───────────────────────────────╯",
-        "              ╭─ ✎ me (you) · reply ─╮",  # a reply, a little further in
+        "              ╭─ ▾ me (you) · reply ─╮",  # a reply, a little further in
         "              │ Done.                │",
         "              ╰──────────────────────╯",
         "    2       -    pass",
-        "            ╭─ ✎ you ────────╮",  # on the deleted line: the base's side
+        "            ╭─ ▾ you ────────╮",  # on the deleted line: the base's side
         "            │ Why drop this? │",
         "            ╰────────────────╯",
         "         2  +    self._subscribers.append(x)",
-        "            ╭─ ✎ agent, proposed ─╮",
+        "            ╭─ ▾ agent, proposed ─╮",
         "            │ Race here           │",
         "            ╰─────────────────────╯",
-        "            ▸ ✎ carol · resolved: Typo",  # shut: a line
-        "            ╭─ ✎ dave · outdated ─╮",  # on no line of this diff: at the end
+        "            ╶─ ▸ carol · resolved ─ Typo ─╴",  # shut: its top line, and how it starts
+        "            ╭─ ▾ dave · outdated ─╮",  # on no line of this diff: at the end
         "            │ Old code            │",
         "            ╰─────────────────────╯",
         "▸ uv.lock  +1 −1",
@@ -118,7 +118,13 @@ def test_boxes_in_color_authors_and_mentions_picked_out():
     ]  # fmt: skip
     box = rows(files, {0}, said([], [], threads))[3:6]
     top, first = box[0].text, box[1].text
-    assert top.plain.startswith("            ╭─ ✎ alice · resolved")
+    assert top.plain.startswith("            ╭─ ▾ alice · resolved")
+    dated = said(
+        [],
+        [],
+        [{**threads[0], "comments": [{**threads[0]["comments"][0], "at": "2020-01-01T00:00:00Z"}]}],
+    )
+    assert "alice · 6y ago · resolved" in plain(rows(files, {0}, dated))[3]  # who, and when
     assert "bold cyan" in styles_at(top, "alice · resolved")  # resolved, still in its color
     assert "cyan" in styles_at(top, "╭")
     assert "bold blue" in styles_at(first, "@bob")  # a mention

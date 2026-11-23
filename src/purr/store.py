@@ -285,6 +285,7 @@ def _draft(row: aiosqlite.Row) -> DraftComment:
         row["head_sha"],
         row["start_line"],
         row["start_side"],
+        row["created_at"],
     )
 
 
@@ -1094,7 +1095,9 @@ class Store:
         )  # fmt: skip
         await self._db.commit()
         comment_id = cursor.lastrowid or 0
-        return DraftComment(comment_id, path, line, side, body, head_sha, start_line, start_side)
+        return DraftComment(
+            comment_id, path, line, side, body, head_sha, start_line, start_side, _now()
+        )
 
     async def edit_comment(self, comment_id: int, body: str) -> None:
         sql = "UPDATE draft_comments SET body = ? WHERE id = ?"
