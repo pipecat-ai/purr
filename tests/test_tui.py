@@ -1266,12 +1266,19 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         # The PR's review threads on GitHub come in a box under their line (their file
         # opens); tab shuts one to a line, and opens it again.
         await until(pilot, lambda: rows(view, "│ Say why"))
-        await pilot.press("end", "up")
-        assert view.current().said.key == "github:T1"
+        await pilot.press("end")  # a box is one step, highlighted whole
+        assert view.current().said.key == "github:T1" and view.current().text.plain.endswith("╮")
         await pilot.press("tab")
         await until(pilot, lambda: rows(view, "▸ ✎ carol: Say why"))
         await pilot.press("tab")
         await until(pilot, lambda: rows(view, "│ Say why"))
+        # enter on it: your reply, posted to the thread on GitHub when you save it.
+        await pilot.press("enter")
+        await until(pilot, lambda: isinstance(app.screen, CommentScreen))
+        await pilot.press(*"Will do", "enter")
+        await until(pilot, lambda: app.purr._writer.replies)
+        assert app.purr._writer.replies[0][0] == "T1"
+        assert app.purr._writer.replies[0][1].startswith("Will do")
         await pilot.press("home", "n", "tab", "home")  # and the README's file shuts
         await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
         await pilot.press("tab")  # tab (or space) opens the file, and shuts it
@@ -1329,7 +1336,7 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press(*"Why a lock?", "enter")
         await until(pilot, lambda: rows(view, "│ Why a lock? "))
-        await pilot.press("down", "c")
+        await pilot.press("down", "enter")  # enter on your box: the editor, to rewrite it
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         await pilot.press("ctrl+u", *"Why a lock here?", "enter")
         await until(pilot, lambda: rows(view, "│ Why a lock here?"))

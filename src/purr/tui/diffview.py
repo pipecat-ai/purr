@@ -35,8 +35,14 @@ from textual.strip import Strip
 from textual.widgets import Label
 
 from purr.diff import File, Line, parse
-from purr.jobs import PurrError
-from purr.messages import GetReviewThreads, RemoveComment, SaveComment
+from purr.jobs import PurrError, Request
+from purr.messages import (
+    EditProposedComment,
+    GetReviewThreads,
+    RemoveComment,
+    ReplyToThread,
+    SaveComment,
+)
 from purr.models import PR, DraftComment, Quote
 from purr.tui.keys import pane_keys
 from purr.tui.prompt import PromptArea
@@ -210,17 +216,33 @@ def _short(text: str, width: int = 60) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
+_INSIDE = "on #073642"  # a box's inside: Solarized's highlighted background
+
+
 def _box(said: Said, where: bool) -> list[Text]:
-    """The comment (each of a thread's, with who said it) in a box, wrapped."""
+    """The comment (each of a thread's, with who said it) in a box, wrapped: its border
+    and title in its color (yours, the agent's, GitHub's), the words in the text's."""
     many = len(said.comments) > 1
     body = [line for who, what in said.comments for line in _wrapped(who, what, many)]
     title = f"✎ {_title(said, where)}"
     width = max([cell_len(line) for line in body] + [cell_len(title) + 2])
-    style = "dim" if said.resolved else _COLORS[said.source]
-    top = f"{_INDENT}╭─ {title} {'─' * (width - cell_len(title) - 1)}╮"
-    middle = [f"{_INDENT}│ {line}{' ' * (width - cell_len(line))} │" for line in body]
-    bottom = f"{_INDENT}╰{'─' * (width + 2)}╯"
-    return [Text(line, style=style) for line in [top, *middle, bottom]]
+    color = "dim" if said.resolved else _COLORS[said.source]
+    words = f"dim {_INSIDE}" if said.resolved else _INSIDE
+    top = Text.assemble(
+        (f"{_INDENT}╭─ ", color),
+        (title, f"bold {color}"),
+        (f" {'─' * (width - cell_len(title) - 1)}╮", color),
+    )
+    middle = [
+        Text.assemble(
+            (f"{_INDENT}│", color),
+            (f" {line}{' ' * (width - cell_len(line))} ", words),
+            ("│", color),
+        )
+        for line in body
+    ]
+    bottom = Text(f"{_INDENT}╰{'─' * (width + 2)}╯", style=color)
+    return [top, *middle, bottom]
 
 
 def _wrapped(who: str, what: str, many: bool) -> list[str]:
@@ -279,6 +301,7 @@ class DiffView(ScrollView, can_focus=True):
         self.shut: set[str] = set()  # the comments shown as a line (resolved ones, at first)
         self._known: set[str] = set()  # the comments seen so far
         self.cursor = 0
+        self._here = (0, 0)  # the rows the cursor's on: its row, or a comment's box
         self.anchor: int | None = None  # where the selection starts; None: there's none
         self.marking = False  # the anchor's a mark (ctrl+space): moving keeps selecting
         self._rows: list[Row] = []
@@ -351,7 +374,20 @@ class DiffView(ScrollView, can_focus=True):
             self._go(min(later) if step > 0 else max(later))
 
     def action_move(self, step: int) -> None:
-        self._go(self.cursor + step)
+        """Up or down a row; a comment's box is one, however many lines it takes."""
+        first, last = self._unit(self.cursor)
+        self._go(last + step if step > 0 else first + step)
+
+    def _unit(self, index: int) -> tuple[int, int]:
+        """The rows moved over together: a comment's box (its rows are together), else the
+        row itself."""
+        said = self._rows[index].said if 0 <= index < len(self._rows) else None
+        first = last = index
+        while said and first > 0 and self._rows[first - 1].said == said:
+            first -= 1
+        while said and last + 1 < len(self._rows) and self._rows[last + 1].said == said:
+            last += 1
+        return first, last
 
     def action_page(self, step: int) -> None:
         self._go(self.cursor + step * max(self.size.height - 1, 1))
@@ -390,13 +426,19 @@ class DiffView(ScrollView, can_focus=True):
         self._move_to(index)
 
     def _move_to(self, index: int) -> None:
-        self.cursor = min(max(index, 0), max(len(self._rows) - 1, 0))
-        top, height = self.scroll_offset.y, self.size.height
-        if self.cursor < top:
-            self.scroll_to(y=self.cursor, animate=False)
-        elif height and self.cursor >= top + height:
-            self.scroll_to(y=self.cursor - height + 1, animate=False)
+        """The cursor to a row (a box's first, if it's in one), and all of it into view."""
+        index = min(max(index, 0), max(len(self._rows) - 1, 0))
+        self._here = self._unit(index)
+        self.cursor = self._here[0]
+        self._into_view(*self._here)
         self.refresh()
+
+    def _into_view(self, first: int, last: int) -> None:
+        top, height = self.scroll_offset.y, self.size.height
+        if first < top:
+            self.scroll_to(y=first, animate=False)
+        elif height and last >= top + height:
+            self.scroll_to(y=min(first, last - height + 1), animate=False)
 
     def selected(self) -> list[Line]:
         """The diff lines selected (those of the cursor's file), or else the one under it."""
@@ -443,7 +485,8 @@ class DiffView(ScrollView, can_focus=True):
         return self._strip(index).apply_style(style).crop_extend(x, x + width, style)
 
     def _highlight(self, index: int) -> Style:
-        if index == self.cursor:
+        first, last = self._here  # the cursor's row, or its box
+        if first <= index <= last:
             return self._background("diff-view--cursor")
         if (
             self.anchor is not None
@@ -472,14 +515,14 @@ class CommentScreen(ModalScreen[str | None]):
     """
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, where: str, body: str = ""):
+    def __init__(self, heading: str, body: str = ""):
         super().__init__()
-        self._where = where
+        self._heading = heading  # "Your comment on src/bus.py:42"
         self._body = body
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog", id="comment"):
-            yield Label(f"Your comment on {self._where}", classes="hint")
+            yield Label(self._heading, classes="hint")
             yield PromptArea(id="comment-body")
             yield Label("enter saves · ctrl+j new line · esc cancels", classes="hint")
 
@@ -595,11 +638,52 @@ class DiffPane(Vertical):
         self.view.next_file(step)
 
     def action_ask(self) -> None:
-        """Ask the agent about the lines selected, or the one under the cursor."""
-        if quote := self.view.quote():
+        """On a comment's box, write on it (a shut one opens); else ask the agent about the
+        lines selected, or the one under the cursor."""
+        row = self.view.current()
+        if row and row.said and self.view.anchor is None:
+            self._write_on(row.said)
+        elif quote := self.view.quote():
             self.post_message(self.Asked(quote))
         else:
             self.notify("Ask about lines of the diff: move to one (shift+↑/↓ select several).")
+
+    def _write_on(self, said: Said) -> None:
+        """The editor, on what's said here: yours (rewritten), the agent's proposed comment
+        (rewritten: approving posts yours), or a thread on GitHub (your reply, posted when
+        you save it)."""
+        if said.key in self.view.shut:
+            self.view.toggle_said(said)
+            return
+        where = f"{said.path}:{said.line}"
+        heading, body, save = {
+            "you": (f"Your comment on {where}", said.comments[0][1], self._rewrite_mine),
+            "agent": (f"The agent's proposed comment on {where}", said.comments[0][1],
+                      self._rewrite_proposed),
+            "github": (f"Your reply on GitHub, to {_title(said, False)} on {where}", "",
+                       self._reply),
+        }[said.source]  # fmt: skip
+
+        async def saved(text: str | None) -> None:
+            if text:
+                await save(said, text)
+
+        self.app.push_screen(CommentScreen(heading, body), saved)
+
+    async def _rewrite_mine(self, said: Said, text: str) -> None:
+        await self._save(text, None, said.mine)
+
+    async def _rewrite_proposed(self, said: Said, text: str) -> None:
+        assert self.pr is not None
+        index = int(said.key.partition(":")[2])
+        await self._request(EditProposedComment(pr=self.pr.ref, index=index, body=text))
+
+    async def _reply(self, said: Said, text: str) -> None:
+        assert self.pr is not None
+        thread = said.key.partition(":")[2]
+        await self._request(ReplyToThread(pr=self.pr.ref, thread_id=thread, body=text))
+        self.notify("Replied on GitHub")
+        self.run_worker(self._load_threads(), group="threads", exclusive=True)
 
     def action_comment(self) -> None:
         """A comment on the lines selected (or the one under the cursor, or someone's
@@ -616,7 +700,8 @@ class DiffPane(Vertical):
                 await self._save(body, quote, mine)
 
         where = _where_text(quote) if quote else _mine_text(mine)
-        self.app.push_screen(CommentScreen(where, mine.body if mine else ""), save)
+        heading = f"Your comment on {where}"
+        self.app.push_screen(CommentScreen(heading, mine.body if mine else ""), save)
 
     def _quoted(self, row: Row | None) -> Quote | None:
         """What a comment would be on: the selection, or the line of the comment under the
@@ -645,7 +730,7 @@ class DiffPane(Vertical):
             return
         await self._request(RemoveComment(pr=self.pr.ref, comment_id=row.said.mine.id))
 
-    async def _request(self, job: SaveComment | RemoveComment) -> None:
+    async def _request(self, job: Request) -> None:
         try:
             await self.purr_app.bus.request(job)
         except PurrError as e:

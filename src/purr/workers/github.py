@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.actions import ActionError, GhWriter, GitHubWriter, execute, post_comments
+from purr.actions import ActionError, GhWriter, GitHubWriter, execute, post_comments, signed
 from purr.github import GitHub, GitHubError, RemotePR, Snapshot
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, handles
 from purr.merging import blockers, concerns, new_concerns
@@ -22,6 +22,7 @@ from purr.messages import (
     CommentsChanged,
     DismissAction,
     DismissReplies,
+    EditProposedComment,
     FetchDetails,
     FetchedDetails,
     GetReviewThreads,
@@ -34,6 +35,7 @@ from purr.messages import (
     PRChanged,
     PRListUpdated,
     RemoveComment,
+    ReplyToThread,
     ReviewThreads,
     SaveComment,
     Synced,
@@ -461,6 +463,31 @@ class GitHubWorker(BaseWorker):
         await self._store.remove_comments([request.comment_id])
         await self.send_bus_message(CommentsChanged(source=self.name, pr=str(request.pr)))
         return Done()
+
+    @handles(EditProposedComment)
+    async def edit_proposed_comment(self, request: EditProposedComment) -> Done:
+        if not request.body.strip():
+            raise Invalid("A comment needs some words")
+        actions = await self._store.pending_actions(request.pr)
+        comments = list(actions[0].payload.get("comments") or []) if actions else []
+        if not 0 <= request.index < len(comments):
+            raise NotFound("That proposed comment isn't there any more")
+        comments[request.index] = {**comments[request.index], "body": request.body}
+        payload = {**actions[0].payload, "comments": comments}
+        await self._store.set_action_payload(actions[0].id, payload)
+        await self.send_bus_message(CommentsChanged(source=self.name, pr=str(request.pr)))
+        return Done()
+
+    @handles(ReplyToThread)
+    async def reply_to_thread(self, request: ReplyToThread) -> Posted:
+        if not request.body.strip():
+            raise Invalid("A reply needs some words")
+        body = signed(request.body, self._signature)
+        try:
+            url = await self._writer.reply_to_thread(request.thread_id, body)
+        except ActionError as e:
+            raise Failed(f"GitHub didn't take it: {e}") from e
+        return Posted(url=url)
 
     @handles(PostComments)
     async def post_your_comments(self, request: PostComments) -> Posted:

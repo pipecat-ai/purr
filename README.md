@@ -61,7 +61,8 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
    proposes. `tab` takes the suggestion.
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
    (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
-   `esc` or `d` closes it, `z` makes it full screen.
+   Comments show in boxes under their lines, yours, the agent's and GitHub's: `enter` on one
+   edits it (or replies, on GitHub's). `esc` or `d` closes the diff, `z` makes it full screen.
 5. **Decide**: `a` posts the review with your comments, `x` dismisses it. Once you've
    approved, `m` merges.
 

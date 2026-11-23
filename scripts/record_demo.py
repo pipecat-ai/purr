@@ -360,10 +360,10 @@ async def story(app: PurrApp, record: Recorder) -> None:
 
 
 async def move_to(record: Recorder, view: DiffView, *, new: int) -> None:
-    """Down to the line numbered ``new`` in the PR's version, a frame a step."""
+    """To the line numbered ``new`` in the PR's version, a frame a step."""
     target = next(i for i, row in enumerate(view._rows) if row.line and row.line.new == new)
-    while view.cursor < target:
-        await record.pilot.press("down")
+    while view.cursor != target:
+        await record.pilot.press("down" if view.cursor < target else "up")
         await record.shot(0.1)
 
 

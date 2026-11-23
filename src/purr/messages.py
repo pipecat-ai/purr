@@ -154,6 +154,27 @@ class RemoveComment(Request[Done]):
 
 
 @dataclass(kw_only=True)
+class EditProposedComment(Request[Done]):
+    """New words for one of the inline comments the agent proposes posting (its index in
+    the proposal's): approving it posts yours."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    index: int
+    body: str
+
+
+@dataclass(kw_only=True)
+class ReplyToThread(Request[Posted]):
+    """Post your reply in a review thread on GitHub, now (you wrote it and saved it)."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    thread_id: str
+    body: str
+
+
+@dataclass(kw_only=True)
 class PostComments(Request[Posted]):
     """Post your inline comments on the PR, as a review of their own (a comment)."""
 

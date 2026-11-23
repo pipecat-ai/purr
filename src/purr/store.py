@@ -1164,6 +1164,12 @@ class Store:
         )
         return _action(row) if row else None
 
+    async def set_action_payload(self, action_id: str, payload: dict) -> None:
+        """What a pending action would post, changed (you rewrote one of its comments)."""
+        sql = "UPDATE pending_actions SET payload = ? WHERE id = ? AND status = ?"
+        await self._db.execute(sql, (json.dumps(payload), action_id, ActionStatus.PENDING))
+        await self._db.commit()
+
     async def pending_actions(self, ref: PRRef | None = None) -> list[PendingAction]:
         """Actions still awaiting a decision, oldest first."""
         sql = f"{self._ACTION_SELECT} WHERE pending_actions.status = ?"

@@ -15,10 +15,12 @@ from purr.messages import (
     AssignMe,
     CheckMerge,
     DismissAction,
+    EditProposedComment,
     Merged,
     MergePR,
     PostComments,
     RemoveComment,
+    ReplyToThread,
     SaveComment,
 )
 from purr.models import (
@@ -181,6 +183,24 @@ async def test_your_comments_go_with_the_review_you_approve(setup):
     assert earlier["commit_id"] == "old" and earlier["event"] == "COMMENT"
     assert [c["body"] for c in earlier["comments"]] == ["Fixed since"]
     assert await store.draft_comments(REF) == []
+
+
+async def test_rewriting_the_agents_comment_and_replying_in_a_thread(setup):
+    store, writer, client, pending = setup
+    await request(client, EditProposedComment(pr=REF, index=0, body="A race, I think"), timeout=5)
+    assert (await store.get_pending_action(pending.id)).payload["comments"][0]["body"] == (
+        "A race, I think"
+    )
+    with pytest.raises(NotFound):
+        await request(client, EditProposedComment(pr=REF, index=5, body="x"), timeout=5)
+    await request(client, ApproveAction(action_id=pending.id), timeout=5)
+    assert writer.reviews[0]["comments"][0]["body"] == "A race, I think"  # yours, posted
+
+    # A reply in a thread on GitHub goes now, signed.
+    with pytest.raises(Invalid):
+        await request(client, ReplyToThread(pr=REF, thread_id="T1", body=" "), timeout=5)
+    await request(client, ReplyToThread(pr=REF, thread_id="T1", body="Fixed, thanks"), timeout=5)
+    assert writer.replies == [("T1", "Fixed, thanks")]
 
 
 async def test_your_comments_on_their_own(setup):
