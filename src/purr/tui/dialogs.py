@@ -1,11 +1,13 @@
 """Purr's dialogs: modal screens over the main one."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from rich.table import Table
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -16,6 +18,7 @@ from textual.widgets.option_list import Option
 from purr.jobs import PurrError
 from purr.messages import WatchRepo
 from purr.review.skills import Skill
+from purr.tui.theme import palette
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -130,55 +133,88 @@ class AlwaysScreen(ModalScreen[str | None]):
         self.dismiss(scope or None)
 
 
-class InstructionsScreen(ModalScreen):
-    """Which instructions to edit: how you like reviews, or how you like code.
+@dataclass(frozen=True)
+class SettingItem:
+    """One of the things the settings menu opens."""
 
-    Also your standing permissions (``permissions``), Purr's settings
-    (``settings``), and, inside a repo, which of its skills its reviews follow
-    (``skill``).
+    kind: str  # what the menu dismisses with
+    key: str  # its letter
+    title: str
+    about: str
+    where: str = ""  # the file it opens, or what it is now (the theme)
+
+
+Sections = list[tuple[str, list[SettingItem]]]
+
+
+class SettingsScreen(ModalScreen[None]):
+    """How reviews go (your instructions and the agents' permissions) and Purr's settings
+    and theme, in sections: the arrows and enter, or each one's letter, open one over it
+    (``open``, with its ``kind``); closing that comes back here, drawn again (``menu``)."""
+
+    DEFAULT_CSS = """
+    SettingsScreen { align: center middle; }
+    #settings-items { height: auto; max-height: 30; margin: 1 0; border: none; }
     """
+    BINDINGS = [Binding("escape", "close", "Close")]
 
-    BINDINGS = [
-        Binding("r", "pick('review')", "Review style"),
-        Binding("c", "pick('code')", "Code style"),
-        Binding("p", "pick('permissions')", "Permissions"),
-        Binding("s", "pick('skill')", "Review skill"),
-        Binding("o", "pick('settings')", "Settings"),
-        Binding("t", "pick('theme')", "Theme"),
-        Binding("escape", "pick('')", "Cancel", show=False),
-    ]
-
-    def __init__(self, repo: str | None):
+    def __init__(self, menu: Callable[[], Sections], open: Callable[[str], Awaitable[None]]):
         super().__init__()
-        self._repo = repo
+        self._menu, self._open = menu, open
+        self._keys: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
-        scope = f"for [b]{self._repo}[/b]" if self._repo else "for [b]all repos[/b]"
-        with Vertical(classes="dialog"):
-            yield Label(f"Your instructions {scope}")
-            yield Label("[b]r[/b]  review style: how reviews should go")
-            yield Label("[b]c[/b]  code style: what good code looks like to you")
-            yield Label("[b]p[/b]  permissions: what agents may do without asking")
-            if self._repo:
-                yield Label("[b]s[/b]  review skill: which of the repo's skills reviews follow")
-            yield Label("[b]o[/b]  Purr's settings: models, polling, signature… (all repos)")
-            yield Label("[b]t[/b]  theme: Purr's colors, each shown as you pick (all repos)")
-            yield Label("Opens in $EDITOR. Repo files add to the general ones.", classes="hint")
-            yield Label("a key above opens it · esc cancel", classes="hint")
+        with Vertical(classes="dialog", id="settings"):
+            yield Label(Text("Settings", style="bold"))
+            yield OptionList(id="settings-items")
+            yield Label("↑ ↓ and enter, or a letter · esc closes", classes="hint")
 
-    def check_action(self, action: str, parameters: tuple) -> bool:
-        return self._repo is not None or parameters != ("skill",)
+    def on_screen_resume(self) -> None:
+        """Back from what it opened (or just opened): drawn again, as things are now."""
+        sections = self._menu()
+        self._keys = {item.key: item.kind for _, items in sections for item in items}
+        items = self.query_one(OptionList)
+        was = items.highlighted
+        items.set_options(self._options(sections))
+        first = next(i for i, o in enumerate(items.options) if not o.disabled)
+        items.highlighted = first if was is None else was
+        items.focus()
 
-    def action_pick(self, kind: str) -> None:
-        from purr.review.instructions import Kind
+    def _options(self, sections: Sections) -> list[Option]:
+        accent = palette().number
+        options: list[Option] = []
+        for heading, items in sections:
+            if options:
+                options.append(Option(" ", disabled=True))
+            options.append(Option(Text(heading.upper(), style=f"bold {accent}"), disabled=True))
+            options += [Option(_setting_row(item), id=item.kind) for item in items]
+        return options
 
-        self.dismiss(
-            kind
-            if kind in ("skill", "permissions", "settings", "theme")
-            else Kind(kind)
-            if kind
-            else None
-        )
+    def on_key(self, event: events.Key) -> None:
+        if kind := self._keys.get(event.key):
+            event.stop()
+            self.run_worker(self._open(kind))
+
+    @on(OptionList.OptionSelected, "#settings-items")
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        if event.option.id:
+            self.run_worker(self._open(event.option.id))
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+def _setting_row(item: SettingItem) -> Table:
+    """``r  Review style   How reviews should go``, and under it, dim, where it is."""
+    row = Table.grid(padding=(0, 1))
+    row.add_column(width=2)
+    row.add_column(width=14, no_wrap=True)
+    row.add_column(ratio=1)
+    # The letter bold, not in a color: the cursor's (the accent) would hide it.
+    row.add_row(Text(item.key, style="bold"), Text(item.title, style="bold"), item.about)
+    if item.where:
+        row.add_row("", "", Text(item.where, style="dim"))
+    return row
 
 
 class ReviewSkillScreen(ModalScreen[str | None]):

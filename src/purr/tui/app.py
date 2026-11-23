@@ -2,9 +2,9 @@
 
 import asyncio
 import os
-import shlex
 import time
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from textual import events, work
@@ -15,13 +15,7 @@ from textual.worker import NoActiveWorker, get_current_worker
 
 from purr.app import Purr
 from purr.checkout import github_repos
-from purr.config import (
-    SETTINGS_FILE,
-    SettingsError,
-    read_settings,
-    save_setting,
-    settings_template,
-)
+from purr.config import SETTINGS_FILE, parse_settings, save_setting, settings_template
 from purr.jobs import PurrError
 from purr.messages import (
     REVIEW_WORKER,
@@ -54,7 +48,15 @@ from purr.review.skills import RepoSkill, Skill
 from purr.tui import theme
 from purr.tui.bridge import BusEvent, UIWorker
 from purr.tui.clipboard import copy_command, system_copy, terminal_copies
-from purr.tui.dialogs import ConfirmScreen, InstructionsScreen, ReviewSkillScreen, ThemeScreen
+from purr.tui.dialogs import (
+    ConfirmScreen,
+    ReviewSkillScreen,
+    Sections,
+    SettingItem,
+    SettingsScreen,
+    ThemeScreen,
+)
+from purr.tui.editor import EditorScreen, check_json, shown
 from purr.tui.keyhelp import KeysScreen, key_groups
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
@@ -67,6 +69,21 @@ from purr.workers.recap import LAST_ACTIVE
 _NOWHERE = object()
 # The app's keys that the screen on top (a dialog, the diff) gets instead.
 _GIVEN_WAY = {"next_alert", "command_palette"}
+_PERMISSIONS = "What the agents may do without asking: your Claude Code settings"
+# The settings menu: each entry's letter, name and what it's for (see _settings_menu).
+_MENU = {
+    "review": ("r", "Review style", "How reviews should go: what to raise, what to skip, tone"),
+    "code": ("c", "Code style", "What good code looks like to you; reviews hold PRs to it"),
+    "permissions": ("p", "Permissions", "What the agents may run without asking"),
+    "skill": ("s", "Review skill", "Which of the repo's own skills its reviews follow"),
+    "settings": ("o", "Settings", "Models, polling, reviews at once, signature…"),
+    "theme": ("t", "Theme", "Purr's colors, each shown as you pick"),
+}
+# What each of your instruction files is for, over the editor.
+_ABOUT = {
+    Kind.REVIEW: "How you like reviews: what to raise, what to skip, tone",
+    Kind.CODE: "What good code looks like to you: reviews hold PRs to it",
+}
 
 
 def _claude_settings() -> Path:
@@ -155,10 +172,13 @@ class PurrApp(App):
         await self.main.repo.restyle()
 
     def choose_theme(self) -> None:
+        """/theme: the theme picker (see _theme_picker), unless a dialog's open."""
+        if not self._modal_open():
+            self._theme_picker()
+
+    def _theme_picker(self) -> None:
         """The themes, each shown as you move to it: enter keeps it (in settings.toml), esc
         goes back to the one you had."""
-        if self._modal_open():
-            return
         was = self.theme
 
         async def chosen(name: str | None) -> None:
@@ -227,29 +247,50 @@ class PurrApp(App):
             self.run_worker(self.bus.active())
 
     async def action_instructions(self) -> None:
-        """Edit your review or code style: this repo's inside a repo, the general ones at home.
-
-        Inside a repo, also which of its skills its reviews follow.
-        """
+        """i: the settings menu: how reviews go (your review and code style, the agents'
+        permissions: this repo's inside a repo, and there which of its skills its reviews
+        follow; the general ones at home), and Purr's settings and theme. What it opens
+        goes over it, and closing that comes back to it."""
         if self._modal_open():
             return
         repo = self.location
+        menu = SettingsScreen(lambda: self._settings_menu(repo), partial(self._setting, repo=repo))
+        await self.push_screen(menu)
 
-        async def chosen(kind: Kind | str | None) -> None:
-            if kind == "skill" and repo:
-                await self._choose_review_skill(repo)
-            elif kind == "permissions":
-                # In a repo, the rules you allowed for its reviews; at home, your
-                # Claude Code settings, which every review uses.
-                await self._edit(self.purr.rules.ensure(repo) if repo else _claude_settings())
-            elif kind == "settings":
-                await self._edit_settings()
-            elif kind == "theme":
-                self.choose_theme()
-            elif isinstance(kind, Kind):
-                await self._edit(self.purr.instructions.ensure(kind, repo))
+    async def _setting(self, kind: str, *, repo: str | None) -> None:
+        """Open one of the settings menu's (over it)."""
+        if kind == "skill" and repo:
+            await self._choose_review_skill(repo)
+        elif kind == "permissions":
+            about = f"What agents may do in {repo}'s reviews" if repo else _PERMISSIONS
+            path = self.purr.rules.ensure(repo) if repo else _claude_settings()
+            self._edit(path, about=about, check=check_json)
+        elif kind == "settings":
+            self._edit_settings()
+        elif kind == "theme":
+            self._theme_picker()
+        elif kind in (Kind.REVIEW, Kind.CODE):
+            path = self.purr.instructions.ensure(Kind(kind), repo)
+            self._edit(path, about=_ABOUT[Kind(kind)])
 
-        await self.push_screen(InstructionsScreen(repo), chosen)
+    def _settings_menu(self, repo: str | None) -> Sections:
+        """What the settings menu lists (see _MENU), with where each one is."""
+        files = {
+            "review": self.purr.instructions.path(Kind.REVIEW, repo),
+            "code": self.purr.instructions.path(Kind.CODE, repo),
+            "permissions": self.purr.rules.path(repo) if repo else CLAUDE_SETTINGS,
+            "settings": self.purr.config.config_dir / SETTINGS_FILE,
+        }
+
+        def item(kind: str) -> SettingItem:
+            where = self.theme if kind == "theme" else shown(files[kind]) if kind in files else ""
+            return SettingItem(kind, *_MENU[kind], where=where)
+
+        yours = ["review", "code", "permissions", *(["skill"] if repo else [])]
+        return [
+            (f"Reviews, in {repo}" if repo else "Reviews, in every repo", [item(k) for k in yours]),
+            ("Purr", [item("settings"), item("theme")]),
+        ]
 
     async def _choose_review_skill(self, repo: str) -> None:
         try:
@@ -295,28 +336,28 @@ class PurrApp(App):
                 return None
             return await process.wait()
 
-    async def _edit(self, path: Path, *, applies: str = "from the agents' next turn") -> None:
-        fallback = "notepad" if os.name == "nt" else "vi"
-        editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or fallback)
-        with self.suspend():
-            process = await asyncio.create_subprocess_exec(*editor, str(path))
-            await process.wait()
-        self.notify(f"Saved {path}. It applies {applies}.")
+    def _edit(self, path: Path, **kwargs) -> None:
+        """A file of yours, in Purr's editor (see :class:`EditorScreen` for the rest)."""
+        self.push_screen(EditorScreen(path, **kwargs))
 
-    async def _edit_settings(self) -> None:
-        """Purr's settings.toml, made with every setting commented out if it's not there yet,
-        and checked once you've saved it, so a typo shows now rather than next start."""
+    def _edit_settings(self) -> None:
+        """Purr's settings.toml, made with every setting commented out if it's not there yet.
+        It's checked before it's saved, so a typo shows at once; a new theme applies then."""
         path = self.purr.config.config_dir / SETTINGS_FILE
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(settings_template())
-        await self._edit(path, applies="next time Purr starts (the theme, now)")
-        try:
-            settings = read_settings(path)
-        except SettingsError as e:
-            self.notify(str(e), severity="error", timeout=20)
-            return
-        await self.change_theme(settings.get("theme", theme.DEFAULT))
+
+        async def saved(text: str) -> None:
+            await self.change_theme(parse_settings(text).get("theme", theme.DEFAULT))
+
+        self._edit(
+            path,
+            about="Purr's settings: models, polling, signature, theme…",
+            applies="next time Purr starts (the theme, now)",
+            check=parse_settings,
+            saved=saved,
+        )
 
     async def action_recap(self) -> None:
         if self._modal_open():

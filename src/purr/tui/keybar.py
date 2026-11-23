@@ -36,19 +36,22 @@ class KeyBar(Static):
         self.keys: list[tuple[str, str]] = []  # (keys, what they do), as shown
 
     def on_mount(self) -> None:
-        self.screen.bindings_updated_signal.subscribe(self, self._changed)
+        self._screen = self.screen  # its own, to let go of when it goes
+        self._screen.bindings_updated_signal.subscribe(self, self._changed)
 
     def on_unmount(self) -> None:
-        self.screen.bindings_updated_signal.unsubscribe(self)
+        self._screen.bindings_updated_signal.unsubscribe(self)
 
     def on_resize(self) -> None:
         self._draw()
 
     def _changed(self, screen: Screen) -> None:
-        if self.is_attached and screen is self.screen:
+        if screen is self._screen:
             self.call_after_refresh(self._draw)
 
     def _draw(self) -> None:
+        if not self.is_attached:  # its screen closed (the editor) while a redraw waited
+            return
         self.keys = self._here()
         lines = _pack([f"{keys} {what}" for keys, what in self.keys], self.content_size.width)
         self.update(Content.from_markup("\n".join(_markup(self.keys, line) for line in lines)))

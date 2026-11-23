@@ -166,6 +166,20 @@ def focused(app: PurrApp) -> str | None:
     return app.focused.id if app.focused else None
 
 
+def option_texts_of(screen) -> list[str]:
+    """What a screen's list says, a line per option (a table's cells, side by side)."""
+    from rich.console import Console
+
+    console = Console(width=200, color_system=None)
+    items = screen.query_one(OptionList)
+    lines = []
+    for option in items.options:
+        with console.capture() as capture:
+            console.print(option.prompt)
+        lines.append(capture.get())
+    return lines
+
+
 def footer(app: PurrApp) -> set[str]:
     """What the footer's keys say they do."""
     from purr.tui.keybar import KeyBar
@@ -872,7 +886,7 @@ async def test_moving_around_and_searching(tmp_path):
 
 
 async def test_choosing_the_review_skill(tmp_path):
-    from purr.tui.dialogs import InstructionsScreen, ReviewSkillScreen
+    from purr.tui.dialogs import ReviewSkillScreen, SettingsScreen
     from tests.fakes import make_plugin
 
     app, github = make_app(tmp_path)
@@ -902,12 +916,14 @@ async def test_choosing_the_review_skill(tmp_path):
         # i, then s, changes it: back to Purr's own review.
         await until(pilot, lambda: isinstance(app.screen, MainScreen))
         await pilot.press("i")
-        assert isinstance(app.screen, InstructionsScreen)
+        assert isinstance(app.screen, SettingsScreen)
         await pilot.press("s")
         await until(pilot, lambda: isinstance(app.screen, ReviewSkillScreen))
         items = app.screen.query_one(OptionList)
         assert items.highlighted == 1  # what reviews follow now
         await pilot.press("down", "enter")
+        await until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        await pilot.press("escape")
         await until(pilot, lambda: isinstance(app.screen, MainScreen))
         for _ in range(100):
             if await app.purr.store.review_skill("pipecat-ai/pipecat") == "":
@@ -1714,9 +1730,10 @@ async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
 
 
 async def test_choosing_a_theme(tmp_path, monkeypatch):
-    from purr.config import SETTINGS_FILE, read_settings, save_setting
+    from purr.config import SETTINGS_FILE, read_settings
     from purr.tui import theme
-    from purr.tui.dialogs import ThemeScreen
+    from purr.tui.dialogs import SettingsScreen, ThemeScreen
+    from purr.tui.editor import EditorArea, EditorScreen
 
     monkeypatch.setattr(theme, "_palette", theme.palette())  # back as it was, after
     app, github = make_app(tmp_path)
@@ -1732,20 +1749,27 @@ async def test_choosing_a_theme(tmp_path, monkeypatch):
         assert theme.palette().code == "solarized-light"
         await pilot.press("escape")
         await until(pilot, lambda: app.theme == "solarized-dark")
+        await until(pilot, lambda: isinstance(app.screen, SettingsScreen))  # back to the menu
         assert theme.palette().code == "solarized-dark" and not settings.exists()
         # enter keeps it, in settings.toml.
-        await pilot.press("i", "t", "down", "enter")
+        await pilot.press("t", "down", "enter")
         await until(pilot, lambda: settings.exists())
         assert app.theme == "solarized-light" == read_settings(settings)["theme"]
 
         # Saving settings.toml (i, then o) with another theme in it: that one, at once.
-        async def editor(path, *, applies):
-            save_setting(path, "theme", "nord")
-
-        monkeypatch.setattr(app, "_edit", editor)
-        await pilot.press("i", "o")
+        await until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        assert "solarized-light" in "\n".join(option_texts_of(app.screen))  # as it is now
+        await pilot.press("o")
+        await until(pilot, lambda: isinstance(app.screen, EditorScreen))
+        area = app.screen.query_one(EditorArea)
+        area.text = area.text.replace('theme = "solarized-light"', 'theme = "nord"')
+        await pilot.press("ctrl+s")
         await until(pilot, lambda: app.theme == "nord")
         assert theme.palette().code == "nord"
+        await pilot.press("escape")
+        await until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        await pilot.press("escape")
+        await until(pilot, lambda: isinstance(app.screen, MainScreen))
 
         # /theme <name> in a PR's prompt: that one, kept.
         await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
@@ -1757,28 +1781,49 @@ async def test_choosing_a_theme(tmp_path, monkeypatch):
         assert read_settings(settings)["theme"] == "dracula"
 
 
-async def test_editing_settings_says_what_is_wrong_at_once(tmp_path, monkeypatch):
-    from purr.config import SETTINGS_FILE
-    from purr.tui.dialogs import InstructionsScreen
+async def test_editing_settings_in_purr(tmp_path):
+    from purr.config import SETTINGS_FILE, read_settings
+    from purr.tui.dialogs import ConfirmScreen, SettingsScreen
+    from purr.tui.editor import EditorArea, EditorScreen
 
     app, github = make_app(tmp_path)
-    edited = []
-
-    async def editor(path, *, applies):  # what you'd do in $EDITOR: a typo
-        edited.append((path.read_text(), applies))
-        path.write_text(path.read_text() + "\naway_aftr = 600\n")
-
-    monkeypatch.setattr(app, "_edit", editor)
-    errors = []
-    monkeypatch.setattr(
-        app, "notify", lambda text, **kw: errors.append(text) if kw.get("severity") else None
-    )
+    path = app.purr.config.config_dir / SETTINGS_FILE
     async with app.run_test(size=(140, 45)) as pilot:
+        # i, then o: settings.toml in Purr's editor, every setting there, commented out.
         await pilot.press("i")
-        assert isinstance(app.screen, InstructionsScreen)
+        assert isinstance(app.screen, SettingsScreen)
         await pilot.press("o")
-        await until(pilot, lambda: bool(errors))
-    starter, applies = edited[0]
-    assert "# max_reviews = 3" in starter and applies.startswith("next time Purr starts")
-    assert (app.purr.config.config_dir / SETTINGS_FILE).exists()
-    assert "unknown setting 'away_aftr'" in errors[0]
+        await until(pilot, lambda: isinstance(app.screen, EditorScreen))
+        editor = app.screen
+        area = editor.query_one(EditorArea)
+        status = editor.query_one("#editor-status")
+        assert "# max_reviews = 3" in area.text and path.exists()
+
+        def says() -> str:
+            return str(status.render())
+
+        # A typo isn't saved: it says why, at once, and the file's as it was.
+        before = path.read_text()
+        area.text = "away_aftr = 600\n" + area.text
+        await pilot.press("ctrl+s")
+        assert "Not saved" in says() and "unknown setting 'away_aftr'" in says()
+        assert path.read_text() == before
+        # Fixed, it is (Emacs's keys: ctrl+a, ctrl+k kill the line, as in the prompt).
+        area.move_cursor((0, 4))
+        await pilot.press("ctrl+a", "ctrl+k", *"max_reviews = 2")
+        await pilot.press("ctrl+s")
+        assert "Saved" in says() and read_settings(path)["max_reviews"] == 2
+
+        # esc closes; with changes not saved, it asks first.
+        area.insert("# more\n")
+        await pilot.press("escape")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("n")
+        await until(pilot, lambda: app.screen is editor)
+        await pilot.press("escape")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
+        await until(pilot, lambda: isinstance(app.screen, SettingsScreen))  # where it was
+        assert "# more" not in path.read_text()
+        await pilot.press("escape")
+        await until(pilot, lambda: isinstance(app.screen, MainScreen))

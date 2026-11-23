@@ -163,16 +163,21 @@ def read_settings(path: Path) -> dict[str, Any]:
     """The settings in ``path`` (none if it doesn't exist), checked: names and types."""
     if not path.exists():
         return {}
+    return parse_settings(path.read_text(), where=str(path))
+
+
+def parse_settings(text: str, *, where: str = SETTINGS_FILE) -> dict[str, Any]:
+    """The settings ``text`` says, checked; SettingsError, saying ``where`` and what, if not."""
     try:
-        raw = tomllib.loads(path.read_text())
+        raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
-        raise SettingsError(f"{path}: {e}") from e
+        raise SettingsError(f"{where}: {e}") from e
     if unknown := sorted(set(raw) - _SETTINGS.keys()):
-        raise SettingsError(f"{path}: unknown setting {', '.join(map(repr, unknown))}")
-    return {name: _value(path, name, value) for name, value in raw.items()}
+        raise SettingsError(f"{where}: unknown setting {', '.join(map(repr, unknown))}")
+    return {name: _value(where, name, value) for name, value in raw.items()}
 
 
-def _value(path: Path, name: str, value: Any) -> Any:
+def _value(path: str, name: str, value: Any) -> Any:
     """A setting's value as its type, empty meaning none for those that can be none."""
     kind = _SETTINGS[name].type
     if value == "" and _optional(kind):

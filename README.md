@@ -99,8 +99,9 @@ repo's own skills. Reading, `ctrl+v` and `alt+v` page down and up, as in Emacs.
 
 ## 🎨 Make it yours
 
-`i` edits these in your editor; they apply from the agent's next turn. Inside a repo, `i` edits
-that repo's own versions instead.
+`i` opens the settings: each of these opens in Purr's editor (Emacs's keys, `ctrl+s` saves, `esc`
+back to the settings), and applies from the agent's next turn. Inside a repo, `i` edits that
+repo's own versions instead. `t` there picks a theme, showing each as you go.
 
 | File | What it's for |
 |---|---|
