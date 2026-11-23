@@ -156,3 +156,49 @@ def test_boxes_in_color_authors_and_mentions_picked_out():
     assert "bold cyan" in styles_at(top, "alice · resolved")  # resolved, still in its color
     assert "cyan" in styles_at(top, "╭")
     assert "bold blue" in styles_at(first, "@bob")  # a mention
+
+
+def test_code_in_its_languages_colors_and_changed_lines_on_green_or_red():
+    from rich.style import Style
+
+    from purr.tui.code import highlighted
+    from purr.tui.diffview import _changed
+    from purr.tui.theme import palette
+
+    [file] = parse(
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n"
+        ' def f():\n-    """Old\n-    doc."""\n+    """New\n+    doc."""\n'
+    )
+    colored = highlighted(file, "solarized-dark")
+    assert colored[0] is None  # the hunk's header isn't code
+    assert [text.plain for text in colored[1:]] == [
+        "def f():",
+        '    """Old',
+        '    doc."""',
+        '    """New',
+        '    doc."""',
+    ]
+    # A docstring over two lines is colored as one, on each side; and with no background
+    # of its own (the diff's goes behind it).
+    styles = [{str(span.style.color) for span in text.spans} for text in colored[2:]]
+    assert len({frozenset(s) for s in styles if s}) <= 2
+    assert all(span.style.bgcolor is None for text in colored[1:] for span in text.spans)
+
+    view = rows([file], {0}, [])
+    lines = {row.line.kind: row for row in view if row.kind == "line"}
+    assert view[2].text.plain == "    1    1   def f():"
+    assert _changed(lines["+"]) == Style(bgcolor=palette().added)
+    assert _changed(lines["-"]) == Style(bgcolor=palette().removed)
+    assert _changed(lines[" "]) == Style() == _changed(view[0])
+
+
+def test_code_in_no_known_language_is_plain():
+    from purr.tui.code import highlighted
+
+    [file] = parse("diff --git a/x.zzz b/x.zzz\n--- a/x.zzz\n+++ b/x.zzz\n@@ -1 +1 @@\n-a\n+b\n")
+    assert highlighted(file, "solarized-dark") == (None, None, None)
+    assert [row.text.plain for row in rows([file], {0}, [])][1:] == [
+        "            @@ -1 +1 @@",
+        "    1       -a",
+        "         1  +b",
+    ]

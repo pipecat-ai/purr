@@ -28,12 +28,42 @@ class Palette:
     box: str  # a comment box's inside, in the diff
     working: str  # the spinning mark and line while an agent's at work
     shine: str  # the shine sweeping across that line
-    code: str  # Pygments' style, for code in descriptions and replies
+    code: str  # Pygments' style, for code in descriptions and replies, and in the diff
+    added: str  # behind a line the diff adds: green, faint
+    removed: str  # behind one it removes: red, faint
+
+
+# How much green, or red, goes into the background behind a changed line. Red more on a
+# dark background, or against a blue-green one (Solarized's) it comes out grey; on a
+# light one, that much is loud.
+ADDED_TINT, REMOVED_TINT, REMOVED_TINT_LIGHT = 0.2, 0.32, 0.2
+
+
+def _removed_tint(dark: bool) -> float:
+    return REMOVED_TINT if dark else REMOVED_TINT_LIGHT
+
+
+def _tint(background: str, color: str, amount: float) -> str:
+    """The background, with a little of ``color`` in it."""
+    return Color.parse(background).blend(Color.parse(color), amount).hex6
+
+
+def _solarized(background: str, *, dark: bool) -> Palette:
+    return Palette(
+        name=BASE2 if dark else BASE02,
+        number=BLUE,
+        box=BASE02 if dark else BASE2,
+        working=ORANGE,
+        shine="#e19872" if dark else "#a33c12",
+        code="solarized-dark" if dark else "solarized-light",
+        added=_tint(background, GREEN, ADDED_TINT),
+        removed=_tint(background, RED, _removed_tint(dark)),
+    )
 
 
 _SOLARIZED = {
-    "solarized-dark": Palette(BASE2, BLUE, BASE02, ORANGE, "#e19872", "solarized-dark"),
-    "solarized-light": Palette(BASE02, BLUE, BASE2, ORANGE, "#a33c12", "solarized-light"),
+    "solarized-dark": _solarized(BASE03, dark=True),
+    "solarized-light": _solarized(BASE3, dark=False),
 }
 
 # Pygments' style for a theme that has one; else github-dark, or default when light.
@@ -70,7 +100,8 @@ def use(theme: str, variables: dict[str, str], *, dark: bool) -> None:
 
 def _from_theme(theme: str, variables: dict[str, str], *, dark: bool) -> Palette:
     """Purr's colors from a theme's: its text a little brighter (darker, when light), its
-    primary color for numbers, its panel for boxes, its warning color for work."""
+    primary color for numbers, its panel for boxes, its warning color for work, and its
+    background tinted with its success and error colors for the diff's lines."""
     shade = 0.15 if dark else -0.15
     working = Color.parse(variables["warning"])
     return Palette(
@@ -80,6 +111,8 @@ def _from_theme(theme: str, variables: dict[str, str], *, dark: bool) -> Palette
         working=working.hex6,
         shine=working.lighten(shade).hex6,
         code=_CODE.get(theme, "github-dark" if dark else "default"),
+        added=_tint(variables["background"], variables["success"], ADDED_TINT),
+        removed=_tint(variables["background"], variables["error"], _removed_tint(dark)),
     )
 
 

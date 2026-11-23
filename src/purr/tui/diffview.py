@@ -9,10 +9,12 @@ all of them, ``n``/``p`` go to the next or previous file. ``shift+↑``/``shift+
 (or the line under the cursor), in the PR's conversation. ``c`` writes a comment
 on them, or rewrites yours under the cursor, and ``x`` removes it.
 
-Yours are posted with your next review of the PR (see DraftComment). The
-comments the agent proposes show too, and the PR's review threads on GitHub:
-each in a box under its line, which ``tab`` closes to a line (resolved threads
-start that way) and opens again.
+Yours go to GitHub as you save them. The comments the agent proposes show too,
+and the PR's review threads on GitHub: each in a box under its line, which ``tab``
+closes to a line (resolved threads start that way) and opens again.
+
+Lines added and removed have a green or red background, under their code in its
+language's colors (see purr.tui.code).
 """
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -51,11 +53,13 @@ from purr.messages import (
 )
 from purr.models import PR, DraftComment, PRComment, Quote
 from purr.tui.boxes import BOX_WIDTH, comment_box
+from purr.tui.code import code, highlighted
 from purr.tui.dialogs import ConfirmScreen
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import VERDICTS, short_age
 from purr.tui.prompt import PromptArea
+from purr.tui.theme import palette
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
@@ -81,8 +85,8 @@ def file_line(file: File, opened: bool) -> Text:
     )
 
 
-# How git colors a diff's lines, by how they start.
-LINE_STYLES = {"@@": "cyan", "+": "green", "-": "red", "\\": "dim"}
+# How a diff's lines start, colored as git does: a hunk's header, its +, - and git's notes.
+LINE_STYLES = {"@@": "cyan", "+": "bold green", "-": "bold red", "\\": "dim"}
 
 
 # What's said on the PR itself, not on a line: the first "file" of the view, its comments
@@ -218,8 +222,9 @@ def _file_rows(
     if file.generated:
         return [Row("note", Text("  generated, not shown", style="dim"), index)]
     out: list[Row] = []
-    for line in file.lines:
-        out.append(Row("line", _numbered(line), index, line))
+    colored = highlighted(file, palette().code)
+    for line, words in zip(file.lines, colored, strict=True):
+        out.append(Row("line", _numbered(line, words), index, line))
         for comment in (c for c in comments if (c.line, c.side) == line.target()):
             out += _said_rows(index, comment, shut, width)
     placed = {line.target() for line in file.lines}
@@ -228,10 +233,18 @@ def _file_rows(
     return out
 
 
-def _numbered(line: Line) -> Text:
-    """A diff line with its numbers: in the base, and in the PR's version."""
-    gutter = f"{line.old or '':>5}{line.new or '':>5}  "
-    return Text.assemble((gutter, "dim"), (line.text.expandtabs(4), LINE_STYLES.get(line.kind, "")))
+def _numbered(line: Line, words: Text | None = None) -> Text:
+    """A diff line with its numbers (in the base, and in the PR's version): its +, - or
+    space, then its code, in ``words``' colors if it has them (its language's). A hunk's
+    header and git's notes, as git colors them. (The green or red behind a line is the
+    view's: see DiffView.render_line.)"""
+    gutter = Text(f"{line.old or '':>5}{line.new or '':>5}  ", style="dim")
+    style = LINE_STYLES.get(line.kind, "")
+    if line.kind not in ("+", "-", " "):
+        return gutter.append(line.text.expandtabs(4), style)
+    return gutter.append(line.text[:1], style).append_text(
+        words if words is not None else Text(code(line))
+    )
 
 
 _INDENT = " " * 12  # under the code, past the line numbers
@@ -579,9 +592,9 @@ class DiffView(ScrollView, can_focus=True):
         width = self.size.width
         if index >= len(self._rows):
             return Strip.blank(width, self.rich_style)
-        # The view's colors under the line's own; the cursor's, or the selection's, across
-        # the whole row.
-        style = self.rich_style + self._highlight(index)
+        # The view's colors under the line's own, green or red behind a line added or
+        # removed; the cursor's, or the selection's, across the whole row.
+        style = self.rich_style + _changed(self._rows[index]) + self._highlight(index)
         x = self.scroll_offset.x
         return self._strip(index).apply_style(style).crop_extend(x, x + width, style)
 
@@ -604,6 +617,14 @@ class DiffView(ScrollView, can_focus=True):
 
     def _background(self, component: str) -> Style:
         return Style(bgcolor=self.get_component_rich_style(component).bgcolor)
+
+
+def _changed(row: Row) -> Style:
+    """Green behind a line the diff adds, red behind one it removes (the theme's)."""
+    if row.kind != "line" or row.line is None or row.line.kind not in ("+", "-"):
+        return Style()
+    colors = palette()
+    return Style(bgcolor=colors.added if row.line.kind == "+" else colors.removed)
 
 
 class CommentScreen(ModalScreen[str | None]):

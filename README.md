@@ -57,8 +57,9 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
    full screen to follow it (`z` or `esc` comes back); `o` opens it on GitHub.
 3. **Talk to the agent** (`enter` goes to the prompt): ask, dig in, or change what it
    proposes. `tab` takes the suggestion. `esc` in its pane stops it while it works.
-4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
-   (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
+4. **Read the diff** (`d`): it takes the list's place, next to the conversation, the code in its
+   language's colors on green and red. Select lines (`shift+↑`/`↓`) and press `enter` to ask
+   the agent about them, or `c` to comment on them.
    Comments show in boxes under their lines (yours, the agent's and GitHub's), and what's
    said on the PR itself is at the top. Yours go to GitHub when you save them: `enter` on one
    edits it there and `x` deletes it (after asking); `r` on anyone's replies, quoting it.
