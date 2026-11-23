@@ -1,208 +1,125 @@
-# Purr
+<h1><div align="center">
+ <img alt="pipecat" width="300px" height="auto" src="https://raw.githubusercontent.com/pipecat-ai/pipecat/main/pipecat.png">
+</div></h1>
 
-A human-in-the-loop agentic code reviewer.
+[![Tests](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml/badge.svg)](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml) [![Docs](https://img.shields.io/badge/Documentation-blue)](https://docs.pipecat.ai) [![Discord](https://img.shields.io/discord/1239284677165056021)](https://discord.gg/pipecat)
 
-Purr watches your GitHub repos, and Claude reviews the pull requests assigned to you in the
+# ᓚᘏᗢ Purr: PR reviews with Claude, you in the loop
+
+**Purr** watches your GitHub repos, and Claude reviews the pull requests assigned to you in the
 background. You read what it found, ask it questions, and decide what gets posted.
 **Nothing goes to GitHub until you approve it.**
 
-![Purr's repo screen: the PR list on the left, a PR's description and files on the right](purr.png)
+![Purr: a review that needs you, a question to the agent, a comment on a line of the diff, and posting the review](docs/purr.gif)
 
-- **Reviews happen on their own.** PRs assigned to you are reviewed as they come in, a few at
-  a time. Small changes get a quick look; risky ones get a full review.
-- **Each PR is a conversation.** Every review is a Claude Code session (run through the
-  Claude Agent SDK) you can keep talking to: "is that race real?", "drop the nit", "make it a
-  comment instead".
-- **One key to post.** When you agree with the proposed review, `a` posts it as you.
-- **Many repos, one place.** See what needs you everywhere, and catch up on what happened
-  while you were away.
+## ✨ What it does
 
-## Setup
+- **Reviews what's assigned to you**, as it comes in, a few at a time. A quick planning step
+  decides how deep: small changes get a quick look, risky ones a full review.
+- **Knows what's waiting on you.** PRs are grouped: *Needs you* (a review to post, a question
+  from the agent, someone replying to you on GitHub), *Reviewing*, *Review requested*,
+  *Others reviewing*, *Done*, *Not reviewed*. News from other repos shows at the top.
+- **Each PR is a conversation**: a Claude Code session you keep talking to ("is that race
+  real?", "drop the nit"), with a suggestion of what to ask next, as in Claude Code.
+- **The diff, with comments on lines**: yours and the agent's, posted together as one review.
+- **One key to post, one to merge.** `a` posts the review as you. `m` shows the checks, the
+  other reviewers and conflicts first, then merges what you approved.
+- **Many repos, one place**, and a recap of what happened while you were away.
+- **Safe by default**: Claude Code's own permissions, an optional sandbox, and the repo's
+  rules read from its main branch, so a PR can't change what it's reviewed against.
 
-You need a Mac or Linux terminal. It takes about five minutes.
+## 🚀 Setup
 
-### 1. Install the tools
-
-| Tool | What for | Install |
-|---|---|---|
-| [uv](https://docs.astral.sh/uv/) | Runs Purr (and gets the right Python for you) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| [GitHub CLI](https://cli.github.com) | Reads PRs and posts your reviews | `brew install gh` (or see the link) |
-| git | Checks out the PRs | Probably already there: `git --version` |
-
-There's no need to install Claude Code: Purr reviews with the
+You need a Mac or Linux terminal, [uv](https://docs.astral.sh/uv/), the
+[GitHub CLI](https://cli.github.com) and git. Claude Code is optional: Purr reviews with the
 [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview), which comes with its
 own.
-
-### 2. Get Purr
 
 ```sh
 git clone git@github.com:pipecat-ai/purr.git
 cd purr
 uv sync
-```
-
-### 3. Log in
-
-```sh
 gh auth login        # GitHub: follow the prompts
-uv run purr login  # Claude
-```
-
-If you use Claude Code already, you're logged in to Claude: skip the second line. Reviews use
-that login, so they count against your Claude plan (or your API key, if you set
-`ANTHROPIC_API_KEY`).
-
-### 4. Run it
-
-```sh
+uv run purr login    # Claude (skip it if you use Claude Code already)
 uv run purr
 ```
 
-The first time, Purr lists only the repos where PRs are assigned to you, under *Not watched*,
-with just those PRs (you can review them all the same). To see all of a repo's open PRs,
-watch it: select it and press `+`, or press `+` and type a repo like `pipecat-ai/pipecat`
-(or paste its GitHub URL). If you start Purr inside a checkout of a repo, it offers to watch
-that one.
+Reviews use your Claude login, so they count against your Claude plan (or your API key, if you
+set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
+`uv run purr --no-auto-review`. To run `purr` from anywhere: `uv tool install --editable .`.
 
-Purr starts reviewing the PRs assigned to you right away. To look around first without
-starting any reviews:
+## 🧭 How to use it
 
-```sh
-uv run purr --no-auto-review
-```
+1. **Pick a repo** at home (`enter`, or its number). Purr lists the repos with PRs assigned to
+   you; `+` watches one, to see all its open PRs.
+2. **Pick a PR.** On the right, its description, where it changes things, and the
+   conversation with the agent. `r` reviews one that isn't yours yet (and assigns you).
+3. **Talk to the agent** (`enter` goes to the prompt): ask, dig in, or change what it
+   proposes. `tab` takes the suggestion.
+4. **Read the diff** (`d`): `c` comments on the line under the cursor.
+5. **Decide**: `a` posts the review with your comments, `x` dismisses it. Once you've
+   approved, `m` merges.
 
-> **Tip:** to run `purr` from anywhere, install it once with `uv tool install --editable .`
-> from the `purr` folder.
+When the agent asks before doing something risky, `a` allows it, `A` always, `x` says no (or
+write what to do instead). When someone replies to you on GitHub, the PR is back in
+*Needs you*: answer, or `x` if it needs no reply.
 
-## How to use it
+### ⌨️ Keys
 
-1. **Home** lists the repos you watch, then the ones listed only for PRs assigned to you or
-   asking for your review, with how many PRs need you in each. `enter` opens one (or press its number, `1` to `9`).
-2. **A repo** shows its PRs on the left, grouped: *Needs you*, *Reviewing*, *Review
-   requested* (asking for your review by name), *Others reviewing*, *Done* (the latest 5;
-   `/` finds the rest), and *Not reviewed*. A reviewed PR shows ✓ if the review found nothing
-   and ● if it found issues; one being reviewed spins. Only PRs assigned to you are reviewed
-   on their own; a review request doesn't start one.
-3. **Pick a PR** to read its description, files and diff on the right (`o` to scroll through
-   it). Press `r` to review it (Purr also assigns it to you, so your teammates know). You can
-   write to the agent while it works ("focus on the bus"); it reads it at its next step.
-4. **When the review is done**, read the findings and the review it proposes. `a` posts it,
-   `x` dismisses it. To change it, just write ("drop the second comment"): writing sets the
-   proposal aside, and the agent proposes again.
-   **Once you've approved it**, `m` shows whether it can be merged: its checks (passed,
-   failed, running), whether the other assignees approved, anything GitHub says is in the
-   way. `m` again merges it anyway, your way (merge, squash or rebase, as GitHub picks for
-   you), at the commit you approved. New commits since you approved, or conflicts, stop it.
-5. **If the agent asks for permission**: `a` allows it once, `A` always allows it (in this
-   repo or everywhere), `x` says no. Or write what to do instead ("only run the bus tests"):
-   that's a no, with directions, and the agent carries on. Claude Code decides what to ask
-   about, as it does everywhere else (see below).
-6. **When someone answers you** on a PR you reviewed or commented on, here or on GitHub (a
-   reply in your thread, a comment after yours), it's in *Needs you*, with what they said
-   under its conversation.
-   Answer on GitHub or through the agent, or press `x` if it needs no reply.
+The footer shows the keys for where you are. The main ones:
 
-### Keys
-
-| Where | Key | Does |
-|---|---|---|
-| Anywhere | `0` / `1`–`9` | Home / jump to a repo |
-| | `ctrl+n` | Go to the latest news from another repo |
-| | `ctrl+o` | Back to where you were |
-| | `ctrl+p` | Find any repo or PR by name |
-| | `w` | What happened while you were away |
-| | `i` | Your review style, code style, permissions, the repo's review skill, and settings (`o`) |
-| | `q` / `ctrl+q` | Quit (it asks first) |
-| | drag | Select text in the PR pane: it's copied |
-| Home | `enter` / `+` / `-` | Open / watch / stop watching a repo |
-| A repo | `enter` | Ask the agent about the PR: straight to its prompt |
-| | `o` / `tab` | Read the PR / switch between the list and the PR |
-| | `n` / `p` | Next / previous PR |
-| | `/` | Search PRs |
-| | `r` | Review the PR (`space` marks several first) |
-| | `a` / `x` | Approve / dismiss what's proposed (or allow / deny what's asked); `x` also says replies need no answer |
-| | `m` | Merge a PR you approved: once to see where it stands, again to merge |
-| | `A` | Always allow what's asked |
-| | `d` | The diff, to read line by line and comment on lines (`c`); yours go out with your review. `D`: in your pager |
-| | `t` | The agent's reasoning in full (it's a line per thought otherwise) |
-| | `!` | A shell in the PR's checkout, to run things yourself (`exit` to come back) |
-| | `c` | Open the PR's conversation in Claude Code itself (yours, or the one Purr comes with) |
-| | `z` | Full screen |
-| | `esc` | Home, from anywhere in the repo (your search and anything typed stay); from the prompt, back to the PR |
-| The prompt | `enter` / `ctrl+j` | Send / new line |
-| | `↑` `↓` / `ctrl+r` | Earlier messages / search them |
-| | `tab` or `→` | Take the suggestion: what you might ask next, shown dim once the agent's done |
-| | `/` | Commands (below) |
-
-### Commands
-
-Type them in a PR's prompt. Typing `/` lists them as you go.
-
-| Command | Does |
+| Key | Does |
 |---|---|
-| `/help` | Everything you can type here, including the repo's own skills |
-| `/review [quick\|full]` | Start over with a fresh review |
-| `/model [name]` | The model for this PR's conversation (`opus`, `sonnet`, ...) |
-| `/cost` | What this PR's reviews and questions cost, and how long they took |
-| `/shell`, `/claude` | Same as `!` and `c` |
-| `/compact` | Shrink a long conversation so you can keep going |
-| `/pipecat:prose-review`, ... | The repo's own Claude Code skills, if it has any |
+| `enter` / `o` / `tab` | Ask the agent / read the PR / switch between the list and the PR |
+| `n` `p` / `/` | Next or previous PR / search |
+| `r` / `space` | Review the PR / mark several first |
+| `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |
+| `d` / `D` | The diff, to read and comment on (`c`) / in your pager |
+| `m` | Merge a PR you approved: once to see where it stands, again to merge |
+| `t` / `z` | The agent's reasoning in full / full screen |
+| `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
+| `ctrl+p` / `ctrl+n` / `w` | Find any repo or PR / the latest news / what happened while you were away |
+| `i` | Your review style, code style, permissions, the repo's review skill, settings |
+| `esc` / `q` | Back (home) / quit |
 
-## Safe by default
+In the prompt: `ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go through what you asked,
+and `/` lists commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/compact`, and the
+repo's own skills.
 
-- **Purr never posts on its own.** The agents can read GitHub but can't change anything on
-  it; they propose, and Purr posts only what you approve, as you, with a small
-  "Sent from Purr." at the end.
-- **Permissions are Claude Code's own.** Reviews run in Claude Code's auto mode, with your
-  Claude Code settings: safe things run, and it asks before anything risky. When it asks, the
-  PR shows up as needing you. `A` keeps Claude Code's suggested rule, for the repo or
-  everywhere (your Claude Code settings). Purr adds only one rule: nothing that changes
-  GitHub.
-- **Optionally, a sandbox.** `uv run purr --sandbox` runs the agents' commands in Claude Code's
-  sandbox, where your operating system confines them to the PR's checkout and a few sites
-  (GitHub, PyPI, npm). On Ubuntu 24.04 and later, AppArmor blocks the sandbox unless you
-  allow it, so it's off by default.
-- **Repo rules come from the main branch.** The repo's `CLAUDE.md`, `AGENTS.md` and skills are
-  read from its default branch, so a PR can't change the rules it's reviewed against.
+## 🎨 Make it yours
 
-## Make it yours
-
-Press `i` to edit these in your editor. They apply to every review, from the next turn on.
+`i` edits these in your editor; they apply from the agent's next turn. Inside a repo, `i` edits
+that repo's own versions instead.
 
 | File | What it's for |
 |---|---|
 | `~/.config/purr/review.md` | How you like reviews: what to raise, what to skip, tone |
 | `~/.config/purr/code.md` | What good code looks like to you; reviews hold PRs to it |
-| `~/.claude/settings.json` | Your Claude Code permissions, which reviews use too (`i`, `p`) |
+| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, ... (`purr --help` for flags) |
+| `~/.claude/settings.json` | Your Claude Code permissions, which reviews use too |
 
-Inside a repo, `i` edits that repo's own versions instead: its review and code style, the
-permissions you allowed for its reviews, and which of its skills reviews follow (for pipecat,
-its `code-review` skill is used automatically).
+## 💡 Good to know
 
-## Good to know
+- **Purr never posts on its own.** The agents can read GitHub but not change it: they propose,
+  and Purr posts what you approve, as you, signed "Sent from Purr."
+- **Permissions are Claude Code's own**, in its auto mode: safe things run, risky ones ask.
+  `--sandbox` confines the agents' commands to the PR's checkout (on Ubuntu 24.04+, AppArmor
+  has to allow it, so it's off by default).
+- **Costs.** `/cost` shows what each PR has cost. Quick reviews run on Sonnet;
+  `--max-reviews 1` keeps things small.
+- **Where things live**: the database, log and PR checkouts in `~/.local/share/purr`.
+- **Copying**: drag over the PR pane. GNOME Terminal needs `wl-clipboard` (or `xclip`) for it.
 
-- **Costs.** Reviews use your Claude plan or API key. A cheap planning step decides how deep
-  each review goes; quick reviews run on Sonnet. `/cost` shows what each PR has cost so far.
-  To keep things small, run `uv run purr --max-reviews 1`.
-- **Where things live.** The database, log (`purr.log`) and PR checkouts are in
-  `~/.local/share/purr` (or `--data-dir`). A PR's checkout is removed once you approve it or
-  it closes, unless it has changes of yours in it.
-- **Copying.** Selecting text with the mouse copies it. GNOME Terminal (and other terminals
-  built on VTE) don't let apps copy, so there install `wl-clipboard` (or `xclip`) first;
-  `shift`+drag always selects with the terminal itself.
-- **Settings** are in `~/.config/purr/settings.toml`: models, how often to poll, how many
-  reviews at once, the signature on what Purr posts, and so on. `i` then `o` opens it in your
-  editor; the first time, it starts with every setting commented out at its default, with
-  what it does. Purr reads it when it starts. Some have flags too, which win:
-  `uv run purr --help` (`--no-auto-review`, `--max-reviews N`, `--permission-mode MODE`,
-  `--sandbox`, `--data-dir`, `--headless`, `-v`).
-
-## Development
+## 🛠️ Development
 
 ```sh
-uv run pytest        # the tests never call GitHub or Claude
-uv run ruff check .
-uv run ruff format .
+uv run pytest                          # never calls GitHub or Claude
+uv run ruff check && uv run ruff format
+uv run python scripts/record_demo.py   # the GIF above, from made-up PRs
 ```
 
 How Purr works and why: [`docs/purr.md`](docs/purr.md).
+
+## 📄 License
+
+BSD 2-Clause, as [Pipecat](https://github.com/pipecat-ai/pipecat). See [LICENSE](LICENSE).
