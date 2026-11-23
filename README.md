@@ -34,7 +34,7 @@ it.**
 
 ## 🚀 Setup
 
-You need a terminal on macOS, Linux or Windows (Windows hasn't been tried yet), [uv](https://docs.astral.sh/uv/), the
+You need a terminal on macOS, Linux or Windows, [uv](https://docs.astral.sh/uv/), the
 [GitHub CLI](https://cli.github.com) and git. You don't need Claude Code: Purr runs its
 agents with the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview).
 
