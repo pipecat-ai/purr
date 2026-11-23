@@ -4,7 +4,7 @@ import tomllib
 
 import pytest
 
-from purr.cli import _config, _parser
+from purr.cli import Flags, _config
 from purr.config import SETTINGS_FILE, Config, SettingsError, settings_template
 
 
@@ -63,12 +63,12 @@ def test_what_the_file_cant_say(dirs):
 def test_the_environment_and_the_command_line_win(dirs, tmp_path, monkeypatch):
     write(dirs, 'data_dir = "~/from-file"\nmax_reviews = 5\n')
     monkeypatch.setenv("PURR_CONFIG_DIR", str(dirs))
-    assert _config(_parser().parse_args([])).data_dir.name == "from-file"
+    assert _config(Flags()).data_dir.name == "from-file"
     monkeypatch.setenv("PURR_DATA_DIR", str(tmp_path / "from-env"))
-    assert _config(_parser().parse_args([])).data_dir == tmp_path / "from-env"
-    args = _parser().parse_args(["--data-dir", str(tmp_path / "flag"), "--max-reviews", "2"])
-    config = _config(args)
+    assert _config(Flags()).data_dir == tmp_path / "from-env"
+    config = _config(Flags(data_dir=tmp_path / "flag", max_reviews=2, auto_review=False))
     assert config.data_dir == tmp_path / "flag" and config.max_reviews == 2
+    assert not config.auto_review and not config.sandbox  # unsaid: the file's, or the default
 
 
 def test_the_starter_file_has_every_setting_at_its_default(dirs):

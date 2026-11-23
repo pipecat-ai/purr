@@ -55,20 +55,35 @@ def test_claude_code_is_yours_or_the_one_purr_comes_with(monkeypatch):
 
 
 def test_purr_login_logs_in_with_claude_code(monkeypatch):
-    import pytest
+    from typer.testing import CliRunner
 
     import purr.cli
 
     ran = []
     monkeypatch.setattr(purr.cli, "claude_cli", lambda: "claude")
     monkeypatch.setattr(purr.cli.subprocess, "call", lambda command: ran.append(command) or 0)
-    with pytest.raises(SystemExit) as exit:
-        purr.cli.main(["--login"])
-    assert exit.value.code == 0 and ran == [["claude", "auth", "login"]]
+    assert CliRunner().invoke(purr.cli.app, ["login"]).exit_code == 0
+    assert ran == [["claude", "auth", "login"]]
     monkeypatch.setattr(purr.cli, "claude_cli", lambda: None)
-    with pytest.raises(SystemExit) as exit:
-        purr.cli.main(["--login"])
-    assert "no Claude Code to log in with" in str(exit.value.code)
+    result = CliRunner().invoke(purr.cli.app, ["login"])
+    assert result.exit_code == 1 and "no Claude Code to log in with" in result.output
+
+
+def test_the_command_line(monkeypatch):
+    from typer.testing import CliRunner
+
+    import purr.cli
+
+    runs = []
+    monkeypatch.setattr(purr.cli, "_run", lambda config, **how: runs.append((config, how)))
+    runner = CliRunner()
+    assert "Purr" in runner.invoke(purr.cli.app, ["--version"]).output
+    assert "--no-auto-review" in runner.invoke(purr.cli.app, ["--help"]).output
+    result = runner.invoke(purr.cli.app, ["--no-auto-review", "--max-reviews", "2", "--headless"])
+    assert result.exit_code == 0, result.output
+    config, how = runs[-1]
+    assert not config.auto_review and config.max_reviews == 2 and how["headless"]
+    assert runner.invoke(purr.cli.app, ["--max-reviews", "0"]).exit_code != 0
 
 
 def test_claude_code_command_resumes_safely():

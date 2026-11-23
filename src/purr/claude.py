@@ -3,7 +3,7 @@ you run yourself.
 
 The Agent SDK comes with its own Claude Code, which it runs reviews on: you don't need
 to install it. You do need to be logged in (to Claude, or with ANTHROPIC_API_KEY);
-``purr --login`` does it with the same Claude Code.
+``purr login`` does it with the same Claude Code.
 """
 
 import platform
@@ -19,7 +19,7 @@ NO_CLAUDE_CODE = "Install it: curl -fsSL https://claude.ai/install.sh | bash"
 
 
 def claude_cli() -> str | None:
-    """The Claude Code to run yourself (``c``, ``purr --login``): yours, if it's installed;
+    """The Claude Code to run yourself (``c``, ``purr login``): yours, if it's installed;
     else the one the Agent SDK comes with, which reviews run on. None: neither."""
     bundled = bundled_claude()
     return shutil.which("claude") or (str(bundled) if bundled.exists() else None)

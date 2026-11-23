@@ -45,7 +45,7 @@ uv sync
 
 ```sh
 gh auth login        # GitHub: follow the prompts
-uv run purr --login  # Claude
+uv run purr login  # Claude
 ```
 
 If you use Claude Code already, you're logged in to Claude: skip the second line. Reviews use
