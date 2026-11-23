@@ -160,6 +160,9 @@ Changes are recorded as [towncrier](https://towncrier.readthedocs.io/) fragments
 `removed`, `fixed`, `performance`, `security` or `other`), with a bullet saying what changed.
 `uv run towncrier build --draft --version X.Y.Z` shows what the next release's notes in
 [`CHANGELOG.md`](https://github.com/pipecat-ai/purr/blob/main/CHANGELOG.md) will say.
+To release, run the **generate-changelog** workflow with the version: it opens a pull
+request with the notes and the version bumped. Once it's merged, tag it `vX.Y.Z` and run
+the **publish** workflow with the tag.
 
 ## 📄 License
 
