@@ -1,8 +1,8 @@
 name: generate-changelog
 
 # Gets a release ready: the changelog fragments in changelog/ go into CHANGELOG.md
-# (towncrier), the version in src/purr/__init__.py becomes the release's, and both come
-# as a pull request. Merging it, tagging vX.Y.Z and running publish makes the release.
+# (towncrier), as a pull request. Merging it, tagging vX.Y.Z (the version comes from the
+# tag) and running publish with the tag makes the release.
 
 on:
   workflow_dispatch:
@@ -94,24 +94,16 @@ jobs:
       - name: Build the changelog
         run: uv run towncrier build --version "$VERSION" --date "${{ steps.release.outputs.date }}" --yes
 
-      - name: Set the version
-        run: |
-          sed -i -E "s/^__version__ = \".*\"$/__version__ = \"$VERSION\"/" src/purr/__init__.py
-          grep -qx "__version__ = \"$VERSION\"" src/purr/__init__.py
-
       - name: Create the pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "Release ${{ inputs.version }}: the changelog and the version"
+          commit-message: "Update the changelog for ${{ inputs.version }}"
           title: "Release ${{ inputs.version }}"
           body: |
-            Gets **${{ inputs.version }}** ready to release:
+            The notes for **${{ inputs.version }}** in `CHANGELOG.md`, from ${{ steps.fragments.outputs.count }} changelog fragment(s), dated ${{ steps.release.outputs.date }}.
 
-            - `CHANGELOG.md`: its notes, from ${{ steps.fragments.outputs.count }} changelog fragment(s), dated ${{ steps.release.outputs.date }}.
-            - `src/purr/__init__.py`: the version, ${{ inputs.version }}.
-
-            Once it's merged, tag the merge commit `v${{ inputs.version }}`, push the tag, and run the **publish** workflow with it.
+            Once it's merged, tag the merge commit `v${{ inputs.version }}` (the version comes from the tag), push the tag, and run the **publish** workflow with it.
           branch: release-${{ inputs.version }}
           delete-branch: true
           labels: |

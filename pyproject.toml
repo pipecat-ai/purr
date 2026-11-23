@@ -1,6 +1,6 @@
 [project]
 name = "pipecat-ai-purr"
-dynamic = ["version"]  # purr.__version__
+dynamic = ["version"]  # from the git tag (setuptools_scm), as pipecat's
 description = "A human-in-the-loop agentic code reviewer."
 readme = "README.md"
 license = "BSD-2-Clause"
@@ -37,17 +37,19 @@ Documentation = "https://github.com/pipecat-ai/purr/blob/main/docs/purr.md"
 purr = "purr.cli:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.version]
-path = "src/purr/__init__.py"
+# The package is purr, whatever the distribution is called; with it, every file git
+# tracks in it (purr.tcss). MANIFEST.in keeps the README's GIF out of the sdist.
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/purr"]  # the package is purr, whatever the distribution is called
-
-[tool.hatch.build.targets.sdist]
-exclude = ["docs/purr.gif"]  # the README links it on GitHub
+# The version is the last tag's (v0.1.0: 0.1.0), and between tags the next one's dev
+# release (0.1.1.dev3); without git, 0.0.0-dev.
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
+fallback_version = "0.0.0-dev"
 
 [dependency-groups]
 dev = [

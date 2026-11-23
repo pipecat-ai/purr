@@ -161,8 +161,8 @@ Changes are recorded as [towncrier](https://towncrier.readthedocs.io/) fragments
 `uv run towncrier build --draft --version X.Y.Z` shows what the next release's notes in
 [`CHANGELOG.md`](https://github.com/pipecat-ai/purr/blob/main/CHANGELOG.md) will say.
 To release, run the **generate-changelog** workflow with the version: it opens a pull
-request with the notes and the version bumped. Once it's merged, tag it `vX.Y.Z` and run
-the **publish** workflow with the tag.
+request with the release's notes. Once it's merged, tag it `vX.Y.Z` (the version comes
+from the tag, as Pipecat's does) and run the **publish** workflow with the tag.
 
 ## 📄 License
 

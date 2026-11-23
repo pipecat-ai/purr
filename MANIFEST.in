@@ -1,0 +1,2 @@
+# The README links it on GitHub; the sdist doesn't need its megabyte.
+exclude docs/purr.gif
