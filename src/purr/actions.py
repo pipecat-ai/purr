@@ -40,6 +40,8 @@ class GitHubWriter(Protocol):
 
     async def reply_to_thread(self, thread_id: str, body: str) -> str: ...
 
+    async def edit_review_comment(self, comment_id: str, body: str) -> str: ...
+
     async def merge(self, ref: PRRef, *, method: str, sha: str) -> None: ...
 
 
@@ -57,6 +59,12 @@ def signed(text: str, signature: str) -> str:
         return text
     mark = f"<sub>{signature}</sub>"
     return f"{text.rstrip()}\n\n{mark}" if text.strip() else mark
+
+
+def unsigned(text: str, signature: str) -> str:
+    """``text`` without Purr's signature at its end, if it has it (to edit it again)."""
+    mark = f"<sub>{signature}</sub>"
+    return text.removesuffix(mark).rstrip() if signature and text.endswith(mark) else text
 
 
 def _folded(body: str, comments: list[dict]) -> str:
@@ -158,6 +166,18 @@ async def _review(
         )
 
 
+_REPLY = (
+    "mutation($id: ID!, $body: String!) {"
+    " addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body})"
+    " { comment { url } } }"
+)
+_EDIT = (
+    "mutation($id: ID!, $body: String!) {"
+    " updatePullRequestReviewComment(input: {pullRequestReviewCommentId: $id, body: $body})"
+    " { pullRequestReviewComment { url } } }"
+)
+
+
 class GhWriter:
     """Writes to GitHub with the GitHub CLI.
 
@@ -194,26 +214,29 @@ class GhWriter:
             raise ActionError(stderr.decode().strip() or f"gh exited with {process.returncode}")
 
     async def reply_to_thread(self, thread_id: str, body: str) -> str:
+        data = await self._mutation(_REPLY, id=thread_id, body=body)
+        return ((data.get("addPullRequestReviewThreadReply") or {}).get("comment") or {}).get(
+            "url", ""
+        )
+
+    async def edit_review_comment(self, comment_id: str, body: str) -> str:
+        """New words for an inline comment of yours already on GitHub (its node id)."""
+        data = await self._mutation(_EDIT, id=comment_id, body=body)
+        edited = data.get("updatePullRequestReviewComment") or {}
+        return (edited.get("pullRequestReviewComment") or {}).get("url", "")
+
+    async def _mutation(self, query: str, **variables: str) -> dict:
+        """A GraphQL mutation through gh (-f: values as they are, never read from files)."""
+        args = [self._gh, "api", "graphql", "-f", f"query={query}"]
+        for name, value in variables.items():
+            args += ["-f", f"{name}={value}"]
         process = await asyncio.create_subprocess_exec(
-            self._gh,
-            "api",
-            "graphql",
-            "-f",
-            "query=mutation($id: ID!, $body: String!) {"
-            " addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body})"
-            " { comment { url } } }",
-            "-f",
-            f"id={thread_id}",
-            "-f",
-            f"body={body}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         if process.returncode != 0:
             raise ActionError(stderr.decode().strip() or f"gh exited with {process.returncode}")
-        reply = json.loads(stdout or "{}").get("data", {}).get("addPullRequestReviewThreadReply")
-        return ((reply or {}).get("comment") or {}).get("url", "")
+        return json.loads(stdout or "{}").get("data") or {}
 
     async def merge(self, ref: PRRef, *, method: str, sha: str) -> None:
         """Merge the PR (``method``: merge, squash or rebase), only if its head is ``sha``."""

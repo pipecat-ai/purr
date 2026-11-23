@@ -15,6 +15,7 @@ from purr.messages import (
     AssignMe,
     CheckMerge,
     DismissAction,
+    EditGitHubComment,
     EditProposedComment,
     Merged,
     MergePR,
@@ -201,6 +202,9 @@ async def test_rewriting_the_agents_comment_and_replying_in_a_thread(setup):
         await request(client, ReplyToThread(pr=REF, thread_id="T1", body=" "), timeout=5)
     await request(client, ReplyToThread(pr=REF, thread_id="T1", body="Fixed, thanks"), timeout=5)
     assert writer.replies == [("T1", "Fixed, thanks")]
+    # A comment of yours there, changed.
+    await request(client, EditGitHubComment(pr=REF, comment_id="C1", body="Fixed"), timeout=5)
+    assert writer.edits == [("C1", "Fixed")]
 
 
 async def test_your_comments_on_their_own(setup):

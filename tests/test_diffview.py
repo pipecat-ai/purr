@@ -97,3 +97,25 @@ def test_which_files_start_opened():
     assert first_opened(files, DIFF, []) == {0, 1, 2}  # short: all
     commented = said([], [{"path": "docs/new.md", "line": 1, "body": "Hi"}])
     assert first_opened(files, DIFF * 10, commented) == {2}  # long: those with comments
+
+
+def styles_at(text, start: str) -> set[str]:
+    """The styles over where ``start`` is in ``text``."""
+    at = text.plain.index(start)
+    return {str(span.style) for span in text.spans if span.start <= at < span.end}
+
+
+def test_boxes_in_color_authors_and_mentions_picked_out():
+    files = parse(DIFF)
+    threads = [
+        {"id": "T1", "path": "src/bus.py", "line": 1, "side": "RIGHT", "resolved": True,
+         "comments": [{"author": "alice", "body": "Ask @bob about it"},
+                      {"author": "bob", "body": "Done."}]},
+    ]  # fmt: skip
+    box = rows(files, {0}, said([], [], threads))[3:7]
+    top, first = box[0].text, box[1].text
+    assert top.plain.startswith("            ╭─ ✎ alice and bob · resolved")
+    assert "bold cyan" in styles_at(top, "alice and bob")  # resolved, still in its color
+    assert "cyan" in styles_at(top, "╭")
+    assert "bold cyan" in styles_at(first, "alice:")  # who said it
+    assert "bold blue" in styles_at(first, "@bob")  # a mention

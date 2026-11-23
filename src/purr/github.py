@@ -416,7 +416,7 @@ class GitHub:
             "query($owner: String!, $name: String!, $number: Int!) {"
             " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
             " reviewThreads(first: 100) { nodes { id isResolved isOutdated path line diffSide"
-            " comments(first: 30) { nodes { author { login } body createdAt } } } } } } }",
+            " comments(first: 30) { nodes { id author { login } body createdAt } } } } } } }",
             {"owner": owner, "name": name, "number": ref.number},
         )
         viewer = (await self.viewer_login()).lower()
@@ -428,6 +428,7 @@ class GitHub:
                 login = (comment.get("author") or {}).get("login", "ghost")
                 comments.append(
                     {
+                        "id": comment.get("id", ""),
                         "author": login,
                         "by_user": login.lower() == viewer,
                         "body": _clip(comment.get("body", "")),

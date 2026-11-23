@@ -22,6 +22,7 @@ from purr.messages import (
     CommentsChanged,
     DismissAction,
     DismissReplies,
+    EditGitHubComment,
     EditProposedComment,
     FetchDetails,
     FetchedDetails,
@@ -485,6 +486,17 @@ class GitHubWorker(BaseWorker):
         body = signed(request.body, self._signature)
         try:
             url = await self._writer.reply_to_thread(request.thread_id, body)
+        except ActionError as e:
+            raise Failed(f"GitHub didn't take it: {e}") from e
+        return Posted(url=url)
+
+    @handles(EditGitHubComment)
+    async def edit_github_comment(self, request: EditGitHubComment) -> Posted:
+        if not request.body.strip():
+            raise Invalid("A comment needs some words")
+        body = signed(request.body, self._signature)
+        try:
+            url = await self._writer.edit_review_comment(request.comment_id, body)
         except ActionError as e:
             raise Failed(f"GitHub didn't take it: {e}") from e
         return Posted(url=url)

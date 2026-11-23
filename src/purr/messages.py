@@ -175,6 +175,16 @@ class ReplyToThread(Request[Posted]):
 
 
 @dataclass(kw_only=True)
+class EditGitHubComment(Request[Posted]):
+    """New words for an inline comment of yours on GitHub (its node id), now."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    comment_id: str
+    body: str
+
+
+@dataclass(kw_only=True)
 class PostComments(Request[Posted]):
     """Post your inline comments on the PR, as a review of their own (a comment)."""
 

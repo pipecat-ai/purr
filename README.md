@@ -62,7 +62,7 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
    (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
    Comments show in boxes under their lines, yours, the agent's and GitHub's: `enter` on one
-   edits it (or replies, on GitHub's). `esc` or `d` closes the diff, `z` makes it full screen.
+   edits it, or replies to it on GitHub. `esc` or `d` closes the diff, `z` makes it full screen.
 5. **Decide**: `a` posts the review with your comments, `x` dismisses it. Once you've
    approved, `m` merges.
 
@@ -72,25 +72,27 @@ write what to do instead). When someone replies to you on GitHub, the PR is back
 
 ### ⌨️ Keys
 
-The footer shows the keys for where you are. The main ones:
+The footer shows the keys for where you are, and `?` lists all of them. The main ones:
 
 | Key | Does |
 |---|---|
+| `?` | Every key for where you are |
 | `enter` / `o` / `tab` | Ask the agent / read the PR / switch between the list and the PR |
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR / mark several first |
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |
 | `d` / `D` | The diff, to read, ask about (`enter`) and comment on (`c`) / in your pager |
+| `shift+↑` `shift+↓` | In the diff: select lines (`ctrl+space` sets a mark, as in Emacs) |
 | `m` | Merge a PR you approved: once to see where it stands, again to merge |
 | `t` / `z` | The agent's reasoning in full / full screen |
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
 | `ctrl+p` / `ctrl+n` / `w` | Find any repo or PR / the latest news / what happened while you were away |
 | `i` | Your review style, code style, permissions, the repo's review skill, settings |
-| `esc` / `q` | Back: from the search or the prompt to the list or the PR, then home / quit |
+| `esc` / `q` | Back a step (out of the prompt, the search or the diff), then home / quit |
 
 In the prompt: `ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go through what you asked,
 and `/` lists commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/compact`, and the
-repo's own skills.
+repo's own skills. Reading, `ctrl+v` and `alt+v` page down and up, as in Emacs.
 
 ## 🎨 Make it yours
 

@@ -250,6 +250,10 @@ class FakeWriter:
     async def assign_self(self, ref):
         self.assigned.append(ref)
 
+    async def edit_review_comment(self, comment_id, body):
+        self.edits = [*getattr(self, "edits", []), (comment_id, body)]
+        return f"https://github.com/comment/{comment_id}"
+
     async def merge(self, ref, *, method, sha):
         from purr.actions import ActionError
 

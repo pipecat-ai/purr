@@ -209,7 +209,7 @@ async def test_review_threads():
         async def graphql(self, query, variables):
             if query.startswith("query { viewer"):
                 return {"data": {"viewer": {"login": "Me"}}}
-            comment = {"author": {"login": "me"}, "body": "Race?", "createdAt": "t"}
+            comment = {"id": "C1", "author": {"login": "me"}, "body": "Race?", "createdAt": "t"}
             thread = {
                 "id": "T1",
                 "isResolved": False,
@@ -222,7 +222,9 @@ async def test_review_threads():
 
     [thread] = await Threads().review_threads(PRRef("a/b", 1))
     assert thread["id"] == "T1" and thread["path"] == "bus.py" and not thread["resolved"]
-    assert thread["comments"] == [{"author": "me", "by_user": True, "body": "Race?", "at": "t"}]
+    assert thread["comments"] == [
+        {"id": "C1", "author": "me", "by_user": True, "body": "Race?", "at": "t"}
+    ]
 
 
 async def test_pr_details():

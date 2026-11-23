@@ -1301,6 +1301,8 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         github.threads = [
             {"id": "T1", "path": "README.md", "line": 1, "side": "RIGHT", "resolved": False,
              "comments": [{"author": "carol", "body": "Say why"}]},
+            {"id": "T2", "path": "README.md", "line": 1, "side": "LEFT", "resolved": False,
+             "comments": [{"author": "me", "by_user": True, "id": "C9", "body": "Old, gone"}]},
         ]  # fmt: skip
         repo = app.main.repo
         await pilot.press("d")
@@ -1323,6 +1325,15 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: app.purr._writer.replies)
         assert app.purr._writer.replies[0][0] == "T1"
         assert app.purr._writer.replies[0][1].startswith("Will do")
+        # enter on a comment of yours on GitHub: the editor, with its words, to change them.
+        await pilot.press("up", "up", "enter")  # +new, -old's box (yours)
+        await until(pilot, lambda: isinstance(app.screen, CommentScreen))
+        assert app.screen.query_one("#comment-body").text == "Old, gone"
+        await pilot.press("ctrl+u", *"Gone, right?", "enter")
+        await until(pilot, lambda: getattr(app.purr._writer, "edits", None))
+        assert app.purr._writer.edits[0][0] == "C9"
+        assert app.purr._writer.edits[0][1].startswith("Gone, right?")
+        await pilot.press("end")
         await pilot.press("home", "n", "tab", "home")  # and the README's file shuts
         await until(pilot, lambda: len(view._rows) == 2 and view.cursor == 0)
         await pilot.press("tab")  # tab (or space) opens the file, and shuts it
