@@ -71,11 +71,12 @@ write what to do instead). When someone replies to you on GitHub, the PR is back
 
 ### ⌨️ Keys
 
-The footer shows the keys for where you are, and `?` lists every key, grouped, the ones that work everywhere too. The main ones:
+The footer shows the keys for where you are; `?` lists all of them, including the ones that
+work everywhere. The main ones:
 
 | Key | Does |
 |---|---|
-| `?` | Every key for where you are |
+| `?` | Every key, grouped |
 | `enter` / `o` / `tab` | Ask the agent / read the PR / switch between the list and the PR (on a group's heading: fold or open it) |
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR / mark several first |
@@ -86,29 +87,37 @@ The footer shows the keys for where you are, and `?` lists every key, grouped, t
 | `t` / `z` | The agent's reasoning in full / full screen |
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
 | `ctrl+p` / `ctrl+n` / `w` | Find any repo or PR / the latest news / what happened while you were away |
-| `i` | Your review style, code style, permissions, the repo's review skill, settings |
+| `i` | Settings: your review and code style, permissions, the repo's review skill, Purr's settings and theme |
 | `esc` / `q` | Back a step (out of the prompt or the diff; a search, cleared), then home / quit |
 
 The mouse works too: the wheel scrolls the list, the PR and the diff, and a click in the diff
 puts the cursor on a line (`shift`+click selects up to it).
 
-In the prompt (and the comment editor): `ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go
-through what you asked, Emacs's keys move and edit (`ctrl+a` `ctrl+e` `ctrl+b` `ctrl+f`
-`M-b` `M-f` `ctrl+k` `ctrl+y` …), and `/` lists commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/theme`, `/compact`, and the
+Wherever you write (the prompt, a comment, a file in Purr's editor), Emacs's keys move and
+edit: `ctrl+a` `ctrl+e` `ctrl+b` `ctrl+f` `M-b` `M-f` `ctrl+k` `ctrl+y` …, along with the usual
+`shift`+arrows to select, `ctrl+x` `ctrl+c` `ctrl+v` and `ctrl+z`. In the prompt, `enter` sends,
+`ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go through what you asked, and `/` lists
+commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/theme`, `/compact`, and the
 repo's own skills. Reading, `ctrl+v` and `alt+v` page down and up, as in Emacs.
 
 ## 🎨 Make it yours
 
-`i` opens the settings: each of these opens in Purr's editor (Emacs's keys, `ctrl+s` saves, `esc`
-back to the settings), and applies from the agent's next turn. Inside a repo, `i` edits that
-repo's own versions instead. `t` there picks a theme, showing each as you go.
+`i` opens the settings. Each file opens in Purr's own editor: `ctrl+s` saves, `esc` goes back to
+the settings. Purr checks `settings.toml` and the permissions before saving them, so a typo
+never reaches the file.
 
 | File | What it's for |
 |---|---|
 | `~/.config/purr/review.md` | How you like reviews: what to raise, what to skip, tone |
 | `~/.config/purr/code.md` | What good code looks like to you; reviews hold PRs to it |
-| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, colors (`theme = "nord"`; `i` then `t` picks one, shown as you go), ... (`purr --help` for flags) |
 | `~/.claude/settings.json` | What the agents may run without asking (the file Claude Code uses too) |
+| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, the theme, ... (`purr --help` for flags) |
+
+Instructions and permissions apply from the agent's next turn; settings, when Purr next starts.
+Inside a repo, `i` edits that repo's own instructions and permissions, which add to the
+general ones (they're in `~/.config/purr/repos/<owner>/<name>/`), and which of its skills its
+reviews follow. `t` there (or `/theme`) picks a theme, showing each as you move through the
+list; it applies at once.
 
 ## 💡 Good to know
 
