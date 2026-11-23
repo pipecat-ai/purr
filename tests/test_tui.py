@@ -598,9 +598,11 @@ async def test_moving_around_and_searching(tmp_path):
         await pilot.press("n")
         await until(pilot, lambda: shown() == 1)
 
-        # esc goes home, from the search box too, and doesn't clear it: it's
-        # still there when you're back.
+        # esc in the search box goes back to the list, keeping the search; esc again
+        # goes home, and the search is still there when you're back.
         await pilot.press("slash", "escape")
+        assert in_repo(app) and focused(app) == "prs" and pr_ids(app) == bus
+        await pilot.press("escape")
         await until(pilot, lambda: home(app))
         await pilot.press("o")
         await until(pilot, lambda: in_repo(app))

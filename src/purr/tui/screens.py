@@ -736,14 +736,15 @@ class RepoView(PurrView):
         self._leave_search()
 
     async def action_back(self) -> None:
-        """Home, in one step from anywhere in the repo (tab goes between its panes).
+        """Home, from the list or the PR's pane (tab goes between them).
 
-        Except from the prompt: there esc leaves it, for the PR's pane (see
-        PRSession). Nothing's lost: the search, and anything half-typed in the
-        prompt, are there when you're back.
+        From the search box, back to the list (the search stays, shown above it); from
+        the prompt, back to the PR's pane (see PRSession): esc again goes home. Nothing's
+        lost: the search, and anything half-typed in the prompt, are there when you're back.
         """
         if self.query_one("#search").has_focus:
-            self._leave_search()
+            self._leave_search()  # back to the list, the search kept; esc again goes home
+            return
         if not self.query_one("#prs-pane").display:
             self.action_zoom()  # both panes again, for next time
         self.query_one(PRList).focus()

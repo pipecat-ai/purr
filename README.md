@@ -83,7 +83,7 @@ The footer shows the keys for where you are. The main ones:
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
 | `ctrl+p` / `ctrl+n` / `w` | Find any repo or PR / the latest news / what happened while you were away |
 | `i` | Your review style, code style, permissions, the repo's review skill, settings |
-| `esc` / `q` | Back (home) / quit |
+| `esc` / `q` | Back: from the search or the prompt to the list or the PR, then home / quit |
 
 In the prompt: `ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go through what you asked,
 and `/` lists commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/compact`, and the
