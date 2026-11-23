@@ -79,6 +79,7 @@ class PRKeys(PurrView):
         if taken and not await self.app.push_screen_wait(_review_anyway(taken)):
             return
         self._marked.clear()
+        self.refresh_bindings()
         if not targets:
             return
         await self._take(targets)

@@ -52,3 +52,45 @@ async def test_ctrl_p_and_n_go_through_what_you_asked():
         assert box.text == "is it safe?"
         await pilot.press("ctrl+n", "ctrl+n")
         assert box.text == ""
+
+
+class BoxWithEscape(OneBox):
+    """A box on a screen where esc does something: leaving, as the PR's pane's does."""
+
+    BINDINGS = [("escape", "leave", "Leave")]
+    left = False
+
+    def action_leave(self) -> None:
+        self.left = True
+
+
+async def test_the_mark_selects_and_esc_or_ctrl_g_let_go_first():
+    app = BoxWithEscape()
+    async with app.run_test() as pilot:
+        box = app.query_one(PromptArea)
+        box.focus()
+        await pilot.press(*"one two three")
+        # ctrl+space sets the mark: moving selects from it, as in Emacs.
+        await pilot.press("alt+b", "ctrl+space", "alt+b")
+        assert box.selected_text == "two "
+        # esc lets go of it, and only then is it the screen's.
+        await pilot.press("escape")
+        assert box.selection.is_empty and not app.left
+        await pilot.press("left")  # moving doesn't select any more
+        assert box.selection.is_empty
+        await pilot.press("escape")
+        assert app.left
+        # A shift selection too, with ctrl+g.
+        app.left = False
+        await pilot.press("shift+left", "shift+left")
+        assert box.selected_text
+        await pilot.press("ctrl+g")
+        assert box.selection.is_empty and not app.left
+        # ctrl+w kills what's selected, and typing ends the mark.
+        box.move_cursor((0, 4))
+        await pilot.press("ctrl+space", "alt+f", "ctrl+w")
+        assert box.text == "one  three"  # the word, not the spaces around it
+        await pilot.press("ctrl+y")
+        assert box.text == "one two three"
+        await pilot.press("ctrl+space", "x", "left")
+        assert box.selection.is_empty

@@ -794,6 +794,28 @@ async def test_the_theme_setting(tmp_path, monkeypatch):
         assert colors.number.lower() in str(number.style).lower()
 
 
+async def test_esc_unmarks_marked_prs_first(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1), remote(2)]
+    async with app.run_test(size=(140, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        repo = app.main.repo
+        await pilot.press("space", "space")
+        assert len(repo._marked) == 2
+        await until(pilot, lambda: "Unmark" in footer(app))
+        # esc (or ctrl+g) lets go of the marks, before going home.
+        await pilot.press("escape")
+        assert not repo._marked and in_repo(app)
+        await until(pilot, lambda: "Home" in footer(app) and "Unmark" not in footer(app))
+        await pilot.press("space", "ctrl+g")
+        assert not repo._marked and in_repo(app)
+        await pilot.press("escape")
+        await until(pilot, lambda: home(app))
+
+
 async def test_moving_around_and_searching(tmp_path):
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [

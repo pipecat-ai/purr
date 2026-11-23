@@ -79,7 +79,7 @@ work everywhere. The main ones:
 | `?` | Every key, grouped |
 | `enter` / `o` / `tab` | Ask the agent / read the PR / switch between the list and the PR (on a group's heading: fold or open it) |
 | `n` `p` / `/` | Next or previous PR / search |
-| `r` / `space` | Review the PR / mark several first |
+| `r` / `space` | Review the PR / mark several first (`esc` unmarks them) |
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |
 | `d` / `D` | The diff, to read, ask about (`enter`) and comment on (`c`) / in your pager |
 | `shift+↑` `shift+↓` | In the diff: select lines (`ctrl+space` sets a mark, as in Emacs) |
@@ -94,8 +94,9 @@ The mouse works too: the wheel scrolls the list, the PR and the diff, and a clic
 puts the cursor on a line (`shift`+click selects up to it).
 
 Wherever you write (the prompt, a comment, a file in Purr's editor), Emacs's keys move and
-edit: `ctrl+a` `ctrl+e` `ctrl+b` `ctrl+f` `M-b` `M-f` `ctrl+k` `ctrl+y` …, along with the usual
-`shift`+arrows to select, `ctrl+x` `ctrl+c` `ctrl+v` and `ctrl+z`. In the prompt, `enter` sends,
+edit: `ctrl+a` `ctrl+e` `ctrl+b` `ctrl+f` `M-b` `M-f` `ctrl+k` `ctrl+y` …, and `ctrl+space` sets
+the mark to select from, along with the usual `shift`+arrows, `ctrl+x` `ctrl+c` `ctrl+v` and
+`ctrl+z`. `esc` or `ctrl+g` lets go of a selection first. In the prompt, `enter` sends,
 `ctrl+j` starts a new line, `↑` `↓` and `ctrl+r` go through what you asked, and `/` lists
 commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/theme`, `/compact`, and the
 repo's own skills. Reading, `ctrl+v` and `alt+v` page down and up, as in Emacs.

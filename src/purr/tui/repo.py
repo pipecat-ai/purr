@@ -62,7 +62,8 @@ class RepoView(PRKeys):
 
     # Its keys work from either pane; each pane binds the ones it shows first (pane_keys).
     BINDINGS = [
-        Binding("escape", "clear_search", "Clear search"),  # while there's one (first)
+        Binding("escape,ctrl+g", "unmark", "Unmark"),  # while PRs are marked (first)
+        Binding("escape", "clear_search", "Clear search"),  # while there's a search
         Binding("escape", "back", "Home"),
         *REPO_KEYS.values(),
     ]
@@ -311,7 +312,9 @@ class RepoView(PRKeys):
             return not self.session.has_focus_within
         if action in ("search", "move", "mark") and self.diff_shown:  # the list's away
             return False
-        if action == "clear_search":  # esc: the search goes first, then home
+        if action == "unmark":  # esc: the marks go first, then the search, then home
+            return bool(self._marked) and not self.diff_shown
+        if action == "clear_search":
             return bool(self._search) and not self.diff_shown
         if action == "search":  # while typing, / is a slash
             return not self.session.query_one("#prompt").has_focus
@@ -442,11 +445,18 @@ class RepoView(PRKeys):
         if found is not None:
             option_list.highlighted = found
 
+    def action_unmark(self) -> None:
+        """esc (or ctrl+g) with PRs marked: none are."""
+        self._marked.clear()
+        self._list()
+        self.refresh_bindings()
+
     def action_mark(self) -> None:
         pr = self.selected_pr()
         if not pr:
             return
         self._marked ^= {str(pr.ref)}
+        self.refresh_bindings()  # esc: unmark, while some are
         option_list = self.query_one(OptionList)
         index = option_list.highlighted
         option_list.replace_option_prompt(str(pr.ref), self._prompt(pr))
