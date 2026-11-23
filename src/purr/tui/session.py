@@ -531,7 +531,8 @@ class PRSession(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(id="pr-header")
-        yield Transcript(id="transcript", wrap=True, markup=False, auto_scroll=True)
+        # min_width: RichLog draws at least 78 columns wide, cutting off a narrower pane's.
+        yield Transcript(id="transcript", wrap=True, markup=False, auto_scroll=True, min_width=20)
         yield Working(id="working")
         yield Static(id="pr-decision")
         suggestions = OptionList(id="suggestions")
