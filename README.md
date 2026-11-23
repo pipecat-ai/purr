@@ -53,10 +53,10 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 1. **Pick a repo** at home (`enter`, or its number). Purr lists the repos with PRs assigned to
    you; `+` watches one, to see all its open PRs.
 2. **Pick a PR.** On the right, its description, where it changes things, and the
-   conversation with the agent. `r` reviews one that isn't yours yet (and assigns you); `o` opens
-   it on GitHub.
+   conversation with the agent. `r` reviews one that isn't yours yet (and assigns you), its pane
+   full screen to follow it (`z` or `esc` comes back); `o` opens it on GitHub.
 3. **Talk to the agent** (`enter` goes to the prompt): ask, dig in, or change what it
-   proposes. `tab` takes the suggestion. `esc` stops it while it works.
+   proposes. `tab` takes the suggestion. `esc` in its pane stops it while it works.
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation. Select lines
    (`shift+↑`/`↓`) and press `enter` to ask the agent about them, or `c` to comment on them.
    Comments show in boxes under their lines (yours, the agent's and GitHub's), and what's
@@ -90,7 +90,7 @@ work everywhere. The main ones:
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
 | `ctrl+p` / `ctrl+n` / `w` | Find any repo or PR / the latest news / what happened while you were away |
 | `i` | Settings: your review and code style, permissions, the repo's review skill, Purr's settings and theme |
-| `esc` / `q` | Stop the agent while it works; else back a step (out of the prompt or the diff; a search, cleared), then home / quit |
+| `esc` / `q` | Back a step: out of full screen; in the PR's pane, stop the agent while it works; out of the prompt or the diff; a search, cleared; then home / quit |
 
 The mouse works too: the wheel scrolls the list, the PR and the diff, and a click in the diff
 puts the cursor on a line (`shift`+click selects up to it).

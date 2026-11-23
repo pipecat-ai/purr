@@ -10,6 +10,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.widget import Widget
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
@@ -62,9 +63,10 @@ class RepoView(PRKeys):
 
     # Its keys work from either pane; each pane binds the ones it shows first (pane_keys).
     BINDINGS = [
-        # While the agent's at work on the PR in view, esc stops it, before anything else
-        # esc does there (in the prompt and the diff too).
-        Binding("escape", "stop", "Stop", priority=True),
+        # esc, a step back at a time: zoomed, both panes again (in the PR's pane, it stops
+        # the agent at work first, unless zoomed: see PRSession); then the marks go, the
+        # search, and it's home.
+        Binding("escape", "unzoom", "Zoom out"),
         Binding("escape,ctrl+g", "unmark", "Unmark"),  # while PRs are marked
         Binding("escape", "clear_search", "Clear search"),  # while there's a search
         Binding("escape", "back", "Home"),
@@ -210,7 +212,7 @@ class RepoView(PRKeys):
         """Some review started or stopped working: start or stop its spinning mark."""
         if not self.repo:
             return
-        self.refresh_bindings()  # esc stops the agent, or doesn't
+        self.refresh_bindings()  # in the PR's pane, esc stops the agent, or doesn't
         spinning = {key for key in self._prs if self._working(key)}
         changed, self._spinning = spinning ^ self._spinning, spinning
         prs = self.query_one(PRList)
@@ -320,8 +322,8 @@ class RepoView(PRKeys):
             return bool(self.selected_pr() or self.session.pr)
         if action in ("search", "move", "mark") and self.diff_shown:  # the list's away
             return False
-        if action == "stop":  # esc: the agent first (unless it closes the / suggestions)
-            return bool(self.at_work()) and not self.session.query_one("#suggestions").display
+        if action == "unzoom":
+            return self.zoomed
         if action == "unmark":  # esc: the marks go first, then the search, then home
             return bool(self._marked) and not self.diff_shown
         if action == "clear_search":
@@ -554,20 +556,45 @@ class RepoView(PRKeys):
         what = "in full" if app.full_thinking else "a line per thought"
         self.notify(f"The agent's reasoning: {what}", timeout=2)
 
+    @property
+    def _left_pane(self) -> Widget:
+        """What's on the left: the list, or the diff in its place."""
+        return self.diff if self.diff_shown else self.query_one("#prs-pane")
+
+    @property
+    def zoomed(self) -> bool:
+        """One pane has all the screen: the PR's, or the diff."""
+        return not self._left_pane.display or not self.session.display
+
     def action_zoom(self) -> None:
         """Full screen: the diff, from it, or else the PR's pane; and back, the focus where
         it was before."""
         if self.diff_shown and not self.session.has_focus_within:
             self.session.display = not self.session.display
             self.diff.set_class(not self.session.display, "-wide")  # all the width, zoomed
-            return
-        left = self.diff if self.diff_shown else self.query_one("#prs-pane")
-        if left.display:  # zooming the PR's pane: from it, or from the list
-            self._zoomed_from_left = not self.session.has_focus_within
-            left.display = False
-            if self._zoomed_from_left:
-                self.session.focus_transcript()
+        elif self._left_pane.display:  # zooming the PR's pane: from it, or from the list
+            self.zoom_in_on_pr()
         else:  # and back, the focus where it was
-            left.display = True
+            self._left_pane.display = True
             if self._zoomed_from_left:
                 self._focus_left()
+        self.refresh_bindings()  # esc zooms out, or doesn't
+
+    def action_unzoom(self) -> None:
+        """esc: both panes again, the focus where it was before."""
+        if self.zoomed:
+            self.action_zoom()
+
+    def zoom_in_on_pr(self) -> None:
+        """The PR's pane, full screen (as starting its review does, to follow it): z or esc
+        comes back, the focus where it was."""
+        if not self.session.display:  # the diff was zoomed: the PR's pane instead
+            self.session.display = True
+            self.diff.remove_class("-wide")
+        if not self._left_pane.display:
+            return  # it is already
+        self._zoomed_from_left = not self.session.has_focus_within
+        self._left_pane.display = False
+        if self._zoomed_from_left:
+            self.session.focus_transcript()
+        self.refresh_bindings()

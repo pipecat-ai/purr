@@ -541,8 +541,10 @@ class PRSession(Vertical):
         Binding("ctrl+v", "page(1)", "Page down", show=False),
         Binding("alt+v", "page(-1)", "Page up", show=False),
         Binding("ctrl+r", "search_history", "Search history"),
-        # In the prompt: the / suggestions close, or back to the pane. Elsewhere
-        # it's the repo's (home).
+        # While the agent's at work on the PR, esc stops it, as in Claude Code (zoomed, it
+        # zooms out first: the repo's). In the prompt: the / suggestions close, or back to
+        # the pane. Elsewhere it's the repo's (zoom out, home).
+        Binding("escape", "repo('stop')", "Stop"),
         Binding("escape", "leave_prompt", "Back"),
         # The repo's keys, for reading and deciding (they work from the list too).
         *pane_keys(
@@ -651,6 +653,7 @@ class PRSession(Vertical):
             log.write(Text("Say /review, /review quick or /review full.", style="yellow"))
             return
         depth = Depth(args) if args else None
+        self.purr_app.main.repo.zoom_in_on_pr()  # to follow it, as r does
         errors = (await self.purr_app.bus.request(PlanReviews(prs=[ref], depth=depth))).errors
         for error in errors.values():
             log.write(Text(error, style="yellow"))
@@ -930,7 +933,12 @@ class PRSession(Vertical):
             self.focus_transcript()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        """Typing, enter sends and esc leaves; reading, enter goes to the prompt."""
+        """Typing, enter sends and esc leaves; reading, enter goes to the prompt. esc stops
+        the agent at work first (unless it closes the / suggestions, or zooms out)."""
+        if parameters == ("stop",):
+            repo = self.purr_app.main.repo
+            suggesting = self.query_one("#suggestions").display
+            return bool(repo.at_work()) and not suggesting and not repo.zoomed
         typing = self.query_one("#prompt").has_focus
         if action in ("search_history", "leave_prompt"):
             return typing

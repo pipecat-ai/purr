@@ -221,8 +221,10 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
 
-        # r reviews the selected PR and assigns you (it came from the pool).
+        # r reviews the selected PR and assigns you (it came from the pool), its pane
+        # zoomed in to follow it.
         await pilot.press("r")
+        assert not app.main.repo.query_one("#prs-pane").display
         await until(pilot, lambda: "Approve" in decision(app) or "request changes" in decision(app))
         assert agent.runs[0]["pr"].number in (1, 2)
         reviewed = agent.runs[0]["pr"]
@@ -250,6 +252,10 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("a")
         await until(pilot, lambda: agent.answers == [True])
         agent.ask = None
+        # esc zooms out (it doesn't stop the agent, zoomed), back to the list.
+        assert "Zoom out" in footer(app) and "Stop" not in footer(app)
+        await pilot.press("escape")
+        assert app.main.repo.query_one("#prs-pane").display and focused(app) == "prs"
 
         # tab opens the PR's pane to read it; enter there (or right away on the list)
         # goes to its prompt, and a follow-up continues the session. esc goes back
@@ -1268,6 +1274,8 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         agent.gate = asyncio.Event()
         await pilot.press("r")
         await until(pilot, lambda: working.display)
+        await pilot.press("escape")  # zoomed in to follow it: back to the list, still at work
+        assert app.main.repo.query_one("#prs-pane").display and working.display
         assert re.search(r"… \(\d+s · esc to stop\)$", str(working.render()))
         await until(pilot, lambda: mark() in FRAMES)
         first = mark()
@@ -1308,6 +1316,9 @@ async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_pat
         working = app.main.repo.session.query_one("#working")
         await pilot.press("r")
         await until(pilot, lambda: "review: found 1 issue" in header(app))
+        prs = app.main.repo.query_one("#prs-pane")
+        await pilot.press("escape")  # r zoomed in on it: out
+        assert prs.display and focused(app) == "prs"
 
         # r on a reviewed PR asks first: n leaves it be.
         agent.gate = asyncio.Event()
@@ -1317,12 +1328,20 @@ async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_pat
         await pilot.pause(0.1)
         assert len(agent.runs) == 1 and "Stop" not in footer(app)
 
-        # y starts over; esc in the list stops it, before going home, and the first
-        # review is back, with what it proposed.
+        # y starts over, zoomed in to follow it. esc zooms out first, back to the list, which
+        # it doesn't stop it from (esc there goes home)...
         await pilot.press("r")
         await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         await pilot.press("y")
-        await until(pilot, lambda: working.display and "Stop" in footer(app))
+        await until(pilot, lambda: working.display and not prs.display)
+        assert "Zoom out" in footer(app) and "Stop" not in footer(app)
+        await pilot.press("escape")
+        assert prs.display and focused(app) == "prs" and working.display
+        assert "Home" in footer(app) and "Stop" not in footer(app)
+        # ...in the PR's pane, it stops it, and the first review is back, with what it
+        # proposed.
+        await pilot.press("tab")
+        await until(pilot, lambda: "Stop" in footer(app))
         assert "esc to stop" in str(working.render())
         await pilot.press("escape")
         await until(pilot, lambda: not working.display and "Stop" not in footer(app))
@@ -1581,6 +1600,40 @@ async def test_merging_with_m_after_approving(tmp_path):
         # m again: merged, at the commit you approved.
         await pilot.press("m")
         await until(pilot, lambda: app.purr._writer.merges == [(ref, "squash", "abc")])
+
+
+async def test_esc_zooms_out_first(tmp_path):
+    from purr.models import PRRef
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7)]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    github.diffs[ref] = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        repo = app.main.repo
+
+        # The PR's pane, zoomed from the list: esc comes back to the list, then goes home.
+        await pilot.press("z")
+        assert repo.zoomed and "Zoom out" in footer(app)
+        await pilot.press("escape")
+        assert not repo.zoomed and focused(app) == "prs" and in_repo(app)
+        # The diff, zoomed: esc zooms out, then closes it.
+        await pilot.press("d")
+        await until(pilot, lambda: repo.diff_shown)
+        await pilot.press("z")
+        assert repo.zoomed and not repo.session.display
+        await pilot.press("escape")
+        assert not repo.zoomed and repo.diff_shown and repo.session.display
+        await pilot.press("escape")
+        assert not repo.diff_shown and focused(app) == "prs"
+        await pilot.press("escape")
+        await until(pilot, lambda: home(app))
 
 
 async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):

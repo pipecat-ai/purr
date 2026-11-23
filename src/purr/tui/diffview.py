@@ -670,6 +670,7 @@ class DiffPane(Vertical):
         Binding("e", "toggle_all", "All"),
         Binding("n", "next_file(1)", "Next file", group=_FILES),
         Binding("p", "next_file(-1)", "Previous file", group=_FILES),
+        Binding("escape", "repo('unzoom')", "Zoom out"),  # zoomed: esc zooms out first
         Binding("escape,d", "close", "Close"),  # selecting, esc unselects: d, then
         *pane_keys(["zoom", "approve", "merge"]),
         Binding("shift+tab", "repo('switch_pane')", "Review", key_display="⇧tab"),
@@ -742,6 +743,8 @@ class DiffPane(Vertical):
         await self.purr_app.main.repo.run_action(action)
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if parameters == ("unzoom",):
+            return cast("PurrApp", self.app).main.repo.zoomed
         if action == "reply":  # on a comment on GitHub; elsewhere r reviews (the repo's)
             row = self.view.current()
             return bool(row and row.said and row.said.source == "github")

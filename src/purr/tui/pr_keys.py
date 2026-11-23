@@ -74,6 +74,9 @@ class PRKeys(PurrView):
     def selected_pr(self) -> PR | None:
         raise NotImplementedError
 
+    def zoom_in_on_pr(self) -> None:
+        raise NotImplementedError
+
     @property
     def session(self) -> PRSession:
         return self.query_one(PRSession)
@@ -96,6 +99,8 @@ class PRKeys(PurrView):
         self.refresh_bindings()
         if not targets:
             return
+        if self.session.pr and [pr.ref for pr in targets] == [self.session.pr.ref]:
+            self.zoom_in_on_pr()  # to follow it; z or esc comes back
         await self._take(targets)
         plural = "s" if len(targets) != 1 else ""
         self.notify(f"Planning {len(targets)} review{plural}")
