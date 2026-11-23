@@ -528,6 +528,50 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         assert app.purr.agent.runs == []
 
 
+async def test_every_page_says_its_keys(tmp_path):
+    from purr.tui.keyhelp import KeysScreen
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    github.diffs[__import__("purr.models").models.PRRef("pipecat-ai/pipecat", 1)] = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+
+    async def keys(*where: str) -> str:
+        """What ? lists, here: its sections and lines."""
+        await until(pilot, lambda: "Keys" in footer(app))  # every page's footer says ?
+        await pilot.press("question_mark")
+        await until(pilot, lambda: isinstance(app.screen, KeysScreen))
+        shown = str(app.screen._groups)
+        await pilot.press("escape")
+        await until(pilot, lambda: not isinstance(app.screen, KeysScreen))
+        for section in where:
+            assert section in shown, section
+        return shown
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        home_keys = await keys("Home", "Everywhere")
+        assert "Watch repo" in home_keys and "Repo 1–9" in home_keys and "1–9" in home_keys
+        assert "Find a repo or PR" in home_keys and "Latest news" in home_keys
+
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        list_keys = await keys("The PR list", "The repo", "Everywhere")
+        assert "Mark" in list_keys and "Thinking" in list_keys  # hidden from its footer
+
+        await pilot.press("o")
+        pane_keys = await keys("The PR", "The repo", "Everywhere")
+        assert "Page down" in pane_keys and "Ask" in pane_keys
+
+        await pilot.press("d")
+        await until(pilot, lambda: app.main.repo.diff_shown)
+        diff_keys = await keys("The diff", "The repo", "Everywhere")
+        assert "Select down" in diff_keys and "Ask" in diff_keys
+        assert "Latest news" not in diff_keys  # ctrl+n moves in the diff
+
+
 async def test_the_list_stops_at_its_ends_and_shows_its_headings(tmp_path):
     app, github = make_app(tmp_path)
     taken = [remote(n, assignees=("bob",)) for n in range(100, 140)]
@@ -1297,9 +1341,11 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
 
         # z: the diff full screen, and back.
         await pilot.press("z")
-        assert not repo.session.display
+        await pilot.pause()
+        assert not repo.session.display and repo.diff.size.width > 130  # all the width
         await pilot.press("z")
-        assert repo.session.display
+        await pilot.pause()
+        assert repo.session.display and repo.diff.size.width < 100
 
         # Select (shift+↑/↓, or ctrl+space and moving) and enter: ask the agent about
         # those lines, in the PR's conversation, next to them.

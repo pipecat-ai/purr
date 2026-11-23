@@ -192,6 +192,7 @@ class HistorySearchScreen(ModalScreen[str | None]):
             yield Label("Search what you've asked", classes="hint")
             yield Input(value=self._query, placeholder="Type to search…", id="history-query")
             yield OptionList(id="history-items")
+            yield Label("↑ ↓ choose · enter puts it in the prompt · esc cancel", classes="hint")
 
     def on_mount(self) -> None:
         self._show(self._query)

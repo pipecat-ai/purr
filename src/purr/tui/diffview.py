@@ -44,6 +44,7 @@ from purr.messages import (
     SaveComment,
 )
 from purr.models import PR, DraftComment, Quote
+from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.prompt import PromptArea
 
@@ -557,6 +558,7 @@ class DiffPane(Vertical):
         pass
 
     BINDINGS = [
+        KEYS,
         Binding("enter", "ask", "Ask"),
         Binding("c", "comment", "Comment"),
         Binding("x", "remove", "Remove"),

@@ -56,6 +56,7 @@ from purr.tui.commands import (
     render_help,
     suggestions,
 )
+from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
@@ -516,6 +517,7 @@ class PRSession(Vertical):
     """
 
     BINDINGS = [
+        KEYS,
         Binding("enter", "ask", "Ask"),
         # The transcript, wherever the focus is in the pane, typing included.
         Binding("pageup", "page(-1)", "Page up", show=False, priority=True),

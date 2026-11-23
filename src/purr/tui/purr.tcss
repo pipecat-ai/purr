@@ -65,6 +65,10 @@
     min-width: 60;
 }
 
+#diff-pane.-wide {  /* zoomed: the PR's pane is away */
+    width: 1fr;
+}
+
 #search {
     height: 1;
     border: none;

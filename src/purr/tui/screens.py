@@ -50,6 +50,7 @@ from purr.models import PR, CheckState, PRRef, PRState, RepoSummary
 from purr.review.agent import claude_code_command
 from purr.review.skills import Skill
 from purr.tui.diffview import DiffPane
+from purr.tui.keyhelp import KEYS
 from purr.tui.keys import REPO_KEYS, pane_keys
 from purr.tui.overview import short_age
 from purr.tui.session import NUMBER_STYLE, PRSession, SessionState, outcome_mark
@@ -117,7 +118,7 @@ class PRList(GroupedList):
     mark redraws several times a second (300 PRs: most of a CPU).
     """
 
-    BINDINGS = pane_keys(
+    BINDINGS = [KEYS] + pane_keys(
         ["open", "search", "review", "mark", "approve", "dismiss", "merge", "diff", "zoom"]
         + ["shell", "open_claude", "switch_pane"],
         switch_pane="PR",
@@ -276,6 +277,7 @@ class ReposView(PurrView):
     """
 
     BINDINGS = [
+        KEYS,
         Binding("o", "open", "Open"),
         Binding("n", "move(1)", "Next", show=False),
         Binding("p", "move(-1)", "Previous", show=False),
@@ -1024,6 +1026,7 @@ class RepoView(PurrView):
         """The list again, in the diff's place (and the PR's pane, if the diff was zoomed)."""
         self._left = "list"
         self.diff.display = False
+        self.diff.remove_class("-wide")
         self.session.display = True
         self.query_one("#prs-pane").display = True
         self.query_one(PRList).focus()
@@ -1041,6 +1044,7 @@ class RepoView(PurrView):
     def _asked(self, event: DiffPane.Asked) -> None:
         """You asked about lines of the diff: to the PR's prompt, with the lines."""
         self.session.display = True  # if the diff was zoomed
+        self.diff.remove_class("-wide")
         self.session.ask_about(event.quote)
 
     async def action_pager(self) -> None:
@@ -1072,6 +1076,7 @@ class RepoView(PurrView):
         """Full screen: the diff, from it, or else the PR's pane; and back."""
         if self.diff_shown and not self.session.has_focus_within:
             self.session.display = not self.session.display
+            self.diff.set_class(not self.session.display, "-wide")  # all the width, zoomed
             return
         left = self.diff if self.diff_shown else self.query_one("#prs-pane")
         left.display = not left.display
@@ -1228,6 +1233,7 @@ class AlwaysScreen(ModalScreen[str | None]):
                 Text.from_markup("[b]e[/b]  everywhere: your Claude Code settings, Claude Code too")
             )
             yield Label("It's Claude Code's own rule. Change them with i, then p.", classes="hint")
+            yield Label("r this repo · e everywhere · esc cancel", classes="hint")
 
     def action_pick(self, scope: str) -> None:
         self.dismiss(scope or None)
@@ -1265,6 +1271,7 @@ class InstructionsScreen(ModalScreen):
                 yield Label("[b]s[/b]  review skill: which of the repo's skills reviews follow")
             yield Label("[b]o[/b]  Purr's settings: models, polling, signature… (all repos)")
             yield Label("Opens in $EDITOR. Repo files add to the general ones.", classes="hint")
+            yield Label("a key above opens it · esc cancel", classes="hint")
 
     def check_action(self, action: str, parameters: tuple) -> bool:
         return self._repo is not None or parameters != ("skill",)

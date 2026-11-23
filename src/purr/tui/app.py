@@ -47,6 +47,7 @@ from purr.review.rules import CLAUDE_SETTINGS
 from purr.review.skills import RepoSkill, Skill
 from purr.tui.bridge import BusEvent, UIWorker
 from purr.tui.clipboard import copy_command, system_copy, terminal_copies
+from purr.tui.keyhelp import KeysScreen, key_groups
 from purr.tui.overview import DetailsCache
 from purr.tui.recap import RecapScreen
 from purr.tui.screens import ConfirmScreen, InstructionsScreen, MainScreen, ReviewSkillScreen
@@ -92,12 +93,14 @@ class PurrApp(App):
     BINDINGS = [
         Binding("ctrl+q", "request_quit", "Quit", show=False, priority=True),  # q, from anywhere
         Binding("ctrl+o", "back", "Back", show=False, priority=True),
-        Binding("ctrl+n", "next_alert", "Next alert", show=False, priority=True),
+        Binding("ctrl+n", "next_alert", "Latest news", show=False, priority=True),
         Binding("w", "recap", "Recap", show=False),
         Binding("i", "instructions", "Review style"),
         Binding("q", "request_quit", "Quit"),
-        Binding("0", "home", "Repos", show=False),
-        *[Binding(str(n), f"jump({n})", show=False) for n in range(1, 10)],
+        Binding("0", "home", "Home", show=False),
+        *[Binding(str(n), f"jump({n})", "Repo 1–9", show=False) for n in range(1, 10)],
+        Binding("ctrl+p", "command_palette", "Find a repo or PR", show=False, priority=True),
+        Binding("question_mark", "keys", "Keys", show=False),  # each page shows its own
     ]
 
     def __init__(self, purr: Purr, *, cwd: Path | None = None):
@@ -274,6 +277,11 @@ class PurrApp(App):
             self.notify("No recaps yet.")
 
     # -- Navigation -------------------------------------------------------------
+
+    def action_keys(self) -> None:
+        """? : every key that works where you are (see purr.tui.keyhelp)."""
+        if not self._modal_open():
+            self.push_screen(KeysScreen(key_groups(self)))
 
     def _modal_open(self) -> bool:
         return isinstance(self.screen, ModalScreen)
