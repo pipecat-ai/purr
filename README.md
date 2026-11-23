@@ -85,7 +85,7 @@ work everywhere. The main ones:
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR (once reviewed, it asks before starting over) / mark several first (`esc` unmarks them) |
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |
-| `d` / `D` | The diff, to read, ask about (`enter`) and comment on (`c`) / in your pager |
+| `d` / `D` | The diff, to read (`n` `p` from change to change), ask about (`enter`) and comment on (`c`) / in your pager |
 | `shift+↑` `shift+↓` | In the diff: select lines (`ctrl+space` sets a mark, as in Emacs) |
 | `tab` | In the diff: open or shut a file or a comment; on a change's `@@` line, the lines around it |
 | `m` | Merge a PR you approved: once to see where it stands, again to merge |

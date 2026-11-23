@@ -1636,6 +1636,46 @@ async def test_esc_zooms_out_first(tmp_path):
         await until(pilot, lambda: home(app))
 
 
+async def test_n_and_p_go_from_change_to_change(tmp_path):
+    from purr.models import PRRef
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7)]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    github.diffs[ref] = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+        "@@ -10,2 +10,2 @@ def f():\n x\n-y\n+Y\n"
+        "@@ -40,2 +40,2 @@ def g():\n u\n-v\n+V\n"
+        "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        await pilot.press("d")
+        view = app.main.repo.diff.view
+        await until(pilot, lambda: len(view._rows) > 5)  # a short diff: its files open
+
+        def here() -> str:
+            return view.current().text.plain.strip()
+
+        # Files, and each hunk of an opened one; back the same way.
+        stops = []
+        for _ in range(5):
+            await pilot.press("n")
+            stops.append(here())
+        assert [stop.split("  ")[0] for stop in stops] == [
+            "▾ a.py", "⋯ 9 lines (tab)", "⋯ 28 lines (tab)", "▾ b.py", "@@ -1 +1 @@"
+        ]  # fmt: skip
+        assert "Changes" in footer(app)
+        await pilot.press("p", "p")
+        assert here().startswith("⋯ 28 lines")
+        # A shut file's hunks aren't stops.
+        await pilot.press("p", "p", "tab", "n")
+        assert here().startswith("▾ b.py")
+
+
 async def test_tab_shows_the_lines_around_the_changes(tmp_path):
     from purr.models import PRRef
     from purr.tui.diffview import CommentScreen

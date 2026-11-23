@@ -4,9 +4,10 @@ about and comment on, next to the PR's conversation. ``z`` makes it full screen;
 
 Files start as a line each (all of them opened if the diff is short; those with
 comments on them, if not): ``tab`` opens or closes the one the cursor's in, ``e``
-all of them, ``n``/``p`` go to the next or previous file. ``shift+↑``/``shift+↓``
-(or ``ctrl+space`` and moving) select lines; ``enter`` asks the agent about them
-(or the line under the cursor), in the PR's conversation. ``c`` writes a comment
+all of them, ``n``/``p`` go to the next or previous change (a file, or an opened
+file's hunk). ``shift+↑``/``shift+↓`` (or ``ctrl+space`` and moving) select lines;
+``enter`` asks the agent about them (or the line under the cursor), in the PR's
+conversation. ``c`` writes a comment
 on them, or rewrites yours under the cursor, and ``x`` removes it.
 
 Yours go to GitHub as you save them. The comments the agent proposes show too,
@@ -546,12 +547,17 @@ class DiffView(ScrollView, can_focus=True):
 
     # -- Moving and selecting ------------------------------------------------------
 
-    def next_file(self, step: int) -> None:
-        """The cursor to the next (or previous) file's line."""
-        starts = [i for i, row in enumerate(self._rows) if row.kind == "file"]
+    def next_change(self, step: int) -> None:
+        """The cursor to the next (or previous) change: a file's line or, in an opened file,
+        a hunk's ``@@`` line; brought near the top, with what follows it in view."""
+        starts = [i for i, row in enumerate(self._rows) if _starts_a_change(row)]
         later = [i for i in starts if (i - self.cursor) * step > 0]
-        if later:
-            self._go(min(later) if step > 0 else max(later))
+        if not later:
+            return
+        self._go(min(later) if step > 0 else max(later))
+        top, height = round(self.scroll_offset.y), self.size.height
+        if not top <= self.cursor < top + height // 2:  # not in the view's upper half
+            self.scroll_to(y=max(self.cursor - 1, 0), animate=False)
 
     def action_move(self, step: int) -> None:
         """Up or down a row; a comment's box is one, however many lines it takes."""
@@ -731,6 +737,12 @@ class DiffView(ScrollView, can_focus=True):
         return Style(bgcolor=self.get_component_rich_style(component).bgcolor)
 
 
+def _starts_a_change(row: Row) -> bool:
+    """A file's line, or a hunk's ``@@`` (lines left out above it, or not): where n and p
+    go."""
+    return row.kind == "file" or (row.line is not None and row.line.kind == "@@")
+
+
 def _changed(row: Row) -> Style:
     """Green behind a line the diff adds, red behind one it removes (the theme's)."""
     if row.kind != "line" or row.line is None or row.line.kind not in ("+", "-"):
@@ -779,7 +791,7 @@ class CommentScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-_FILES = Binding.Group("Files", compact=True)
+_CHANGES = Binding.Group("Changes", compact=True)  # files, and an opened file's hunks
 
 
 class DiffPane(Vertical):
@@ -801,8 +813,8 @@ class DiffPane(Vertical):
         Binding("r", "reply", "Reply"),  # on a comment on GitHub; elsewhere, the repo's r
         Binding("x", "remove", "Delete"),
         Binding("e", "toggle_all", "All"),
-        Binding("n", "next_file(1)", "Next file", group=_FILES),
-        Binding("p", "next_file(-1)", "Previous file", group=_FILES),
+        Binding("n", "next_change(1)", "Next change", group=_CHANGES),
+        Binding("p", "next_change(-1)", "Previous change", group=_CHANGES),
         Binding("escape", "repo('unzoom')", "Zoom out"),  # zoomed: esc zooms out first
         Binding("escape,d", "close", "Close"),  # selecting, esc unselects: d, then
         *pane_keys(["zoom", "approve", "merge"]),
@@ -923,8 +935,8 @@ class DiffPane(Vertical):
     def action_toggle_all(self) -> None:
         self.view.toggle_all()
 
-    def action_next_file(self, step: int) -> None:
-        self.view.next_file(step)
+    def action_next_change(self, step: int) -> None:
+        self.view.next_change(step)
 
     def action_ask(self) -> None:
         """On a comment's box, write on it (a shut one opens); else ask the agent about the
