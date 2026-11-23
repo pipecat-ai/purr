@@ -53,11 +53,14 @@ exclude = ["docs/purr.gif"]  # the README links it on GitHub
 dev = [
     "pytest>=9.0.0",
     "pytest-asyncio>=1.0.0",
+    "pytest-timeout>=2.3",
     "ruff>=0.12.11",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A test stuck for this long fails, with where it was stuck, rather than hanging CI.
+timeout = 120
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
