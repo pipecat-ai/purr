@@ -274,8 +274,8 @@ def _box(said: Said, where: bool) -> list[Text]:
 
 
 def _indent(said: Said) -> str:
-    """Under the code; a reply in a thread a little further in."""
-    return _INDENT + "  " * said.reply
+    """Under the code (a reply too: it's on the same line, and its title says so)."""
+    return _INDENT
 
 
 def _inside(line: Text, width: int, color: str, indent: str) -> Text:
@@ -584,7 +584,7 @@ class CommentScreen(ModalScreen[str | None]):
     #comment { width: 84; }
     #comment-body { height: 6; margin: 1 0; }
     """
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape,ctrl+g", "cancel", "Cancel")]  # ctrl+g: as in Emacs
 
     def __init__(self, heading: str, body: str = ""):
         super().__init__()
@@ -595,7 +595,11 @@ class CommentScreen(ModalScreen[str | None]):
         with Vertical(classes="dialog", id="comment"):
             yield Label(self._heading, classes="hint")
             yield PromptArea(id="comment-body")
-            yield Label("enter saves · ctrl+j new line · esc cancels", classes="hint")
+            yield Label(
+                "enter saves · ctrl+j new line · esc cancels · Emacs keys: ctrl+a/e/b/f, alt+b/f, "
+                "ctrl+k/y…",
+                classes="hint",
+            )
 
     def on_mount(self) -> None:
         body = self.query_one(PromptArea)

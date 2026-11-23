@@ -1453,7 +1453,14 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: rows(view, "│ Why a lock? "))
         await pilot.press("down", "enter")  # enter on your box: the editor, to rewrite it
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
-        await pilot.press("ctrl+u", *"Why a lock here?", "enter")
+        body = app.screen.query_one("#comment-body")
+        assert body.text == "Why a lock?"  # its words, to change
+        # The ask box's keys, as in Emacs: ctrl+a/e, ctrl+b/f, alt+b/f, ctrl+k/u.
+        await pilot.press("ctrl+a", "alt+f", "alt+f", "alt+f")
+        assert body.cursor_location == (0, 10)
+        await pilot.press("ctrl+b", "ctrl+k")
+        assert body.text == "Why a loc"
+        await pilot.press("ctrl+e", "ctrl+u", *"Why a lock here?", "enter")
         await until(pilot, lambda: rows(view, "│ Why a lock here?"))
         # One on the deleted line goes on the base's side; x removes it.
         await pilot.press("up", "up", "c")

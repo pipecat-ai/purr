@@ -74,9 +74,9 @@ def test_a_box_for_each_comment_under_its_line():
         "            ╭─ ▾ alice ─────────────────────╮",  # a thread: a box a comment
         "            │ Should subscribe take a lock? │",
         "            ╰───────────────────────────────╯",
-        "              ╭─ ▾ me (you) · reply ─╮",  # a reply, a little further in
-        "              │ Done.                │",
-        "              ╰──────────────────────╯",
+        "            ╭─ ▾ me (you) · reply ─╮",  # a reply: its title says so
+        "            │ Done.                │",
+        "            ╰──────────────────────╯",
         "    2       -    pass",
         "            ╭─ ▾ you ────────╮",  # on the deleted line: the base's side
         "            │ Why drop this? │",

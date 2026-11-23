@@ -2,9 +2,11 @@
 
 ``enter`` sends; ``ctrl+j`` (or ``shift+enter``/``alt+enter`` where the terminal
 tells them apart, or a ``\\`` at the end of the line) starts a new line, and
-pasting keeps the lines. ↑/↓ on the first/last line go through what you asked on
-this PR, ctrl+r searches everything you've asked on any PR, and the usual
-readline keys move around (ctrl+a/e, ctrl+b/f, alt+b/f, ctrl+k/u/w).
+pasting keeps the lines. ↑/↓ (ctrl+p/n) on the first/last line go through what
+you asked on this PR, ctrl+r searches everything you've asked on any PR, and
+Emacs's keys move around and edit: ctrl+a/e, ctrl+b/f, alt+b/f, alt+</alt+>,
+ctrl+k/u/w and alt+d kill, ctrl+y yanks, ctrl+_ undoes. The comment editor is
+one of these too.
 
 Typing ``/`` shows matching commands (see :mod:`purr.tui.commands`): ↑/↓ pick
 one, tab or enter fills it in, and enter again runs it.
@@ -50,14 +52,26 @@ class PromptArea(TextArea):
         prompt: "PromptArea"
         text: str
 
+    # As in Emacs (and readline): moving, killing and yanking. Textual's own cover the
+    # rest: ctrl+a/e, ctrl+d, ctrl+z (undo).
     BINDINGS = [
-        Binding("up", "older", "Older", show=False),
-        Binding("down", "newer", "Newer", show=False),
+        Binding("up,ctrl+p", "older", "Older", show=False),
+        Binding("down,ctrl+n", "newer", "Newer", show=False),
+        Binding("ctrl+a", "line_start", "Start of the line", show=False),
         Binding("ctrl+b", "cursor_left", "Back a character", show=False),
         Binding("ctrl+f", "cursor_right", "Forward a character", show=False),
         Binding("alt+b", "cursor_word_left", "Back a word", show=False),
         Binding("alt+f", "cursor_word_right", "Forward a word", show=False),
+        Binding("alt+less_than_sign", "text_start", "Start of the text", show=False),
+        Binding("alt+greater_than_sign", "text_end", "End of the text", show=False),
+        Binding("ctrl+k", "kill_line", "Kill to the end of the line", show=False),
+        Binding("ctrl+u", "kill_line_start", "Kill to the start of the line", show=False),
+        Binding("ctrl+w,alt+backspace", "kill_word_left", "Kill a word back", show=False),
+        Binding("alt+d", "kill_word_right", "Kill a word forward", show=False),
+        Binding("ctrl+y", "yank", "Yank what was killed", show=False),
+        Binding("ctrl+underscore", "undo", "Undo", show=False),
     ]
+    TAKES_OVER = {"next_alert", "command_palette"}  # the app's ctrl+n/p: lines, here
 
     def __init__(self, **kwargs):
         super().__init__(
@@ -68,6 +82,7 @@ class PromptArea(TextArea):
             **kwargs,
         )
         self.suggestion = ""  # what you might ask next: shown while it's empty
+        self._killed = ""  # what ctrl+k, ctrl+u, ctrl+w or alt+d took last, for ctrl+y
         self._history: list[str] = []
         self._position = 0  # len(history): the text being written
         self._draft = ""  # that text, while looking back
@@ -104,6 +119,46 @@ class PromptArea(TextArea):
             self.insert("\n")
             return
         await super()._on_key(event)
+
+    # -- Emacs: the start and end, killing and yanking -------------------------------
+
+    def action_line_start(self) -> None:
+        """Its very start (Textual's ctrl+a stops at the first non-blank, as home does)."""
+        self.move_cursor((self.cursor_location[0], 0))
+
+    def action_text_start(self) -> None:
+        self.move_cursor((0, 0))
+
+    def action_text_end(self) -> None:
+        self.move_cursor(self.document.end)
+
+    def action_kill_line(self) -> None:
+        """To the end of the line; at its end, the line break."""
+        row, column = self.cursor_location
+        end = self.get_cursor_line_end_location()
+        if end == (row, column) and row + 1 < self.document.line_count:
+            end = (row + 1, 0)
+        self._kill(end)
+
+    def action_kill_line_start(self) -> None:
+        self._kill(self.get_cursor_line_start_location())
+
+    def action_kill_word_left(self) -> None:
+        self._kill(self.get_cursor_word_left_location())
+
+    def action_kill_word_right(self) -> None:
+        self._kill(self.get_cursor_word_right_location())
+
+    def _kill(self, to: tuple[int, int]) -> None:
+        """Delete from the cursor to ``to``, kept for ctrl+y."""
+        start, end = sorted((self.cursor_location, to))
+        if start != end:
+            self._killed = self.get_text_range(start, end)
+            self.delete(start, end)
+
+    def action_yank(self) -> None:
+        if self._killed:
+            self.insert(self._killed)
 
     def suggest(self, text: str) -> None:
         """What you might ask next, dim while the prompt's empty; "" for none."""
