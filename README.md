@@ -11,7 +11,7 @@ Claude reviews the pull requests assigned to you in the background. You read wha
 ask it questions, and decide what gets posted. **Nothing goes to GitHub until you approve
 it.**
 
-![Purr: a review that needs you, a question to the agent, a comment on a line of the diff, and posting the review](docs/purr.gif)
+![Purr: a review that needs you, a question to the agent, a comment on a line of the diff, and posting the review](https://raw.githubusercontent.com/pipecat-ai/purr/main/docs/purr.gif)
 
 ## ✨ What it does
 
@@ -39,17 +39,15 @@ You need a terminal on macOS, Linux or Windows, [uv](https://docs.astral.sh/uv/)
 agents with the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview).
 
 ```sh
-git clone git@github.com:pipecat-ai/purr.git
-cd purr
-uv sync
-gh auth login        # GitHub: follow the prompts
-uv run purr login    # Claude (skip it if you use Claude Code already)
-uv run purr
+uv tool install pipecat-ai-purr
+gh auth login    # GitHub: follow the prompts
+purr login       # Claude (skip it if you use Claude Code already)
+purr
 ```
 
 Reviews use your Claude login, so they count against your Claude plan (or your API key, if you
 set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
-`uv run purr --no-auto-review`. To run `purr` from anywhere: `uv tool install --editable .`.
+`purr --no-auto-review`.
 
 ## 🧭 How to use it
 
@@ -126,13 +124,17 @@ that repo's own versions instead.
 ## 🛠️ Development
 
 ```sh
+git clone git@github.com:pipecat-ai/purr.git
+cd purr
+uv sync
+uv run purr                            # or: uv tool install --editable .
 uv run pytest                          # never calls GitHub or Claude
 uv run ruff check && uv run ruff format
 uv run python scripts/record_demo.py   # the GIF above, from made-up PRs
 ```
 
-How Purr works and why: [`docs/purr.md`](docs/purr.md).
+How Purr works and why: [`docs/purr.md`](https://github.com/pipecat-ai/purr/blob/main/docs/purr.md).
 
 ## 📄 License
 
-BSD 2-Clause. See [LICENSE](LICENSE).
+BSD 2-Clause. See [LICENSE](https://github.com/pipecat-ai/purr/blob/main/LICENSE).

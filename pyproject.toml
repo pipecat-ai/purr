@@ -1,10 +1,22 @@
 [project]
-name = "purr"
-version = "0.1.0"
+name = "pipecat-ai-purr"
+dynamic = ["version"]  # purr.__version__
 description = "A human-in-the-loop agentic code reviewer."
+readme = "README.md"
 license = "BSD-2-Clause"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
+keywords = ["code review", "github", "pull requests", "claude", "agents", "tui"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "aiosqlite>=0.22.1",
     "claude-agent-sdk>=0.2.187",
@@ -15,12 +27,26 @@ dependencies = [
     "typer>=0.20.0",
 ]
 
+[project.urls]
+Source = "https://github.com/pipecat-ai/purr"
+Issues = "https://github.com/pipecat-ai/purr/issues"
+Documentation = "https://github.com/pipecat-ai/purr/blob/main/docs/purr.md"
+
 [project.scripts]
 purr = "purr.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/purr/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/purr"]  # the package is purr, whatever the distribution is called
+
+[tool.hatch.build.targets.sdist]
+exclude = ["docs/purr.gif"]  # the README links it on GitHub
 
 [dependency-groups]
 dev = [
