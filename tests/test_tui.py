@@ -692,7 +692,8 @@ async def test_always_allowing_from_the_keyboard(tmp_path):
         assert agent.remembered == ["repo"]
 
 
-async def test_a_shell_in_the_worktree_and_claude_code(tmp_path):
+async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
+    monkeypatch.setattr("purr.tui.screens.claude_cli", lambda: "claude")  # not this machine's
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
     ran: list[tuple] = []

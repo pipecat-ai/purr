@@ -1,7 +1,29 @@
-"""What every Claude Agent SDK session Purr starts has in common."""
+"""What every Claude Agent SDK session Purr starts has in common, and the Claude Code
+you run yourself.
 
+The Agent SDK comes with its own Claude Code, which it runs reviews on: you don't need
+to install it. You do need to be logged in (to Claude, or with ANTHROPIC_API_KEY);
+``purr --login`` does it with the same Claude Code.
+"""
+
+import platform
+import shutil
+from pathlib import Path
+
+import claude_agent_sdk
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from loguru import logger
+
+
+def claude_cli() -> str:
+    """The Claude Code to run yourself (``c``, ``purr --login``): yours, if it's installed;
+    else the one the Agent SDK comes with, which reviews run on."""
+    return shutil.which("claude") or str(bundled_claude())
+
+
+def bundled_claude() -> Path:
+    name = "claude.exe" if platform.system() == "Windows" else "claude"
+    return Path(claude_agent_sdk.__file__).parent / "_bundled" / name
 
 
 def log_stderr(line: str) -> None:

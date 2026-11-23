@@ -41,6 +41,29 @@ def test_describe_tool_use():
     )
 
 
+def test_claude_code_is_yours_or_the_one_purr_comes_with(monkeypatch):
+    import purr.claude
+
+    monkeypatch.setattr(purr.claude.shutil, "which", lambda name: "/usr/local/bin/claude")
+    assert purr.claude.claude_cli() == "/usr/local/bin/claude"
+    monkeypatch.setattr(purr.claude.shutil, "which", lambda name: None)
+    bundled = purr.claude.claude_cli()
+    assert bundled.endswith("/_bundled/claude") and purr.claude.bundled_claude().exists()
+
+
+def test_purr_login_logs_in_with_claude_code(monkeypatch):
+    import pytest
+
+    import purr.cli
+
+    ran = []
+    monkeypatch.setattr(purr.cli, "claude_cli", lambda: "claude")
+    monkeypatch.setattr(purr.cli.subprocess, "call", lambda command: ran.append(command) or 0)
+    with pytest.raises(SystemExit) as exit:
+        purr.cli.main(["--login"])
+    assert exit.value.code == 0 and ran == [["claude", "auth", "login"]]
+
+
 def test_claude_code_command_resumes_safely():
     from purr.review.agent import claude_code_command
 

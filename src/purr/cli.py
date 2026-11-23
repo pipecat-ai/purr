@@ -3,12 +3,14 @@
 import argparse
 import asyncio
 import dataclasses
+import subprocess
 import sys
 from pathlib import Path
 
 from loguru import logger
 
 from purr import __version__
+from purr.claude import claude_cli
 from purr.config import Config, SettingsError
 
 
@@ -22,6 +24,8 @@ def _setup_logging(config: Config, *, verbose: bool, stderr: bool) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parser().parse_args(argv)
+    if args.login:
+        sys.exit(_login())
     try:
         config = _config(args)
     except SettingsError as e:
@@ -73,9 +77,19 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run review agents' commands in Claude Code's sandbox (see the README)",
     )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="log in to Claude (with the Claude Code Purr comes with), then exit",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging on stderr")
     parser.add_argument("--version", action="version", version=f"purr {__version__}")
     return parser
+
+
+def _login() -> int:
+    """Log in to Claude, as Claude Code does: reviews use that login (or ANTHROPIC_API_KEY)."""
+    return subprocess.call([claude_cli(), "auth", "login"])
 
 
 def _config(args: argparse.Namespace) -> Config:

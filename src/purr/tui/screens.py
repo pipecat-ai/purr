@@ -25,6 +25,7 @@ from textual.widget import Widget
 from textual.widgets import ContentSwitcher, Footer, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
+from purr.claude import claude_cli
 from purr.jobs import PurrError
 from purr.messages import (
     REVIEW_WORKER,
@@ -934,7 +935,7 @@ class RepoView(PurrView):
             self.notify(str(e), severity="warning")
             return
         await self.purr_app.run_outside(
-            claude_code_command(review.session_id, str(pr.ref)), worktree
+            claude_code_command(review.session_id, str(pr.ref), claude_cli()), worktree
         )
         # The session may have grown in Claude Code: reload its transcript.
         self.purr_app.sessions.pop(str(pr.ref), None)

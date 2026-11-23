@@ -10,8 +10,9 @@ background. You read what it found, ask it questions, and decide what gets poste
 
 - **Reviews happen on their own.** PRs assigned to you are reviewed as they come in, a few at
   a time. Small changes get a quick look; risky ones get a full review.
-- **Each PR is a conversation.** Every review is a Claude Code session you can keep talking
-  to: "is that race real?", "drop the nit", "make it a comment instead".
+- **Each PR is a conversation.** Every review is a Claude Code session (run through the
+  Claude Agent SDK) you can keep talking to: "is that race real?", "drop the nit", "make it a
+  comment instead".
 - **One key to post.** When you agree with the proposed review, `a` posts it as you.
 - **Many repos, one place.** See what needs you everywhere, and catch up on what happened
   while you were away.
@@ -26,26 +27,30 @@ You need a Mac or Linux terminal. It takes about five minutes.
 |---|---|---|
 | [uv](https://docs.astral.sh/uv/) | Runs Purr (and gets the right Python for you) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [GitHub CLI](https://cli.github.com) | Reads PRs and posts your reviews | `brew install gh` (or see the link) |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code/setup) | Does the reviewing | `curl -fsSL https://claude.ai/install.sh \| bash` |
 | git | Checks out the PRs | Probably already there: `git --version` |
 
-### 2. Log in to both
+There's no need to install Claude Code: Purr reviews with the
+[Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview), which comes with its
+own.
 
-```sh
-gh auth login   # follow the prompts
-claude          # log in when it asks, then type /exit
-```
-
-Purr uses your Claude Code login, so reviews count against your Claude plan (or your API key,
-if you use `ANTHROPIC_API_KEY`).
-
-### 3. Get Purr
+### 2. Get Purr
 
 ```sh
 git clone git@github.com:pipecat-ai/purr.git
 cd purr
 uv sync
 ```
+
+### 3. Log in
+
+```sh
+gh auth login        # GitHub: follow the prompts
+uv run purr --login  # Claude
+```
+
+If you use Claude Code already, you're logged in to Claude: skip the second line. Reviews use
+that login, so they count against your Claude plan (or your API key, if you set
+`ANTHROPIC_API_KEY`).
 
 ### 4. Run it
 
@@ -121,7 +126,7 @@ uv run purr --no-auto-review
 | | `d` | The diff, to read line by line and comment on lines (`c`); yours go out with your review. `D`: in your pager |
 | | `t` | The agent's reasoning in full (it's a line per thought otherwise) |
 | | `!` | A shell in the PR's checkout, to run things yourself (`exit` to come back) |
-| | `c` | Open the PR's conversation in Claude Code itself |
+| | `c` | Open the PR's conversation in Claude Code itself (yours, or the one Purr comes with) |
 | | `z` | Full screen |
 | | `esc` | Home, from anywhere in the repo (your search and anything typed stay); from the prompt, back to the PR |
 | The prompt | `enter` / `ctrl+j` | Send / new line |
