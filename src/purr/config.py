@@ -68,6 +68,12 @@ class Config:
     auto_review: bool = _setting(
         True, about="Review PRs assigned to you without being asked (--no-auto-review: off)."
     )
+    auto_answer: bool = _setting(
+        True,
+        about="When others comment on your own PRs, Claude reads what they said, checks the "
+        "code, and proposes what to change and what to answer, for you to post. Off: only "
+        "when you ask in the PR's conversation.",
+    )
     review_model: str | None = _setting(
         None, about="Model for reviews and the recap. Empty: Claude Code's default."
     )

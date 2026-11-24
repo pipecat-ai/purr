@@ -106,20 +106,43 @@ def set_aside_note(proposals: list[str]) -> str:
     )
 
 
-def replies_note(replies: Sequence[Reply]) -> str:
-    """For the agent, ahead of your message: what others said to you on GitHub since your
-    last word there, so it can help you answer (it's in no review thread it can read)."""
+def _said(replies: Sequence[Reply]) -> str:
+    """What others said, a line each: who, where, when and what."""
 
     def said(reply: Reply) -> str:
         where = f"on {reply.where}" if reply.where else "on the PR"
         body = reply.body.replace("purr-note>", "purr-note]")  # can't end the note early
         return f"- {reply.author}, {where} ({reply.at}): {body}"
 
+    return "\n".join(said(reply) for reply in replies)
+
+
+def replies_note(replies: Sequence[Reply]) -> str:
+    """For the agent, ahead of your message: what others said to you on GitHub since your
+    last word there, so it can help you answer (it's in no review thread it can read)."""
     return (
         "<purr-note>Since the user's last word on GitHub, others said this to them there, "
-        "still unanswered:\n" + "\n".join(said(reply) for reply in replies) + "\nTo answer "
-        "one, propose it (propose_action): a reply in its thread (get_review_threads has the "
-        "ids), or a comment for one on the PR.</purr-note>\n\n"
+        f"still unanswered:\n{_said(replies)}\nTo answer one, propose it (propose_action): a "
+        "reply in its thread (get_review_threads has the ids), or a comment for one on the "
+        "PR.</purr-note>\n\n"
+    )
+
+
+def answer_prompt(replies: Sequence[Reply]) -> str:
+    """What starts the agent on the comments on your own PR (see ReviewWorker.answer)."""
+    return (
+        "Others commented on the user's PR since their last word on GitHub, and it's still "
+        f"unanswered:\n{_said(replies)}\n\n"
+        "For each point: read what it's about (get_review_threads has the review threads, "
+        "with their ids), check the code, and decide whether it's right. Then:\n"
+        "1. Call submit_review: a one-line summary (how many points, how many worth "
+        "changing), and a finding for each point that's right, with its file and line: an "
+        "issue if it should be changed, a suggestion if it could, a nit if it's minor.\n"
+        "2. Call propose_action with kind `comment` and the answers, in the user's voice "
+        "and short: a reply in each thread (`replies`), and what to say on the PR itself "
+        "(`body`) for what was said there. Where a point is right, say it'll be changed, "
+        "not that it was; where it isn't, say why, politely.\n"
+        "Don't change files: the user says what to change, here, afterwards."
     )
 
 
@@ -148,6 +171,17 @@ RESUME_PROMPT = (
     "Purr was restarted while you were reviewing. Continue where you left off, "
     "and finish by calling submit_review and propose_action."
 )
+
+
+YOUR_PR_SECTION = """
+
+## This is the user's own PR
+
+The user opened it: you're helping them with it, not reviewing someone else's work.
+GitHub doesn't let them approve their own PR or request changes on it, so when you
+propose, use `comment`. When others have commented, help them answer: whether each
+point is right, what to change, and what to reply. If they ask you to change the code,
+change it in this worktree (they commit and push it themselves; you can't push)."""
 
 
 def guidelines_section(repo: str, guidelines: str) -> str:
@@ -946,6 +980,7 @@ class ClaudeReviewAgent:
         the PR to."""
         return (
             INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
+            + (YOUR_PR_SECTION if pr.authored else "")
             + guidelines_section(pr.repo, guidelines)
             + (skill_section(pr.repo, skill) if skill else "")
             + (plan_section(plan) if plan else "")

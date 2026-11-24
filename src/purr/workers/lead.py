@@ -14,6 +14,7 @@ from purr.jobs import PurrError, handles, request
 from purr.lead import LeadAgent, LeadInput, RepoContext, default_plan, lead_notes, plans_from
 from purr.messages import (
     LEAD_WORKER,
+    AnswerComments,
     Planned,
     PlanReviews,
     PRChanged,
@@ -70,9 +71,12 @@ class LeadWorker(BaseWorker):
       poll, in one call).
     - ``PlanReviews {prs, depth}``: PRs you asked to review, planned at high
       priority. Answers once they've started, with why any didn't (``Planned``).
+    - Someone commented on your own PR: the agent reads it, and proposes what to
+      change and answer (``AnswerComments``; no planning: it's no review).
 
-    The first two only when ``auto_review``. Planning is one call per batch;
-    if it fails, the PRs get a full review anyway, so nothing waits on it.
+    The first two only when ``auto_review``, the last only when ``auto_answer``.
+    Planning is one call per batch; if it fails, the PRs get a full review anyway,
+    so nothing waits on it.
 
     Args:
         name: Bus name.
@@ -82,6 +86,7 @@ class LeadWorker(BaseWorker):
         repos: For the repos' skills; none: plan without them.
         instructions: Your review and code style; none: plan without them.
         auto_review: Review PRs assigned to you without being asked.
+        auto_answer: When others comment on your own PRs, have the agent read it.
         settle: Seconds to wait for more changes before planning, so a poll's
             worth of them is planned together.
         batch: PRs per planning call.
@@ -97,6 +102,7 @@ class LeadWorker(BaseWorker):
         repos: GitRepos | None = None,
         instructions: ReviewInstructions | None = None,
         auto_review: bool = True,
+        auto_answer: bool = True,
         settle: float = 0.5,
         batch: int = 15,
     ):
@@ -107,6 +113,7 @@ class LeadWorker(BaseWorker):
         self._repos = repos
         self._instructions = instructions
         self._auto_review = auto_review
+        self._auto_answer = auto_answer
         self._settle = settle
         self._batch = batch
         self._pending: dict[PRRef, str] = {}  # to plan on the next pass: review or rereview
@@ -127,6 +134,9 @@ class LeadWorker(BaseWorker):
 
     async def on_bus_message(self, message: BusMessage) -> None:
         await super().on_bus_message(message)
+        if isinstance(message, PRChanged) and message.change == PRChange.REPLIED:
+            ref = PRRef.parse(message.pr)
+            self.create_task(self._answer(ref), f"{self}::answer::{ref}")
         if not self._auto_review:
             return
         if isinstance(message, Synced):
@@ -140,6 +150,16 @@ class LeadWorker(BaseWorker):
         elif isinstance(message, PRChanged) and message.change == PRChange.NEW_COMMITS:
             self._pending[PRRef.parse(message.pr)] = "rereview"
             self._wake.set()
+
+    async def _answer(self, ref: PRRef) -> None:
+        """Someone said something on your own PR: the agent reads it (``auto_answer``)."""
+        pr = await self._store.get_pr(ref)
+        if not self._auto_answer or pr is None or not pr.authored:
+            return
+        try:
+            await request(self, AnswerComments(pr=ref), timeout=30)
+        except PurrError as e:
+            logger.warning(f"Couldn't have the comments on {ref} read: {e}")
 
     @handles(PlanReviews)
     async def plan_reviews(self, request: PlanReviews) -> Planned:

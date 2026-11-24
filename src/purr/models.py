@@ -317,6 +317,9 @@ class Priority(StrEnum):
         return list(Priority).index(self)
 
 
+ANSWERING = "comments"  # a ReviewPlan's ``by``: not a review, the comments on your PR
+
+
 @dataclass(frozen=True)
 class ReviewPlan:
     """What Purr's lead decided a PR's review needs (see :mod:`purr.lead`).
@@ -326,7 +329,8 @@ class ReviewPlan:
         priority: Where it goes in line.
         focus: What the review should look at hardest, specific to the PR.
         why: One line for the user: why this depth and priority.
-        by: ``lead`` when the lead planned it, ``default`` when it couldn't.
+        by: ``lead`` when the lead planned it, ``default`` when it couldn't,
+            ``comments`` to answer the comments on your own PR (not a review).
     """
 
     depth: Depth = Depth.FULL
@@ -334,6 +338,16 @@ class ReviewPlan:
     focus: tuple[str, ...] = ()
     why: str = ""
     by: str = "default"
+
+    @classmethod
+    def answering(cls) -> "ReviewPlan":
+        """Not a review: reading what others said on your own PR (see ReviewWorker.answer).
+        High priority, since someone's waiting for your answer."""
+        return cls(priority=Priority.HIGH, why="Someone commented on your PR", by=ANSWERING)
+
+    @property
+    def answers_comments(self) -> bool:
+        return self.by == ANSWERING
 
     def to_dict(self) -> dict:
         return {

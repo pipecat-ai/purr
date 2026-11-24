@@ -38,7 +38,7 @@ from purr.messages import (
     StopAgent,
     Synced,
 )
-from purr.models import PR, ActionStatus, Depth, PRRef, PRState, ReviewStatus
+from purr.models import PR, ActionStatus, Depth, PRRef, PRState, Reply, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
 from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
@@ -110,7 +110,7 @@ async def make(tmp_path):
     cleanups = []
 
     async def build(
-        before_start=None, auto_review=True, permission_wait=300, max_reviews=3
+        before_start=None, auto_review=True, permission_wait=300, max_reviews=3, auto_answer=True
     ) -> Setup:
         store = await Store.open(":memory:")
         agent, repos, client, lead = FakeAgent(), FakeRepos(tmp_path), Client(), FakeLead()
@@ -126,7 +126,12 @@ async def make(tmp_path):
         )
         # The lead decides what gets reviewed (assigned PRs, new commits).
         lead_worker = LeadWorker(
-            store=store, agent=lead, repos=repos, auto_review=auto_review, settle=0.01
+            store=store,
+            agent=lead,
+            repos=repos,
+            auto_review=auto_review,
+            auto_answer=auto_answer,
+            settle=0.01,
         )
         runner = WorkerRunner(handle_sigint=False)
         await runner.add_workers(ActivityWorker(store=store), worker, lead_worker, client)
@@ -209,6 +214,47 @@ async def test_your_own_prs_are_not_reviewed_on_their_own(make):
     await s.client.send_bus_message(Synced(source="github"))
     await asyncio.sleep(0.2)
     assert s.agent.runs == []
+
+
+def replied(by: str) -> PRChanged:
+    return PRChanged(source="github", pr=str(REF), change="replied", title="Add message bus", by=by)
+
+
+async def test_comments_on_your_own_pr_are_read_and_answered(make):
+    s = await make()
+    alice = Reply("alice", "Needs a test.", "2026-11-21T10:00:00Z", "", "bus.py:42")
+    await s.store.upsert_pr(make_pr(authored=True))
+    await s.store.set_replies(REF, [alice])
+    await s.client.send_bus_message(replied("alice"))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    [run] = s.agent.runs
+    assert not run["resume"] and "- alice, on bus.py:42 (" in run["prompt"]
+    assert run["plan"].answers_comments and run["skill"] is None  # no review, no review skill
+    assert await s.state() == PRState.NEEDS_YOU  # what it proposes answering waits for you
+    assert await s.store.pending_actions(REF)
+
+    # More later: the same conversation goes on, with everything still unanswered.
+    bob = Reply("bob", "Why a lock?", "2026-11-21T11:00:00Z")
+    await s.store.set_replies(REF, [alice, bob])
+    await s.client.send_bus_message(replied("bob"))
+    await eventually(lambda: len(s.agent.runs) == 2)
+    again = s.agent.runs[1]
+    assert again["resume"] and again["session_id"] == run["session_id"]
+    assert "Needs a test." in again["prompt"] and "Why a lock?" in again["prompt"]
+
+
+async def test_comments_are_read_on_your_prs_only_and_when_on(make):
+    alice = Reply("alice", "Thoughts?", "2026-11-21T10:00:00Z")
+    s = await make()
+    await s.store.upsert_pr(make_pr())  # someone else's: replies to you need you, that's all
+    await s.store.set_replies(REF, [alice])
+    await s.client.send_bus_message(replied("alice"))
+    off = await make(auto_answer=False)
+    await off.store.upsert_pr(make_pr(authored=True))
+    await off.store.set_replies(REF, [alice])
+    await off.client.send_bus_message(replied("alice"))
+    await asyncio.sleep(0.2)
+    assert s.agent.runs == [] and off.agent.runs == []
 
 
 async def test_no_auto_review_when_turned_off(make):

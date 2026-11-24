@@ -473,3 +473,17 @@ def test_a_background_tasks_progress_becomes_an_entry():
     assert transcript_entries(message) == [
         {"kind": "task_progress", "id": "a1", "text": "Bug scan", "tool": "Grep", "tools": 14}
     ]
+
+
+def test_on_your_own_pr_the_agent_helps_you_with_it():
+    from purr.models import PR, ReviewPlan
+    from purr.review.agent import YOUR_PR_SECTION, ClaudeReviewAgent
+
+    pr = PR("a/b", 1, "Fix", "me", "https://github.com/a/b/pull/1", "abc", "2026-11-20T10:00:00Z")
+    agent = ClaudeReviewAgent()
+    assert YOUR_PR_SECTION not in agent._system_prompt(pr, "", None, None)
+    yours = agent._system_prompt(PR(**{**pr.__dict__, "authored": True}), "", None, None)
+    assert YOUR_PR_SECTION in yours and "use `comment`" in yours
+    # Reading comments is no review: no plan to follow.
+    answering = agent._system_prompt(pr, "", None, ReviewPlan.answering())
+    assert "How this review should go" not in answering
