@@ -2,7 +2,7 @@
  <img alt="pipecat" width="300px" height="auto" src="https://raw.githubusercontent.com/pipecat-ai/pipecat/main/pipecat.png">
 </div></h1>
 
-[![Tests](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml/badge.svg)](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml) [![Docs](https://img.shields.io/badge/Documentation-blue)](https://docs.pipecat.ai) [![Discord](https://img.shields.io/discord/1239284677165056021)](https://discord.gg/pipecat)
+[![PyPI](https://img.shields.io/pypi/v/pipecat-ai-purr)](https://pypi.org/project/pipecat-ai-purr) [![Tests](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml/badge.svg)](https://github.com/pipecat-ai/purr/actions/workflows/tests.yaml) [![Discord](https://img.shields.io/discord/1239284677165056021)](https://discord.gg/pipecat)
 
 # ᓚᘏᗢ Purr
 
