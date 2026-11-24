@@ -27,8 +27,15 @@ class Transcript(RichLog):
 
     _width: int | None = None
     _rewrap: Timer | None = None
+    _at_end = True  # scrolled to the end, where it stays when it gets shorter
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        self._at_end = new_value >= self.max_scroll_y
 
     def on_resize(self, event: events.Resize) -> None:
+        if self._at_end:  # shorter (the decision box came back): the last lines stay in view
+            self.scroll_end(animate=False)
         # Its whole width: a scrollbar coming or going mustn't start another rewrap.
         width = self.outer_size.width
         if self._width not in (None, width):
