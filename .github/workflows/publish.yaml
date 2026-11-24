@@ -2,7 +2,7 @@ name: publish
 
 # Releases a tag: builds it, publishes it to PyPI (trusted publishing: the "pypi"
 # environment, set up on PyPI for this repo and workflow), then makes the GitHub
-# release, with notes generated from the PRs since the last one.
+# release, with the tag's section of CHANGELOG.md as its notes.
 
 on:
   workflow_dispatch:
@@ -33,6 +33,12 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.13
+
+      # Before anything is published: a tag with no section in CHANGELOG.md stops here.
+      - name: Check the changelog has this version
+        env:
+          GITREF: ${{ github.event.inputs.gitref }}
+        run: uv run python scripts/release_changelog.py "${GITREF#v}" > /dev/null
 
       - name: Test
         run: |
@@ -79,14 +85,25 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.gitref }}
+
+      # The tag's section of CHANGELOG.md, without its heading: the release's title
+      # already says the version.
+      - name: Release notes from the changelog
+        env:
+          GITREF: ${{ github.event.inputs.gitref }}
+        run: python3 scripts/release_changelog.py --no-heading "${GITREF#v}" > release-notes.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
           GITREF: ${{ github.event.inputs.gitref }}
         run: |
           if gh release view "$GITREF" >/dev/null 2>&1; then
-            echo "Release $GITREF already exists"
+            gh release edit "$GITREF" --notes-file release-notes.md
           else
-            gh release create "$GITREF" --title "$GITREF" --generate-notes --verify-tag
+            gh release create "$GITREF" --title "$GITREF" --notes-file release-notes.md --verify-tag
           fi

@@ -174,7 +174,8 @@ Changes are recorded as [towncrier](https://towncrier.readthedocs.io/) fragments
 [`CHANGELOG.md`](https://github.com/pipecat-ai/purr/blob/main/CHANGELOG.md) will say.
 To release, run the **generate-changelog** workflow with the version: it opens a pull
 request with the release's notes. Once it's merged, tag it `vX.Y.Z` (the version comes
-from the tag, as Pipecat's does) and run the **publish** workflow with the tag.
+from the tag, as Pipecat's does) and run the **publish** workflow with the tag. The
+GitHub release's notes are the tag's section of `CHANGELOG.md`.
 
 ## 📄 License
 
