@@ -28,8 +28,11 @@ KNOWN = Known.of(
 
 def test_what_you_know_of_a_repo():
     assert KNOWN.folders[DEEPGRAM] == 2  # once per PR, however many files
-    assert KNOWN.folders["."] == 1
+    assert "." not in KNOWN.folders  # the top folder: README, pyproject.toml, ...
     assert KNOWN.authors == {"bob": 2}  # the PRs of theirs you reviewed, not yours
+    # What most PRs touch says nothing, once there are enough to tell.
+    many = [PastPR("me", ("changelog/1.md", f"src/{n % 4}/x.py"), yours=True) for n in range(12)]
+    assert set(Known.of(many).folders) == {"src/0", "src/1", "src/2", "src/3"}
 
 
 def test_small_and_where_youve_worked_comes_first():
@@ -48,7 +51,9 @@ def test_small_and_where_youve_worked_comes_first():
         "in services/deepgram, where you've been in 2 PRs",
         "you've reviewed 2 of bob's PRs",
     ]
-    assert why(small).startswith("Small (12 lines); in services/deepgram")
+    assert why(small).startswith(
+        "Small (12 lines); in services/deepgram, where you've been in 2 PRs"
+    )
     assert reasons(old) == ["waiting 23 days"]
     assert why(big) == "900 lines in 1 file"  # nothing stands out
 

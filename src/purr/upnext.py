@@ -26,26 +26,36 @@ from purr.claude import structured
 from purr.models import PR, FileChange, GHState, PastPR, PRRef, PRState, UpNext
 
 SMALL = 100  # lines: a PR this size or smaller says so
+# Folders more than this share of your PRs touched (changelog/, tests/) say nothing about
+# the code you know, once there are enough PRs to tell (MANY).
+COMMON = 1 / 3
+MANY = 10
 LONG_WAIT = 7  # days: a PR waiting this long says so
 
 
 @dataclass(frozen=True)
 class Known:
     """What you know of a repo: how many of your PRs (written or reviewed) touched each
-    folder, and how many of each author's PRs you reviewed (by lowercase login)."""
+    folder, and how many of each author's PRs you reviewed (by lowercase login).
+
+    Folders nearly every PR touches (changelog/, tests/), and the top one, are left
+    out: they say nothing about the code you know."""
 
     folders: Counter[str] = field(default_factory=Counter)
     authors: Counter[str] = field(default_factory=Counter)
 
     @classmethod
     def of(cls, past: Iterable[PastPR]) -> "Known":
+        past = list(past)
         folders: Counter[str] = Counter()
         authors: Counter[str] = Counter()
         for pr in past:
             folders.update({_folder(path) for path in pr.paths})  # once per PR
             if not pr.yours:
                 authors[pr.author.lower()] += 1
-        return cls(folders, authors)
+        common = len(past) >= MANY and COMMON * len(past)
+        telling = {f: n for f, n in folders.items() if f != "." and not (common and n > common)}
+        return cls(Counter(telling), authors)
 
 
 @dataclass(frozen=True)
@@ -117,7 +127,8 @@ def why(s: Signals) -> str:
     """Its reasons in a line: what's up next says, if the lead can't."""
     said = reasons(s)
     if said:
-        return "; ".join(said).capitalize()
+        line = "; ".join(said)
+        return line[:1].upper() + line[1:]  # not capitalize(): it'd lowercase "PRs"
     return f"{s.lines} lines in {s.files} file{'s' if s.files != 1 else ''}"
 
 
