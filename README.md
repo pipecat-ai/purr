@@ -10,6 +10,9 @@
 Claude reviews the pull requests assigned to you in the background. You read what it found,
 ask it questions, and decide what gets posted. **Nothing goes to GitHub until you say so.**
 
+Purr was first built to help review the many pull requests sent to
+[Pipecat](https://github.com/pipecat-ai/pipecat).
+
 ![Purr: a review that needs you, a question to the agent, a comment on a line of the diff, and posting the review](https://raw.githubusercontent.com/pipecat-ai/purr/main/purr.gif)
 
 ## ✨ What it does
