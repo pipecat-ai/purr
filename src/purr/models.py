@@ -170,6 +170,15 @@ class FileChange:
 
 
 @dataclass(frozen=True)
+class PastPR:
+    """A PR you wrote (merged) or reviewed, for what you know of a repo (see purr.upnext)."""
+
+    author: str
+    paths: tuple[str, ...]  # the files it changed (the first 50)
+    yours: bool  # you wrote it; else you reviewed it
+
+
+@dataclass(frozen=True)
 class PRComment:
     """What's said on a PR itself, not on a line: a comment, or a review's text."""
 

@@ -22,6 +22,7 @@ from purr.models import (
     FileChange,
     GHState,
     MergeCheck,
+    PastPR,
     PRComment,
     PRDetails,
     PRRef,
@@ -83,6 +84,14 @@ _CONVERSATION_FIELDS = """
     reviewThreads(last: 50) { nodes { path line
         comments(last: 30) { nodes { author { login __typename } createdAt body url } } } }
 """
+# What you know of a repo: your merged PRs there, and those of others you reviewed,
+# the latest 50 of each, with their files (see purr.upnext).
+_HISTORY = {
+    "wrote": "is:pr is:merged author:@me sort:updated-desc repo:{repo}",
+    "reviewed": "is:pr reviewed-by:@me -author:@me sort:updated-desc repo:{repo}",
+}
+_HISTORY_FIELDS = "author { login } files(first: 50) { nodes { path } }"
+_HISTORY_SIZE = 50
 _PAGE_SIZE = 100
 _STATUS_BATCH = 50
 _DETAILS_BATCH = 20
@@ -432,6 +441,27 @@ class GitHub:
             prs = search.add_page(None if alias in errored else body["data"].get(alias))
             if on_page and prs:
                 await on_page(alias, prs)
+
+    async def history(self, repo: str) -> list[PastPR]:
+        """Your latest merged PRs in ``repo``, and those of others you reviewed (50 of each),
+        with the files they changed: one request."""
+        declared = ", ".join(f"$q_{alias}: String!" for alias in _HISTORY)
+        fields = " ".join(
+            f"{alias}: search(query: $q_{alias}, type: ISSUE, first: {_HISTORY_SIZE}) {{"
+            f" nodes {{ ... on PullRequest {{ {_HISTORY_FIELDS} }} }} }}"
+            for alias in _HISTORY
+        )
+        variables: dict[str, str | int | None] = {
+            f"q_{alias}": query.format(repo=repo) for alias, query in _HISTORY.items()
+        }
+        body = await self.graphql(f"query({declared}) {{ {fields} }}", variables)
+        return [
+            PastPR(
+                _login(node), tuple(f["path"] for f in _nodes(node.get("files"))), alias == "wrote"
+            )
+            for alias in _HISTORY
+            for node in _nodes(body["data"].get(alias))
+        ]
 
     async def review_threads(self, ref: PRRef) -> list[dict]:
         """A PR's inline review threads, with their comments; ``by_user`` marks yours."""

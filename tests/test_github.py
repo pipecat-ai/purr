@@ -390,6 +390,26 @@ def test_on_your_own_pr_what_others_say_is_said_to_you():
     assert replies_to("me", conversation(threads=[("bus.py", 42, thread)])) == []
 
 
+async def test_what_you_know_of_a_repo():
+    from purr.models import PastPR
+
+    class History(GitHub):
+        async def graphql(self, query, variables):
+            assert variables["q_wrote"].endswith("author:@me sort:updated-desc repo:a/b")
+            files = {"nodes": [{"path": "src/x.py"}, {"path": "README.md"}]}
+            return {
+                "data": {
+                    "wrote": {"nodes": [{"author": {"login": "me"}, "files": files}]},
+                    "reviewed": {"nodes": [{"author": {"login": "bob"}, "files": {"nodes": []}}]},
+                }
+            }
+
+    assert await History(gh="gh-not-used").history("a/b") == [
+        PastPR("me", ("src/x.py", "README.md"), yours=True),
+        PastPR("bob", (), yours=False),
+    ]
+
+
 async def test_merge_check():
     class Merging(GitHub):
         async def graphql(self, query, variables):

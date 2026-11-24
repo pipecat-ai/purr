@@ -28,7 +28,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from purr.models import PR, PRRef
+from purr.models import PR, FileChange, PRRef
 
 
 class GitError(Exception):
@@ -97,6 +97,14 @@ def _blobs(raw_diff: str) -> set[str]:
             sides += [(fields[0].lstrip(":"), fields[2]), (fields[1], fields[3])]
     # Not a submodule, and not "none" (all zeros: the file was added or deleted).
     return {oid for mode, oid in sides if mode != "160000" and oid.strip("0")}
+
+
+def _file_change(numstat: str) -> FileChange:
+    """A line of ``git diff --numstat``: added, removed, path (a binary file's counts: -)."""
+    added, removed, path = numstat.split("\t", 2)
+    return FileChange(
+        path, int(added) if added.isdigit() else 0, int(removed) if removed.isdigit() else 0
+    )
 
 
 class GitRepos:
@@ -397,6 +405,20 @@ class GitRepos:
             except GitError:
                 return None
         return log.splitlines(), [" ".join(line.split("\t", 1)) for line in files.splitlines()]
+
+    async def numstat(self, pr: PR) -> list[FileChange] | None:
+        """The files the PR changes, with lines added and removed, from the clone (what the
+        sync brought: no network); None if the clone can't tell (yet)."""
+        clone = self.clone_path(pr.repo)
+        if not (clone / "HEAD").exists():
+            return None
+        try:
+            stat = await self._git(
+                clone, "diff", "--numstat", "--no-renames", self._range(pr), env=_NO_LAZY_FETCH
+            )
+        except GitError:
+            return None
+        return [_file_change(line) for line in stat.splitlines() if line.count("\t") >= 2]
 
     async def _fetch_head(self, clone: Path, pr: PR) -> None:
         """Fetch the PR's head, unless the clone has it already."""
