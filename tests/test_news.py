@@ -1,7 +1,7 @@
-"""What's news, and how it's said: the same for alerts, the activity log and recaps."""
+"""What's news, and how it's said: the same for live alerts and from the activity log."""
 
-from purr.models import Activity, PRChange
-from purr.news import _CHANGES, NEWS_KINDS, is_notable, news, recap_text
+from purr.models import PRChange
+from purr.news import _CHANGES, NEWS_KINDS, news
 
 
 def changed(change: str, **data) -> dict:
@@ -31,18 +31,3 @@ def test_news():
         "review.failed",
         "session.permission_request",
     }
-
-
-def test_recaps():
-    def activity(kind: str, **data) -> Activity:
-        return Activity(id=1, at="t", kind=kind, pr=None, data=data)
-
-    replied = activity("pr.changed", change="replied", by="alice")
-    assert recap_text(replied) == "alice replied to the user" and is_notable(replied)
-    unpooled = activity("pr.changed", change="unpooled")
-    assert not is_notable(unpooled)
-    unanswered = activity("session.permission_resolved", answered=False, description="run tests")
-    assert is_notable(unanswered)
-    assert recap_text(unanswered) == "nobody answered about: run tests; agent carried on"
-    assert not is_notable(activity("session.permission_resolved", answered=True))
-    assert not is_notable(activity("review.progress"))

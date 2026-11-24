@@ -22,7 +22,6 @@ from purr.models import (
     PendingAction,
     PRRef,
     PRState,
-    Recap,
     Reply,
     Repo,
     RepoSummary,
@@ -293,6 +292,12 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (repo, number)
     );
     """,
+    # No more "while you were away" recaps, nor knowing when you were last around,
+    # which only they used.
+    """
+    DROP TABLE recaps;
+    DROP TABLE meta;
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -365,17 +370,6 @@ def _pr(row: aiosqlite.Row) -> PR:
 
 def _repo(row: aiosqlite.Row) -> Repo:
     return Repo(name=row["name"], added_at=row["added_at"], synced_at=row["synced_at"])
-
-
-def _recap(row: aiosqlite.Row) -> Recap:
-    return Recap(
-        id=row["id"],
-        since=row["since"],
-        until=row["until"],
-        headline=row["headline"],
-        items=json.loads(row["items"]),
-        created_at=row["created_at"],
-    )
 
 
 def _activity(row: aiosqlite.Row) -> Activity:
@@ -984,38 +978,6 @@ class Store:
             [*params, limit],
         )
         return [(PRRef(row["repo"], row["number"]), row["text"]) for row in rows]
-
-    # -- Meta and recaps --------------------------------------------------------
-
-    async def get_meta(self, key: str) -> str | None:
-        row = await self._fetchone("SELECT value FROM meta WHERE key = ?", (key,))
-        return row["value"] if row else None
-
-    async def set_meta(self, key: str, value: str) -> None:
-        await self._db.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?)"
-            " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        await self._db.commit()
-
-    async def add_recap(self, *, since: str, until: str, headline: str, items: list[dict]) -> Recap:
-        cursor = await self._db.execute(
-            "INSERT INTO recaps (since, until, headline, items, created_at) VALUES (?, ?, ?, ?, ?)",
-            (since, until, headline, json.dumps(items), _now()),
-        )
-        await self._db.commit()
-        recap = await self.get_recap(cursor.lastrowid)
-        assert recap is not None
-        return recap
-
-    async def get_recap(self, recap_id: int) -> Recap | None:
-        row = await self._fetchone("SELECT * FROM recaps WHERE id = ?", (recap_id,))
-        return _recap(row) if row else None
-
-    async def latest_recap(self) -> Recap | None:
-        row = await self._fetchone("SELECT * FROM recaps ORDER BY id DESC LIMIT 1")
-        return _recap(row) if row else None
 
     # -- Reviews ---------------------------------------------------------------
 

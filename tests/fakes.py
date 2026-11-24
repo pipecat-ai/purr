@@ -360,24 +360,6 @@ class FakeWriter:
         return f"https://github.com/reply/{len(self.replies)}"
 
 
-class FakeRecapAgent:
-    """Stands in for purr.recap.ClaudeRecapAgent: one item per PR mentioned in the notes."""
-
-    def __init__(self):
-        self.notes: list[str] = []
-        self.fail = False
-
-    async def summarize(self, notes):
-        import re
-
-        self.notes.append(notes)
-        if self.fail:
-            raise RuntimeError("no recap today")
-        prs = list(dict.fromkeys(re.findall(r"[\w.-]+/[\w.-]+#\d+", notes)))
-        items = [{"pr": pr, "text": "Something happened", "needs_you": True} for pr in prs]
-        return f"{len(prs)} PRs need you.", items
-
-
 def make_plugin(root, skills: dict[str, str], *, name: str = "pipecat", commands=None):
     """A repo plugin as GitRepos.plugin builds it: ``skills`` and ``commands`` map
     names to their descriptions (or to whole frontmatter dicts)."""

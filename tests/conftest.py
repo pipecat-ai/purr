@@ -25,7 +25,7 @@ def no_real_claude(monkeypatch):
     import purr.claude
     import purr.review.agent
 
-    # The lead's plans, recaps and suggestions all go through purr.claude.structured.
+    # The lead's plans and picks, and suggestions, all go through purr.claude.structured.
     monkeypatch.setattr(purr.claude, "query", _no_claude)
     monkeypatch.setattr(purr.review.agent, "ClaudeSDKClient", _no_claude)
 

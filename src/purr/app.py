@@ -11,7 +11,6 @@ from purr.config import Config
 from purr.git import GitRepos
 from purr.github import GitHub
 from purr.lead import ClaudeLead, LeadAgent
-from purr.recap import ClaudeRecapAgent, RecapAgent
 from purr.review.agent import ClaudeReviewAgent, ReviewAgent
 from purr.review.instructions import ReviewInstructions
 from purr.review.rules import RepoRules
@@ -23,7 +22,6 @@ from purr.workers import (
     GitHubWorker,
     GitWorker,
     LeadWorker,
-    RecapWorker,
     ReviewWorker,
     SuggestionWorker,
     UpNextWorker,
@@ -44,7 +42,6 @@ class Purr:
         agent: Runs review sessions (a fake in tests).
         repos: Clones and worktrees (a fake in tests).
         writer: Posts approved actions to GitHub (a fake in tests).
-        recap_agent: Writes "while you were away" recaps (a fake in tests).
         lead: Plans each review: how deep, what to focus on, what goes first
             (a fake in tests).
         suggester: Suggests what you might ask next in a PR's session (a fake in
@@ -63,7 +60,6 @@ class Purr:
         agent: ReviewAgent | None = None,
         repos: GitRepos | None = None,
         writer: GitHubWriter | None = None,
-        recap_agent: RecapAgent | None = None,
         lead: LeadAgent | None = None,
         suggester: Suggester | None = None,
         picker: Picker | None = None,
@@ -83,7 +79,6 @@ class Purr:
         )
         self._repos = repos or GitRepos(config.data_dir)
         self._writer = writer
-        self._recap_agent = recap_agent or ClaudeRecapAgent(model=config.review_model)
         self._lead = lead or ClaudeLead(model=config.lead_model)
         model = config.suggestion_model
         self._suggester = suggester or (ClaudeSuggester(model=model) if model else None)
@@ -179,7 +174,6 @@ class Purr:
                 auto_review=self._config.auto_review,
                 auto_answer=self._config.auto_answer,
             ),
-            RecapWorker(store=store, agent=self._recap_agent),
             SuggestionWorker(store=store, agent=self._agent, suggester=self._suggester),
             GitWorker(store=store, repos=self._repos, github=self._github),
             UpNextWorker(

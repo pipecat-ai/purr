@@ -33,7 +33,8 @@ Purr was first built to help review the many pull requests sent to
   them; the agent's wait for you to approve its review.
 - **Posting and merging are a key each.** `a` posts the review as you. `m` shows the checks,
   the other reviewers and any conflicts, then merges what you approved.
-- **It follows several repos at once**, and recaps what happened while you were away.
+- **It follows several repos at once**, and what happened since you last looked shows as
+  news.
 - **It's safe by default.** The agents ask before doing anything risky, can run in a sandbox,
   and follow the repo's rules from its main branch, so a PR can't change what it's reviewed
   against.
@@ -103,7 +104,7 @@ work everywhere. The main ones:
 | `m` | Merge a PR you approved: once to see where it stands, again to merge |
 | `t` / `z` | The agent's reasoning in full / full screen |
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
-| `ctrl+p` / `ctrl+n` / `w` | Find any repo or PR / the latest news / what happened while you were away |
+| `ctrl+p` / `ctrl+n` | Find any repo or PR / the latest news |
 | `i` | Settings: your review and code style, permissions, the repo's review skill, Purr's settings and theme |
 | `esc` / `q` | Back a step: out of full screen; in the PR's pane, stop the agent while it works; out of the prompt or the diff; a search, cleared; then home / quit |
 

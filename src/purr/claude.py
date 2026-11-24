@@ -43,8 +43,8 @@ def log_stderr(line: str) -> None:
 async def structured(
     notes: str, *, instructions: str, schema: dict, model: str | None, what: str
 ) -> dict:
-    """One tool-less call that answers in ``schema``'s shape: the lead's plans, recaps,
-    suggestions. Raises RuntimeError (saying no ``what`` came back) if it doesn't."""
+    """One tool-less call that answers in ``schema``'s shape: the lead's plans and picks,
+    and suggestions. Raises RuntimeError (saying no ``what`` came back) if it doesn't."""
     options = ClaudeAgentOptions(
         system_prompt=instructions,
         tools=[],

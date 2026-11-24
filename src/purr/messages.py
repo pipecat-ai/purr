@@ -25,7 +25,6 @@ from purr.review.skills import RepoSkill, Skill
 # Worker names (bus addresses).
 GITHUB_WORKER = "github"
 REVIEW_WORKER = "reviews"
-RECAP_WORKER = "recap"
 GIT_WORKER = "git"
 LEAD_WORKER = "lead"
 SUGGEST_WORKER = "suggestions"
@@ -52,23 +51,6 @@ class PlanReviews(Request[Planned]):
     timeout: ClassVar[float] = 180
     prs: list[PRRef]
     depth: Depth | None = None
-
-
-# RECAP_WORKER
-
-
-@dataclass(kw_only=True)
-class RecapMade:
-    recap_id: int | None  # None: nothing notable happened
-
-
-@dataclass(kw_only=True)
-class MakeRecap(Request[RecapMade]):
-    """Recap what happened since ``since`` (an ISO time)."""
-
-    worker: ClassVar[str] = RECAP_WORKER
-    timeout: ClassVar[float] = 180
-    since: str
 
 
 # SUGGEST_WORKER
@@ -714,22 +696,6 @@ class CommentsChanged(PurrEvent):
     kind: ClassVar[str] = "comments.changed"
     recorded: ClassVar[bool] = False
     pr: str
-
-
-@dataclass(kw_only=True)
-class UserActive(PurrEvent):
-    """The user did something (a key, a voice turn). Sent at most about once a minute."""
-
-    kind: ClassVar[str] = "user.active"
-    recorded: ClassVar[bool] = False
-
-
-@dataclass(kw_only=True)
-class RecapReady(PurrEvent):
-    kind: ClassVar[str] = "recap.ready"
-    recorded: ClassVar[bool] = False
-    recap_id: int
-    headline: str
 
 
 _BASE_FIELDS = {f.name for f in fields(BusMessage)}

@@ -169,9 +169,9 @@ async def test_claude_codes_stderr_never_reaches_your_terminal(monkeypatch, tmp_
 
     import purr.claude
     import purr.lead
-    import purr.recap
     import purr.review.agent
     import purr.suggest
+    import purr.upnext
     from purr.claude import log_stderr
     from purr.models import PR
 
@@ -195,7 +195,7 @@ async def test_claude_codes_stderr_never_reaches_your_terminal(monkeypatch, tmp_
     with pytest.raises(Stop):
         await purr.lead.ClaudeLead().plan("notes")
     with pytest.raises(Stop):
-        await purr.recap.ClaudeRecapAgent().summarize("notes")
+        await purr.upnext.ClaudePicker().pick("notes", 5)
     with pytest.raises(Stop):
         await purr.suggest.ClaudeSuggester(model="m").suggest("notes")
     with pytest.raises(Stop):

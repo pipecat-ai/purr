@@ -80,7 +80,7 @@ class Config:
         "(Up next): small ones, in code you know, chosen by the lead. 0: none.",
     )
     review_model: str | None = _setting(
-        None, about="Model for reviews and the recap. Empty: Claude Code's default."
+        None, about="Model for reviews. Empty: Claude Code's default."
     )
     lead_model: str | None = _setting(
         "claude-sonnet-5-5",
@@ -99,9 +99,6 @@ class Config:
     )
     review_budget_usd: float | None = _setting(
         None, about="Spending cap per review run, in US dollars. Empty: none."
-    )
-    away_after: float = _setting(
-        15 * 60, about="Seconds without a key after which you're away (the recap's for then)."
     )
     permission_wait: float = _setting(
         5 * 60,

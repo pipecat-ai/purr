@@ -21,7 +21,6 @@ from tests.fakes import (
     FakeGitHub,
     FakeLead,
     FakePicker,
-    FakeRecapAgent,
     FakeRepos,
     FakeSuggester,
     FakeWriter,
@@ -38,7 +37,6 @@ def make_app(tmp_path, cwd=None, **settings) -> tuple[PurrApp, FakeGitHub]:
         agent=FakeAgent(),
         repos=FakeRepos(tmp_path / "data"),
         writer=FakeWriter(github),
-        recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=FakeSuggester(),
         picker=FakePicker(),
@@ -208,7 +206,6 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         agent=agent,
         repos=FakeRepos(tmp_path / "data"),
         writer=writer,
-        recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=FakeSuggester(),
         picker=FakePicker(),
@@ -472,40 +469,6 @@ async def test_news_survives_a_restart_and_shows_in_bold(tmp_path):
         await pilot.press("n")
         await until(pilot, lambda: not bold("Message bus"))
         assert "pipecat-ai/pipecat#1" not in app.alerts
-
-
-async def test_coming_back_shows_a_recap(tmp_path):
-    from datetime import UTC, datetime, timedelta
-
-    from purr.models import PRRef
-    from purr.tui.recap import RecapScreen
-
-    app, github = make_app(tmp_path)
-    github.assigned = [remote(7, repo="daily-co/daily-x", title="Win CI fix")]
-    async with app.run_test(size=(140, 45)) as pilot:
-        # The assigned PR gets reviewed while we're "away".
-        await until(pilot, lambda: app.repo_names == ["daily-co/daily-x"])
-        ref = PRRef("daily-co/daily-x", 7)
-
-        async def reviewed():
-            return bool(await app.purr.store.pending_actions(ref))
-
-        while not await reviewed():
-            await pilot.pause(0.02)
-        app._last_active = datetime.now(UTC) - timedelta(hours=1)
-
-        await pilot.press("down")  # any key: we're back
-        await until(pilot, lambda: isinstance(app.screen, RecapScreen))
-        recap = app.screen
-        await until(pilot, lambda: recap.query_one("#recap-items").option_count > 0)
-        assert "need you" in str(recap.query_one("#recap-headline").render())
-
-        await pilot.press("enter")
-        await until(pilot, lambda: in_repo(app, "daily-co/daily-x"))
-
-        # w shows the latest recap again.
-        await pilot.press("escape", "w")
-        await until(pilot, lambda: isinstance(app.screen, RecapScreen))
 
 
 def option_texts(app: PurrApp) -> list[str]:
