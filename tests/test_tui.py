@@ -20,6 +20,7 @@ from tests.fakes import (
     FakeAgent,
     FakeGitHub,
     FakeLead,
+    FakePicker,
     FakeRecapAgent,
     FakeRepos,
     FakeSuggester,
@@ -40,6 +41,7 @@ def make_app(tmp_path, cwd=None, **settings) -> tuple[PurrApp, FakeGitHub]:
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=FakeSuggester(),
+        picker=FakePicker(),
         handle_sigint=False,
     )
     return PurrApp(purr, cwd=cwd), github
@@ -209,6 +211,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=FakeSuggester(),
+        picker=FakePicker(),
         handle_sigint=False,
     )
     app = PurrApp(purr)
@@ -1381,10 +1384,38 @@ async def test_your_own_prs_have_a_group_and_a_column(tmp_path):
 
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
-        text = "\n".join(option_texts(app))
-        assert text.index("YOUR PRS (1)") < text.index("My fix") < text.index("NOT REVIEWED (1)")
+
+        def in_order(*parts: str) -> bool:
+            text = "\n".join(option_texts(app))  # as drawn, which may be a frame behind
+            return all(part in text for part in parts) and sorted(parts, key=text.index) == [*parts]
+
+        await until(pilot, lambda: in_order("YOUR PRS (1)", "My fix", "NOT REVIEWED (1)"))
         app.main.repo.select("pipecat-ai/pipecat#5", repo="pipecat-ai/pipecat")
         await until(pilot, lambda: header(app).count("Your PR · r to review it yourself"))
+
+
+async def test_up_next_in_the_list_the_pr_and_at_home(tmp_path):
+    from purr.models import FileChange, PRRef
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Big one"), remote(2, title="Tiny fix")]
+    app.purr._repos.stats = {
+        PRRef("pipecat-ai/pipecat", 1): [FileChange("src/big.py", 900, 0)],
+        PRRef("pipecat-ai/pipecat", 2): [FileChange("src/x.py", 2, 1)],
+    }
+    app.purr._picker.choose = [2]
+    async with app.run_test(size=(160, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await until(pilot, lambda: "UP NEXT" in " ".join(option_texts_of(app.main.repos)))
+        await until(pilot, lambda: option_texts_of(app.main.repos)[-1].split()[5] == "1")
+
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        text = "\n".join(option_texts(app))
+        assert text.index("UP NEXT (1)") < text.index("Tiny fix  Why #2") < text.index("Big one")
+        app.main.repo.select("pipecat-ai/pipecat#2", repo="pipecat-ai/pipecat")
+        await until(pilot, lambda: "➜ Up next: Why #2" in header(app))
 
 
 async def test_the_latest_done_prs_come_before_the_pool(tmp_path):

@@ -15,7 +15,7 @@ from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
 from purr.messages import FetchDetails, GetDiff
-from purr.models import PR, PRState
+from purr.models import PR, PRState, UpNext
 from purr.tui.diffview import DiffPane
 from purr.tui.keys import REPO_KEYS
 from purr.tui.lists import (
@@ -24,6 +24,7 @@ from purr.tui.lists import (
     GROUPS,
     HEADING,
     ICONS,
+    UP_NEXT,
     PRGroup,
     PRList,
     blank,
@@ -84,6 +85,7 @@ class RepoView(PRKeys):
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
         self._outcomes: dict = {}  # PRRef -> what its latest review found
+        self._up_next: dict[str, UpNext] = {}  # what's up next in the repo, by PR
         self._listed: str | None = None  # the repo whose PRs the list has
         self._folded: dict[str, set[str]] = {}  # repo -> its groups folded (←)
 
@@ -126,6 +128,7 @@ class RepoView(PRKeys):
         store = self.purr_app.purr.store
         self._all = await store.list_prs(repo=self.repo, open_only=True)
         self._outcomes = await store.outcomes(self.repo)
+        self._up_next = {str(pick.pr): pick for pick in await store.up_next(self.repo)}
         self._number_width = max((len(f"#{pr.number}") for pr in self._all), default=5)
         self._list()
 
@@ -168,15 +171,24 @@ class RepoView(PRKeys):
         """The PRs in their groups; empty groups left out."""
         groups = []
         for key, icon, label, style in GROUPS:
-            members = [pr for pr in prs if group(pr) == key]
+            members = [pr for pr in prs if self._group(pr) == key]
             if not members:
                 continue
+            if key == UP_NEXT:  # best first
+                members.sort(key=lambda pr: self._up_next[str(pr.ref)].rank)
             title = Text(f"{icon} {label} ({len(members)})", style=style)
             if key == PRState.DONE:
                 members, note = self._latest_done(members)
                 title.append(note, style="dim")
             groups.append(PRGroup(key, title, style, members))
         return groups
+
+    def _group(self, pr: PR) -> str:
+        """Its group in the list: up next, if it's in the pool and the lead picked it."""
+        listed = group(pr)
+        return (
+            UP_NEXT if listed == PRState.NOT_REVIEWED and str(pr.ref) in self._up_next else listed
+        )
 
     def _latest_done(self, done: list[PR]) -> tuple[list[PR], str]:
         """Done PRs, latest first: only the latest few, unless searching, and a note saying so."""
@@ -228,7 +240,14 @@ class RepoView(PRKeys):
 
     def _prompt(self, pr: PR) -> Table:
         unread = str(pr.ref) in self.purr_app.alerts
-        return pr_row(pr, self._mark(pr), unread=unread, number_width=self._number_width)
+        pick = self._up_next.get(str(pr.ref)) if self._group(pr) == UP_NEXT else None
+        return pr_row(
+            pr,
+            self._mark(pr),
+            unread=unread,
+            number_width=self._number_width,
+            note=pick.why if pick else "",
+        )
 
     def _mark(self, pr: PR) -> Text:
         """Marked; its agent at work (spinning); what its review found; or its group's."""
@@ -237,7 +256,7 @@ class RepoView(PRKeys):
         if str(pr.ref) in self._spinning:
             return Text(FRAMES[self._frame % len(FRAMES)], style=f"bold {palette().working}")
         outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
-        return outcome_mark(outcome) if outcome else Text(ICONS[group(pr)])
+        return outcome_mark(outcome) if outcome else Text(ICONS[self._group(pr)])
 
     def selected_pr(self) -> PR | None:
         option = self.query_one(OptionList).highlighted_option
@@ -252,7 +271,7 @@ class RepoView(PRKeys):
             option_list = self.query_one(OptionList)
             option_list.highlighted = option_list.get_option_index(pr)
         elif listed := next((p for p in self._all if str(p.ref) == pr), None):
-            self._folded.get(repo, set()).discard(group(listed))  # its group opens
+            self._folded.get(repo, set()).discard(self._group(listed))  # its group opens
             self._list()  # or an older done one: listed now that it's selected
 
     @on(OptionList.OptionHighlighted)
@@ -425,7 +444,8 @@ class RepoView(PRKeys):
     def _fold_of(self, ref: str | None) -> str | None:
         """The heading of the folded group a PR is in, if it is in one."""
         pr = next((pr for pr in self._all if str(pr.ref) == ref), None)
-        return f"{HEADING}{group(pr)}" if pr and group(pr) in self._folded_now() else None
+        key = self._group(pr) if pr else None
+        return f"{HEADING}{key}" if key and key in self._folded_now() else None
 
     def on_heading(self) -> bool:
         """Whether the cursor's on a group's heading, to fold or open (not while searching:

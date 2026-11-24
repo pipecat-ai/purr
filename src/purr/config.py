@@ -74,6 +74,11 @@ class Config:
         "code, and proposes what to change and what to answer, for you to post. Off: only "
         "when you ask in the PR's conversation.",
     )
+    up_next: int = _setting(
+        5,
+        about="How many PRs from each watched repo's pool Purr suggests you look at next "
+        "(Up next): small ones, in code you know, chosen by the lead. 0: none.",
+    )
     review_model: str | None = _setting(
         None, about="Model for reviews and the recap. Empty: Claude Code's default."
     )

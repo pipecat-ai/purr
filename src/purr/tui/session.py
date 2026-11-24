@@ -831,6 +831,7 @@ class PRSession(Vertical):
         actions = await store.pending_actions(pr.ref)
         approved = await store.approved_head(pr.ref)
         mine = await store.draft_comments(pr.ref)
+        up_next = next((u.why for u in await store.up_next(pr.repo) if u.pr == pr.ref), "")
         if not self._showing(pr):
             return
         self.pr = pr
@@ -838,7 +839,7 @@ class PRSession(Vertical):
         state.approved, state.mine = approved, mine
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
-            self._header(pr, review, outcome, actions, state, details)
+            self._header(pr, review, outcome, actions, state, details, up_next)
         )
         self._show_working(state)
         self._suggest_next()
@@ -863,6 +864,7 @@ class PRSession(Vertical):
         actions: list[PendingAction],
         state: SessionState,
         details: PRDetails | None,
+        up_next: str = "",
     ) -> Text:
         text = Text()
         text.append(f"#{pr.number}", style=number_style())
@@ -870,6 +872,8 @@ class PRSession(Vertical):
         text.append(details_line(pr, details))
         text.append("\n")
         text.append(_review_status(pr, review, outcome, actions, state))
+        if up_next and review is None:  # why the lead thinks it's worth looking at next
+            text.append(f"\n➜ Up next: {up_next}", style="green")
         if pr.replies and review is not None:
             text.append(f" · {replied(pr.replies)}", style="yellow")
         if review and review.worktree_path and (where := _worktree_note(review.worktree_path)):

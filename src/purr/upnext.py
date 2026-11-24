@@ -14,13 +14,16 @@ lead chooses from the top of it. If it can't, the top of the shortlist is what's
 up next, its reasons joined.
 """
 
+import re
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import PurePosixPath
+from typing import Protocol
 
-from purr.models import PR, FileChange, GHState, PastPR, PRState
+from purr.claude import structured
+from purr.models import PR, FileChange, GHState, PastPR, PRRef, PRState, UpNext
 
 SMALL = 100  # lines: a PR this size or smaller says so
 LONG_WAIT = 7  # days: a PR waiting this long says so
@@ -121,6 +124,127 @@ def why(s: Signals) -> str:
 def shortlist(all_signals: Iterable[Signals], size: int = 15) -> list[Signals]:
     """The most worth looking at, best first."""
     return sorted(all_signals, key=score, reverse=True)[:size]
+
+
+INSTRUCTIONS = """\
+You're the lead in Purr, an app that helps the user review GitHub pull requests.
+From a repo's open PRs that nobody has taken yet, choose the few the user should
+look at next, best first. Each comes with what Purr knows: its size, where its
+lines are, whether the user has worked in that code or reviewed the author's PRs
+before, and how long it's waited.
+
+Favor PRs the user can review well and quickly: small and straightforward, in
+code they know. Having waited long counts a little. Leave out ones that look like
+they need someone else (a big feature in code the user has never touched),
+unless there's nothing better. The user's own instructions, and what they took
+or skipped lately, say what they care about.
+
+For each one you choose, `why`: one short line for the user, specific to the PR
+(e.g. "Small fix to Deepgram's reconnect; you've reviewed 8 PRs there."). Choose
+at most {count}. Judge from what's given; don't invent details.
+"""
+
+PICK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "picks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "pr": {"type": "string", "description": "#123"},
+                    "why": {"type": "string"},
+                },
+                "required": ["pr", "why"],
+            },
+        }
+    },
+    "required": ["picks"],
+}
+
+_MAX_INSTRUCTIONS = 3000
+
+
+def notes(
+    repo: str,
+    shortlisted: Sequence[Signals],
+    *,
+    instructions: str = "",
+    taken: Sequence[PR] = (),
+    skipped: Sequence[PR] = (),
+) -> str:
+    """What the lead is told to choose from."""
+    parts = [f"Repo: {repo}", "Nobody has taken these yet (Purr's best guess first):"]
+    parts.append("\n".join(_described(s) for s in shortlisted))
+    if taken:
+        parts.append("The user lately took:\n" + "\n".join(_titled(pr) for pr in taken))
+    if skipped:
+        parts.append("The user said these weren't for them:\n" + "\n".join(map(_titled, skipped)))
+    if instructions.strip():
+        parts.append("The user's own instructions:\n" + instructions.strip()[:_MAX_INSTRUCTIONS])
+    return "\n\n".join(parts)
+
+
+def _described(s: Signals) -> str:
+    pr = s.pr
+    who = f"{pr.author} ({pr.author_association.lower()})" if pr.author_association else pr.author
+    said = [f"{s.lines} lines in {s.files} files", *reasons(s)]
+    return f"- #{pr.number} “{pr.title}” by {who}, opened {int(s.waited)} days ago: " + "; ".join(
+        said
+    )
+
+
+def _titled(pr: PR) -> str:
+    return f"- #{pr.number} “{pr.title}” by {pr.author}"
+
+
+def picks_from(output: dict, shortlisted: Sequence[Signals], count: int) -> list[UpNext]:
+    """The lead's picks, of those it was given, at most ``count``, in its order."""
+    offered = {s.pr.number: s.pr.ref for s in shortlisted}
+    picks: dict[PRRef, str] = {}
+    for pick in output.get("picks") or []:
+        number = _number(str(pick.get("pr", "")))
+        if number in offered and offered[number] not in picks:
+            picks[offered[number]] = str(pick.get("why") or "").strip()
+    chosen = list(picks.items())[:count]
+    return [UpNext(ref, why, rank, by="lead") for rank, (ref, why) in enumerate(chosen)]
+
+
+def _number(text: str) -> int | None:
+    """The PR number in ``#123``, ``123`` or ``owner/repo#123``."""
+    match = re.search(r"(\d+)\s*$", text)
+    return int(match.group(1)) if match else None
+
+
+def fallback(shortlisted: Sequence[Signals], count: int) -> list[UpNext]:
+    """Up next when the lead can't say: the top of the shortlist, with its reasons."""
+    return [UpNext(s.pr.ref, why(s), rank, by="purr") for rank, s in enumerate(shortlisted[:count])]
+
+
+class Picker(Protocol):
+    async def pick(self, notes: str, count: int) -> dict:
+        """The PRs to look at next, of those in ``notes``, as PICK_SCHEMA describes."""
+        ...
+
+
+class ClaudePicker:
+    """Chooses with a tool-less Agent SDK query and structured output (the lead's model).
+
+    Args:
+        model: Model to use; None uses Claude Code's configured default.
+    """
+
+    def __init__(self, *, model: str | None = None):
+        self._model = model
+
+    async def pick(self, notes: str, count: int) -> dict:
+        return await structured(
+            notes,
+            instructions=INSTRUCTIONS.format(count=count),
+            schema=PICK_SCHEMA,
+            model=self._model,
+            what="pick",
+        )
 
 
 def _folder(path: str) -> str:

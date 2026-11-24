@@ -60,3 +60,63 @@ def test_up_next_comes_from_the_pool():
     assert candidates([replace(pool, assignees=("alice",))]) == []  # taken
     assert candidates([replace(pool, state=PRState.DONE)]) == []
     assert candidates([replace(pool, requested_from_me=True)]) == []  # a group of its own
+
+
+def test_what_the_lead_picks_and_is_told():
+    from purr.models import PRRef, UpNext
+    from purr.upnext import notes, picks_from
+
+    small = signals(pr(1), [FileChange(f"{DEEPGRAM}/stt.py", 8, 4)], KNOWN, NOW)
+    big = signals(pr(2, "carol"), [FileChange("src/x.py", 900, 0)], KNOWN, NOW)
+    told = notes("pipecat-ai/pipecat", [small, big], instructions="Skip docs.", skipped=[pr(9)])
+    assert "- #1 “PR 1” by bob, opened 1 days ago: 12 lines in 1 files; small (12 lines)" in told
+    assert "weren't for them:\n- #9" in told and told.endswith("Skip docs.")
+
+    output = {"picks": [{"pr": "#2", "why": "Big."}, {"pr": "7", "why": "?"}, {"pr": "a/b#1"}]}
+    ref = PRRef("pipecat-ai/pipecat", 2)
+    assert picks_from(output, [small, big], count=1) == [UpNext(ref, "Big.", 0, by="lead")]
+    assert [p.pr.number for p in picks_from(output, [small, big], count=5)] == [2, 1]  # not #7
+
+
+async def test_up_next_is_the_leads_pick_from_the_pool(tmp_path):
+    from purr.models import PRRef
+    from purr.store import Store
+    from purr.workers import UpNextWorker
+    from tests.fakes import FakeGitHub, FakePicker, FakeRepos, remote
+
+    repo = "pipecat-ai/pipecat"
+    store = await Store.open(":memory:")
+    await store.add_repo(repo)
+    for number in (1, 2, 3):
+        await store.upsert_pr(remote(number, created_at="2026-11-20T00:00:00Z").to_pr("me"))
+    await store.upsert_pr(remote(4, assignees=("alice",)).to_pr("me"))  # taken
+    github, repos, picker = FakeGitHub(), FakeRepos(tmp_path), FakePicker()
+    github.past = [PastPR("me", (f"{DEEPGRAM}/stt.py",), yours=True)]
+    repos.stats = {
+        PRRef(repo, 1): [FileChange("src/big.py", 900, 0)],
+        PRRef(repo, 2): [FileChange(f"{DEEPGRAM}/stt.py", 3, 1)],
+        PRRef(repo, 4): [FileChange("x.py", 1, 0)],
+    }  # #3: the clone doesn't have it yet
+    worker = UpNextWorker(store=store, github=github, repos=repos, picker=picker, count=1)
+
+    assert await worker.pick(repo)
+    [told] = picker.notes
+    assert told.index("- #2 ") < told.index("- #1 ") and "- #3 " not in told and "- #4 " not in told
+    assert "where you've been in 1 PRs" in told
+    assert [(u.pr.number, u.why, u.by) for u in await store.up_next(repo)] == [
+        (2, "Why #2", "lead")
+    ]
+
+    # The same shortlist: the lead isn't asked again.
+    assert not await worker.pick(repo)
+    # The lead can't say: the top of the shortlist, with its reasons.
+    repos.stats[PRRef(repo, 3)] = [FileChange("docs/a.md", 1, 1)]
+    picker.fail_with, worker._ask_every = "offline", 0
+    assert await worker.pick(repo)
+    [pick] = await store.up_next(repo)
+    assert pick.by == "purr" and pick.why.startswith("Small (")
+
+    # Someone took it: it's no longer up next.
+    await store.upsert_pr(remote(pick.pr.number, assignees=("alice",)).to_pr("me"))
+    assert await store.up_next(repo) == []
+    await store.close()
