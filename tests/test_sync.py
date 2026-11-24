@@ -245,3 +245,31 @@ def test_prs_you_took_part_in_are_tracked_quietly_and_stay_so():
     assert plan_sync(current, snapshot, watched=WATCHED).deletes == []
     snapshot = Snapshot(open={"pipecat-ai/pipecat": [pool]}, assigned=[], involved=[])
     assert plan_sync(current, snapshot, watched=WATCHED).deletes == [PRRef("other/repo", 8)]
+
+
+def test_your_own_prs_are_tracked_quietly():
+    mine = replace(remote(5), author="me")  # the repo's search leaves it out: it's yours
+    assigned = replace(mine, assignees=("me",))  # authors often assign themselves
+    snapshot = Snapshot(
+        open={"pipecat-ai/pipecat": []}, assigned=[assigned], mine=[mine], viewer="me"
+    )
+    plan = plan_sync([], snapshot, watched=WATCHED)
+    [pr] = plan.upserts
+    assert pr.authored and pr.assigned_to_me and not pr.in_pool
+    assert plan.changes == []  # you opened it and assigned yourself: not news
+
+    # Pushing to it, or assigning yourself later: not news either.
+    old = replace(pr, assigned_to_me=False, assignees=(), state=PRState.DONE)
+    pushed = replace(assigned, head_sha="bbb")
+    snapshot = Snapshot(
+        open={"pipecat-ai/pipecat": []}, assigned=[pushed], mine=[pushed], viewer="me"
+    )
+    assert plan_sync([old], snapshot, watched=WATCHED).changes == []
+
+    # Its search failed: nothing's concluded about it.
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": []}, assigned=[], mine=None, viewer="me")
+    assert plan_sync([pr], snapshot, watched=WATCHED).deletes == []
+    # Merged, say: out of every search, so out of the list, quietly.
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": []}, assigned=[], mine=[], viewer="me")
+    plan = plan_sync([pr], snapshot, watched=WATCHED)
+    assert plan.deletes == [pr.ref] and plan.changes == []

@@ -171,6 +171,7 @@ class Purr:
                 repos=self._repos,
                 instructions=self._instructions,
                 auto_review=self._config.auto_review,
+                auto_answer=self._config.auto_answer,
             ),
             RecapWorker(store=store, agent=self._recap_agent),
             SuggestionWorker(store=store, agent=self._agent, suggester=self._suggester),

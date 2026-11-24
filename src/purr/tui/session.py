@@ -349,16 +349,27 @@ def _review_status(
         return Text(f"✗ Review failed: {review.error}", style="bold red")
     if review.status == ReviewStatus.FINISHED:
         mark = outcome_mark(outcome)
-        # How deep it went: a quick look deserves less trust than a full review.
-        kind = f"{review.plan.depth.value.capitalize()} review" if review.plan else "Review"
+        kind = _review_kind(review.plan)
         pending = f" · {len(actions)} pending action" if actions else ""
         said = f" {kind}: {outcome.text()}"
         return Text.assemble(mark, (said, mark.style), (pending, "yellow"))
     return Text()
 
 
+def _review_kind(plan: ReviewPlan | None) -> str:
+    """What the review was: how deep it went (a quick look deserves less trust than a full
+    review), or a reading of the comments on your PR."""
+    if plan is None:
+        return "Review"
+    return "Comments" if plan.answers_comments else f"{plan.depth.value.capitalize()} review"
+
+
 def _not_reviewed(pr: PR) -> Text:
-    """Nobody's review yet, or only others': and how to start yours."""
+    """Nobody's review yet, or only others': and how to start yours. Yours, it says so."""
+    if pr.authored:
+        return Text.assemble(
+            ("◆ Your PR", "bold blue"), (" · r to review it yourself · d diff", "dim")
+        )
     text = Text()
     text.append("◌ Not reviewed by you" if pr.others_on_it else "○ Not reviewed", style="bold")
     if pr.requested_from_me:
@@ -388,6 +399,8 @@ def _about(quote: Quote) -> str:
 def _plan_note(plan: ReviewPlan) -> str:
     """What the lead planned, and why: while the review waits or runs (its place in line,
     how deep it goes)."""
+    if plan.answers_comments:
+        return "Reading what others said on your PR, to propose what to change and answer"
     line = f"Planned: a {plan.depth.value} review, {plan.priority.value} priority"
     return line + (f". {plan.why}" if plan.why else "")
 

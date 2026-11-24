@@ -5,6 +5,7 @@ import pytest
 from purr.github import (
     ASSIGNED_QUERY,
     COMMENTED_QUERY,
+    MINE_QUERY,
     OPEN_QUERY,
     REQUESTED_QUERY,
     REVIEWED_QUERY,
@@ -95,6 +96,7 @@ async def test_snapshot_follows_pages():
             REQUESTED_QUERY: [page([node(8, "other/repo", reviewRequests=requests)], total=1)],
             COMMENTED_QUERY: [page([node(5, "else/where"), node(6, "else/where")], total=2)],
             REVIEWED_QUERY: [page([node(6, "else/where"), node(7, "else/where")], total=2)],
+            MINE_QUERY: [page([node(4, "else/where", author={"login": "Me"}, isDraft=True)], 1)],
             open_query("pipecat-ai/pipecat"): [
                 page([node(1), node(2)], total=3, cursor="1"),
                 page([node(3)], total=3),
@@ -113,6 +115,10 @@ async def test_snapshot_follows_pages():
     assert not snapshot.assigned[0].to_pr("me").requested_from_me
     # Commented on or reviewed: once each.
     assert sorted(pr.number for pr in snapshot.involved) == [5, 6, 7]
+    # Yours, drafts too.
+    [mine] = snapshot.mine
+    assert mine.is_draft and mine.to_pr("me").authored
+    assert not snapshot.assigned[0].to_pr("me").authored
     # One request for the first pages, a second only for the repo with more.
     assert len(github.calls) == 2
     assert [k for k in github.calls[1] if k.startswith("q_")] == ["q_r0"]
@@ -125,6 +131,7 @@ async def test_snapshot_drops_failed_and_incomplete_searches():
             REQUESTED_QUERY: [page([], total=0)],
             COMMENTED_QUERY: [page([], total=0)],
             REVIEWED_QUERY: "rate limited",
+            MINE_QUERY: "rate limited",
             open_query("pipecat-ai/pipecat"): [page([node(1)], total=2)],  # one missing
         }
     )
@@ -132,6 +139,7 @@ async def test_snapshot_drops_failed_and_incomplete_searches():
     assert snapshot.assigned is None
     assert snapshot.requested == []
     assert snapshot.involved is None  # half of it isn't all of it
+    assert snapshot.mine is None
     assert snapshot.open == {}
 
 
@@ -172,6 +180,7 @@ async def test_snapshot_incremental_and_pages():
             REQUESTED_QUERY: [page([], total=0)],
             COMMENTED_QUERY: [page([], total=0)],
             REVIEWED_QUERY: [page([], total=0)],
+            MINE_QUERY: [page([], total=0)],
             open_query("a/full"): [
                 page([node(1, "a/full")], total=2, cursor="1"),
                 page([node(2, "a/full")], total=2),
@@ -354,6 +363,31 @@ def test_saying_something_on_the_pr_answers_everything_before():
         reviews=[review("me", "t3")],
     )
     assert [reply.at for reply in replies_to("me", elsewhere)] == ["t2"]
+
+
+def test_on_your_own_pr_what_others_say_is_said_to_you():
+    yours = {"author": {"login": "Me"}, "createdAt": "t0"}  # opening it was your first word
+    thread = [said("carol", "t3", "Race here")]  # you're not in it: it's said to you all the same
+    pr = yours | conversation(
+        comments=[said("alice", "t2"), said("codecov", "t2", bot=True)],
+        reviews=[
+            review("carol", "t3", "CHANGES_REQUESTED", "Needs a test."),
+            review("dave", "t4", "APPROVED"),  # nothing to answer
+        ],
+        threads=[("bus.py", 42, thread)],
+    )
+    assert replies_to("me", pr) == [
+        Reply("alice", "alice at t2", "t2", "ut2"),
+        Reply("carol", "Requested changes: Needs a test.", "t3", ""),
+        Reply("carol", "Race here", "t3", "ut3", "bus.py:42"),
+    ]
+    # Answering in the thread answers it, until carol says more.
+    answered = yours | conversation(
+        threads=[("bus.py", 42, [*thread, said("me", "t5"), said("carol", "t6", "Thanks")])]
+    )
+    assert replies_to("me", answered) == [Reply("carol", "Thanks", "t6", "ut6", "bus.py:42")]
+    # Someone else's PR: a thread you're not in isn't said to you.
+    assert replies_to("me", conversation(threads=[("bus.py", 42, thread)])) == []
 
 
 async def test_merge_check():
