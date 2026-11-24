@@ -13,7 +13,7 @@ ask it questions, and decide what gets posted. **Nothing goes to GitHub until yo
 Purr was first built to help review the many pull requests sent to
 [Pipecat](https://github.com/pipecat-ai/pipecat).
 
-![Purr: a review that needs you, a question to the agent, a comment on a line of the diff, and posting the review](https://raw.githubusercontent.com/pipecat-ai/purr/main/purr.gif)
+![Purr: your repos, a review that needs you, your own PR, what's up next and why, a question to the agent, a comment on a line of the diff, and posting the review](https://raw.githubusercontent.com/pipecat-ai/purr/main/purr.gif)
 
 ## ✨ What it does
 
