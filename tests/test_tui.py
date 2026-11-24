@@ -1867,8 +1867,8 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert focused(app) == "diff"
         await pilot.press("home", "down", "down", "down", "down")
 
-        # c: a comment on that line, posted on GitHub when you save it (on its own, signed,
-        # at the PR's head): then it's there, in a box under the line, yours.
+        # c: a comment on that line, posted on GitHub when you save it (on its own, at the
+        # PR's head): then it's there, in a box under the line, yours.
         writer = app.purr._writer
         await pilot.press("c")
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
@@ -1876,12 +1876,12 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: writer.line_comments)
         _, posted, commit = writer.line_comments[0]
         assert (posted["path"], posted["line"], posted["side"]) == ("src/bus.py", 1, "RIGHT")
-        assert posted["body"].startswith("Why a lock?") and commit == "abc"
+        assert posted["body"] == "Why a lock?" and commit == "abc"
         await until(pilot, lambda: rows(view, "│ Why a lock? "))
         await pilot.press("down", "enter")  # enter on your box: the editor, to change it there
         await until(pilot, lambda: isinstance(app.screen, CommentScreen))
         body = app.screen.query_one("#comment-body")
-        assert body.text == "Why a lock?"  # its words (not the signature), to change
+        assert body.text == "Why a lock?"  # its words, to change
         # The ask box's keys, as in Emacs: ctrl+a/e, ctrl+b/f, alt+b/f, ctrl+k/u.
         await pilot.press("ctrl+a", "alt+f", "alt+f", "alt+f")
         assert body.cursor_location == (0, 10)

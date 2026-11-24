@@ -41,7 +41,6 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Label
 
-from purr.actions import unsigned
 from purr.diff import File, Gap, Line, gaps, parse
 from purr.jobs import PurrError, Request
 from purr.messages import (
@@ -921,7 +920,7 @@ class DiffPane(Vertical):
         if not (self.pr and row and row.said):
             return
         said = row.said
-        quote = quoted(unsigned(said.text, self.purr_app.purr.config.signature))
+        quote = quoted(said.text)
         if said.path:
             heading = f"Your reply on GitHub, to {said.who} on {said.path}:{said.line}"
             self._write(CommentScreen(heading, quote), partial(self._reply, said))
@@ -969,9 +968,8 @@ class DiffPane(Vertical):
         """What the editor says, what it starts with, and what saving it does."""
         if not said.path:  # on the PR itself
             if said.kind == "comment" and said.yours:
-                signature = self.purr_app.purr.config.signature
                 heading = "Your comment on the PR (saving changes it there)"
-                return heading, unsigned(said.text, signature), self._edit_pr_comment
+                return heading, said.text, self._edit_pr_comment
             return f"Your comment on the PR, to {said.who}", f"@{said.who} ", self._on_pr
         where = f"{said.path}:{said.line}"
         if said.source == "you":
@@ -979,9 +977,8 @@ class DiffPane(Vertical):
         if said.source == "agent":
             return f"The agent's proposed comment on {where}", said.text, self._rewrite_proposed
         if said.yours and said.id:
-            signature = self.purr_app.purr.config.signature
             heading = f"Your comment on GitHub, on {where} (saving changes it there)"
-            return heading, unsigned(said.text, signature), self._edit_on_github
+            return heading, said.text, self._edit_on_github
         return f"Your reply on GitHub, to {said.who} on {where}", "", self._reply
 
     async def _rewrite_mine(self, said: Said, text: str) -> None:

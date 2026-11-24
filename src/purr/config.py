@@ -102,11 +102,6 @@ class Config:
         about="Reviews running at once; the rest wait in line (your own messages in a PR's "
         "session never wait). Also --max-reviews.",
     )
-    signature: str = _setting(
-        "Sent from [Purr](https://github.com/pipecat-ai/purr).",
-        about="Small print at the end of what Purr posts (a review's text, each reply in a "
-        "thread), so readers know it came from Purr. Markdown. Empty: none.",
-    )
     permission_mode: str = _setting(
         "auto",
         about="Claude Code's permission mode for reviews: auto (safe things run, risky ones "

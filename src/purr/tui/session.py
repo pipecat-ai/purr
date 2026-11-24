@@ -131,14 +131,8 @@ def _short(value: str, width: int = 100) -> str:
 _VERDICT = {"request_changes": "Request changes", "approve": "Approve", "comment": "Comment"}
 
 
-_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-
-
-def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
-    """A proposed review, in full: what would be posted if the user approves.
-
-    ``signature`` is the small print Purr adds to the review's text and replies.
-    """
+def render_proposal(proposal: dict) -> RenderableType:
+    """A proposed review, in full: what would be posted if the user approves."""
     parts: list[RenderableType] = [
         Text(f"Proposed: {proposal.get('description', '')}", style="bold magenta")
     ]
@@ -148,9 +142,6 @@ def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
         parts.append(Markdown(body, code_theme=palette().code))
     elif proposal.get("kind") == "approve" and not proposal.get("comments"):
         parts.append(Text("LGTM"))  # what an approval with nothing to say posts
-    signature = _MARKDOWN_LINK.sub(r"\1", signature)  # as it reads on GitHub
-    if signature:
-        parts.append(Text(signature, style="dim italic"))
     for comment in proposal.get("comments") or []:
         line = Text("• ")
         line.append(f"{comment.get('path')}:{comment.get('line')}", style="cyan")
@@ -159,8 +150,6 @@ def render_proposal(proposal: dict, signature: str = "") -> RenderableType:
     for reply in proposal.get("replies") or []:
         line = Text("↳ reply in thread  ", style="dim")
         line.append(str(reply.get("body", "")))
-        if signature:
-            line.append(f"  {signature}", style="dim italic")
         parts.append(line)
     return Group(*parts)
 
@@ -196,13 +185,10 @@ def outcome_mark(outcome: Outcome) -> Text:
 class _RenderOptions:
     """What the renderers are told besides the entry."""
 
-    signature: str  # the small print Purr adds to what it posts
     full_thinking: bool  # thoughts in full, rather than a line each
 
 
-def render_entry(
-    entry: dict, signature: str = "", *, full_thinking: bool = False
-) -> RenderableType | None:
+def render_entry(entry: dict, *, full_thinking: bool = False) -> RenderableType | None:
     """A transcript entry as Claude Code would show it.
 
     Subagents' own steps aren't shown, only the call that started each one and
@@ -212,7 +198,7 @@ def render_entry(
     if entry.get("agent"):
         return None
     render = _RENDERERS.get(entry.get("kind"))
-    return render(entry, _RenderOptions(signature, full_thinking)) if render else None
+    return render(entry, _RenderOptions(full_thinking)) if render else None
 
 
 def _render_text(entry: dict, options: _RenderOptions) -> RenderableType:
@@ -251,7 +237,7 @@ def _render_tool_use(entry: dict, options: _RenderOptions) -> RenderableType:
     if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
         return _bullet(_render_submitted_review(tool_input), style="bold green")
     if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
-        return _bullet(render_proposal(tool_input, options.signature), style="magenta")
+        return _bullet(render_proposal(tool_input), style="magenta")
     line = Text(name.removeprefix(PURR_TOOL_PREFIX), style="bold")
     target = next((tool_input[key] for key in _TOOL_TARGETS if tool_input.get(key)), "")
     if target:
@@ -814,8 +800,7 @@ class PRSession(Vertical):
         Like Claude Code, a tool call and its result are one step: no line between.
         """
         app = self.purr_app
-        signature = app.purr.config.signature
-        if (renderable := render_entry(entry, signature, full_thinking=app.full_thinking)) is None:
+        if (renderable := render_entry(entry, full_thinking=app.full_thinking)) is None:
             return
         log = self.query_one(RichLog)
         if self._wrote and entry.get("kind") != "tool_result":
