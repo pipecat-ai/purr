@@ -666,7 +666,8 @@ async def test_the_mouse_scrolls_the_list_and_the_diff(tmp_path):
         await until(pilot, lambda: len(view._rows) > 100)
         await wheel(pilot, view, times=10)
         top = view.scroll_offset.y
-        assert top > 0 and view.cursor >= top
+        assert top > 0
+        await until(pilot, lambda: view.cursor >= top)  # it follows, a moment later
         # A click puts the cursor on a line; shift+click selects up to another.
         await pilot.click("#diff", offset=(20, 3))
         clicked = view.cursor
@@ -1343,7 +1344,7 @@ async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_pat
         assert "Zoom out" in footer(app) and "Stop" not in footer(app)
         await pilot.press("escape")
         assert prs.display and focused(app) == "prs" and working.display
-        assert "Home" in footer(app) and "Stop" not in footer(app)
+        await until(pilot, lambda: "Home" in footer(app) and "Stop" not in footer(app))
         # ...in the PR's pane, it stops it, and the first review is back, with what it
         # proposed.
         await pilot.press("tab")

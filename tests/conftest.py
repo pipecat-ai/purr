@@ -2,14 +2,18 @@
 Purr config and data (they point at a temporary directory instead), nor your browser
 (pages Purr opens are kept in ``opened`` instead)."""
 
+import os
+
 import pytest
 import textual._wait
 
 # After each key a test presses, Textual waits for the app to go idle: under 5% CPU in a
 # window of 20 ms, twice. Most of the TUI tests' time went there; 5 ms windows, with the
-# same 5%, make them about twice as fast.
-textual._wait.SLEEP_GRANULARITY = 0.005
-textual._wait.SLEEP_IDLE = textual._wait.SLEEP_GRANULARITY / 20
+# same 5%, make them about twice as fast. Not on CI (GitHub sets CI): its runners are
+# noisier, and there the shorter windows end before some redraws the tests wait for.
+if not os.environ.get("CI"):
+    textual._wait.SLEEP_GRANULARITY = 0.005
+    textual._wait.SLEEP_IDLE = textual._wait.SLEEP_GRANULARITY / 20
 
 
 def _no_claude(*args, **kwargs):
