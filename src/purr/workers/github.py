@@ -107,9 +107,9 @@ class GitHubWorker(BaseWorker):
     :class:`PRListUpdated` when anything changed. Handles the jobs that change
     GitHub or the watched repos (``WatchRepo``, ``ApproveAction``, ``MergePR``, ...).
 
-    After a poll it reads the conversation of the PRs Purr reviewed or you took
-    part in that changed (all of them on the first poll) for replies to you since
-    your last word there: a PR with replies you haven't answered needs you.
+    After a poll it reads the conversation of the PRs Purr reviewed, you took part
+    in or opened, that changed (all of them on the first poll), for replies to you
+    since your last word there: a PR with replies you haven't answered needs you.
 
     Each repo gets a full sync on its first poll after startup and every
     ``FULL_SYNC_EVERY`` seconds; polls in between only fetch PRs updated since
@@ -232,15 +232,15 @@ class GitHubWorker(BaseWorker):
         return await self._github.snapshot(full, incremental, on_page=on_page)
 
     async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
-        """Read what others said to you on PRs Purr reviewed or you took part in, that
-        changed (all of them, the first time).
+        """Read what others said to you on PRs Purr reviewed, you took part in or that are
+        yours, that changed (all of them, the first time).
 
         Returns the PRs with new replies, and whether any PR's replies or state changed.
         """
         followed = {
             pr.ref: pr
             for pr in await self._store.open_prs()
-            if pr.state != PRState.NOT_REVIEWED or pr.involved
+            if pr.state != PRState.NOT_REVIEWED or pr.involved or pr.authored
         }
         due = set(followed) if self._replies_due is None else self._replies_due | changed
         found = await self._fetch_replies(due & followed.keys())

@@ -77,6 +77,7 @@ _DETAILS_FIELDS = """
 """
 # Who said what on a PR, for replies to you (see replies_to).
 _CONVERSATION_FIELDS = """
+    author { login } createdAt
     comments(last: 50) { nodes { author { login __typename } createdAt body url } }
     reviews(last: 50) { nodes { author { login __typename } submittedAt state body url } }
     reviewThreads(last: 50) { nodes { path line
@@ -527,35 +528,46 @@ def replies_to(me: str, pr: dict) -> list[Reply]:
       your last word on the PR (a comment, or a review that says something: one
       that's only thread comments doesn't answer the other threads).
 
-    Bots don't count, and nothing does until you've said something.
+    Bots don't count, and nothing does until you've said something. On your own PR,
+    opening it was your first word, every thread is said to you, and so is what
+    others' reviews say (their text, when there's some).
     """
     me = me.lower()
+    authored = _by(me, pr)
     comments = _nodes(pr.get("comments"))
     threads = [
         (thread, _nodes(thread.get("comments"))) for thread in _nodes(pr.get("reviewThreads"))
     ]
-    reviews = [r for r in _nodes(pr.get("reviews")) if _by(me, r) and r.get("submittedAt")]
+    reviews = [r for r in _nodes(pr.get("reviews")) if r.get("submittedAt")]
+    yours = [r for r in reviews if _by(me, r)]
     on_pr = [c["createdAt"] for c in comments if _by(me, c)]
-    on_pr += [
-        r["submittedAt"]
-        for r in reviews
-        if (r.get("body") or "").strip() or r.get("state") != "COMMENTED"
-    ]
+    on_pr += [r["submittedAt"] for r in yours if _says_something(r)]
+    on_pr += [pr["createdAt"]] if authored and pr.get("createdAt") else []
     in_threads = [c["createdAt"] for _, nodes in threads for c in nodes if _by(me, c)]
-    if not on_pr and not in_threads and not reviews:
+    if not on_pr and not in_threads and not yours:
         return []
-    last_word = max([*on_pr, *in_threads, *(r["submittedAt"] for r in reviews)])
+    last_word = max([*on_pr, *in_threads, *(r["submittedAt"] for r in yours)])
     replies = [_reply(c) for c in comments if _replies_to_me(me, c, last_word)]
+    if authored:
+        replies += [_review_reply(r) for r in reviews if _review_to_me(me, r, last_word)]
     for thread, nodes in threads:
-        replies += _thread_replies(me, thread, nodes, on_pr)
+        replies += _thread_replies(me, thread, nodes, on_pr, authored=authored)
     return sorted(replies, key=lambda r: r.at)
 
 
-def _thread_replies(me: str, thread: dict, comments: list[dict], on_pr: list[str]) -> list[Reply]:
-    """Replies to ``me`` in a review thread they're in, after their last comment in it or their
-    last word on the PR (``on_pr``: when they said something there), whichever is later."""
+def _says_something(review: dict) -> bool:
+    """A review with text, or that decides (one that's only thread comments doesn't)."""
+    return bool((review.get("body") or "").strip()) or review.get("state") != "COMMENTED"
+
+
+def _thread_replies(
+    me: str, thread: dict, comments: list[dict], on_pr: list[str], *, authored: bool
+) -> list[Reply]:
+    """Replies to ``me`` in a review thread they're in (on their own PR, any thread), after
+    their last comment in it or their last word on the PR (``on_pr``: when they said
+    something there), whichever is later."""
     mine = [c["createdAt"] for c in comments if _by(me, c)]
-    if not mine:
+    if not mine and not authored:
         return []
     after = max([*mine, *on_pr])
     path, line = thread.get("path") or "", thread.get("line")
@@ -574,6 +586,27 @@ def _replies_to_me(me: str, comment: dict, after: str) -> bool:
     return (
         not _by(me, comment) and author.get("__typename") != "Bot" and comment["createdAt"] > after
     )
+
+
+def _review_to_me(me: str, review: dict, after: str) -> bool:
+    """Whether someone's review of your PR says something to you, after ``after``."""
+    said = {**review, "createdAt": review["submittedAt"]}
+    return bool((review.get("body") or "").strip()) and _replies_to_me(me, said, after)
+
+
+_VERDICTS = {"APPROVED": "Approved", "CHANGES_REQUESTED": "Requested changes"}
+
+
+def _review_reply(review: dict) -> Reply:
+    """A review's text as a reply, saying what it decided if it did."""
+    verdict = _VERDICTS.get(review.get("state") or "")
+    body = (review.get("body") or "").strip()
+    said = {
+        **review,
+        "createdAt": review["submittedAt"],
+        "body": f"{verdict}: {body}" if verdict else body,
+    }
+    return _reply(said)
 
 
 def _reply(comment: dict, where: str = "") -> Reply:

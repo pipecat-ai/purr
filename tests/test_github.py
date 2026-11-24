@@ -365,6 +365,31 @@ def test_saying_something_on_the_pr_answers_everything_before():
     assert [reply.at for reply in replies_to("me", elsewhere)] == ["t2"]
 
 
+def test_on_your_own_pr_what_others_say_is_said_to_you():
+    yours = {"author": {"login": "Me"}, "createdAt": "t0"}  # opening it was your first word
+    thread = [said("carol", "t3", "Race here")]  # you're not in it: it's said to you all the same
+    pr = yours | conversation(
+        comments=[said("alice", "t2"), said("codecov", "t2", bot=True)],
+        reviews=[
+            review("carol", "t3", "CHANGES_REQUESTED", "Needs a test."),
+            review("dave", "t4", "APPROVED"),  # nothing to answer
+        ],
+        threads=[("bus.py", 42, thread)],
+    )
+    assert replies_to("me", pr) == [
+        Reply("alice", "alice at t2", "t2", "ut2"),
+        Reply("carol", "Requested changes: Needs a test.", "t3", ""),
+        Reply("carol", "Race here", "t3", "ut3", "bus.py:42"),
+    ]
+    # Answering in the thread answers it, until carol says more.
+    answered = yours | conversation(
+        threads=[("bus.py", 42, [*thread, said("me", "t5"), said("carol", "t6", "Thanks")])]
+    )
+    assert replies_to("me", answered) == [Reply("carol", "Thanks", "t6", "ut6", "bus.py:42")]
+    # Someone else's PR: a thread you're not in isn't said to you.
+    assert replies_to("me", conversation(threads=[("bus.py", 42, thread)])) == []
+
+
 async def test_merge_check():
     class Merging(GitHub):
         async def graphql(self, query, variables):
