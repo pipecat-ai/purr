@@ -25,8 +25,8 @@ Purr was first built to help review the many pull requests sent to
   said against the code and proposes what to change and what to answer, for you to post.
 - **It knows what's waiting on you.** PRs are grouped: *Needs you* (a review to post, a
   question from the agent, someone replying to you on GitHub), *Reviewing*, *Your PRs*,
-  *Review requested*, *Others reviewing*, *Done*, *Not reviewed*. News from other repos shows
-  at the top.
+  *Up next*, *Review requested*, *Others reviewing*, *Done*, *Not reviewed*. News from other
+  repos shows at the top.
 - **Every review is a conversation.** You can keep talking to the agent about the PR ("is that
   race real?", "drop the nit"), and Purr suggests what to ask next.
 - **You can comment on lines of the diff, and on the PR.** Yours go to GitHub as you save
@@ -57,11 +57,13 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 
 ## 🧭 How to use it
 
-1. **Pick a repo** at home (`enter`, or its number). Purr lists the repos with PRs assigned to
-   you; `+` watches one, to see all its open PRs.
-2. **Pick a PR.** On the right, its description, where it changes things, and the
-   conversation with the agent. `r` reviews one that isn't yours yet (and assigns you), its pane
-   full screen to follow it (`z` or `esc` comes back); `o` opens it on GitHub.
+1. **Pick a repo** at home (`enter`, or its number). Purr lists the repos with your PRs or PRs
+   assigned to you; `+` watches one, to see all its open PRs.
+2. **Pick a PR.** *Up next* is a good place to start: a few PRs nobody has taken, with why
+   (`s` skips one that isn't for you, and another takes its place). On the right, the PR's
+   description, where it changes things, and the conversation with the agent. `r` reviews one
+   that isn't yours yet (and assigns you), its pane full screen to follow it (`z` or `esc`
+   comes back); `o` opens it on GitHub.
 3. **Talk to the agent** (`enter` goes to the prompt): ask, dig in, or change what it
    proposes. `tab` takes the suggestion. `esc` in its pane stops it while it works.
 4. **Read the diff** (`d`): it takes the list's place, next to the conversation, the code in its
@@ -77,7 +79,9 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 
 When the agent asks before doing something risky, `a` allows it, `A` always, `x` says no (or
 write what to do instead). When someone replies to you on GitHub, the PR is back in
-*Needs you*: answer, or `x` if it needs no reply.
+*Needs you*: answer, or `x` if it needs no reply. When someone comments on one of your own PRs,
+it needs you too, and the agent proposes what to change and what to answer: `a` posts the
+answers.
 
 ### ⌨️ Keys
 
@@ -91,6 +95,7 @@ work everywhere. The main ones:
 | `o` | The PR on GitHub, in your browser (at home, the repo) |
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR (once reviewed, it asks before starting over) / mark several first (`esc` unmarks them) |
+| `s` | On a PR up next: not for you (another takes its place) |
 | `a` `x` / `A` | Approve or dismiss what's proposed (or allow or deny what's asked) / always allow |
 | `d` / `D` | The diff, to read (`n` `p` from change to change), ask about (`enter`) and comment on (`c`) / in your pager |
 | `shift+↑` `shift+↓` | In the diff: select lines (`ctrl+space` sets a mark, as in Emacs) |
@@ -133,7 +138,7 @@ never reaches the file.
 | `~/.config/purr/review.md` | How you like reviews: what to raise, what to skip, tone |
 | `~/.config/purr/code.md` | What good code looks like to you; reviews hold PRs to it |
 | `~/.claude/settings.json` | What the agents may run without asking (the file Claude Code uses too) |
-| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, the theme, ... (`purr --help` for flags) |
+| `~/.config/purr/settings.toml` | Models, how often to poll, how many reviews at once, how many PRs up next, the theme, ... (`purr --help` for flags) |
 
 Instructions and permissions apply from the agent's next turn; settings, when Purr next starts.
 Inside a repo, `i` edits that repo's own instructions and permissions, which add to the
