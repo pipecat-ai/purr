@@ -17,6 +17,7 @@ from purr.review.instructions import ReviewInstructions
 from purr.review.rules import RepoRules
 from purr.store import Store
 from purr.suggest import ClaudeSuggester, Suggester
+from purr.upnext import ClaudePicker, Picker
 from purr.workers import (
     ActivityWorker,
     GitHubWorker,
@@ -25,6 +26,7 @@ from purr.workers import (
     RecapWorker,
     ReviewWorker,
     SuggestionWorker,
+    UpNextWorker,
 )
 
 
@@ -47,6 +49,8 @@ class Purr:
             (a fake in tests).
         suggester: Suggests what you might ask next in a PR's session (a fake in
             tests); by default, ``suggestion_model``'s, if there is one.
+        picker: Chooses what's up next in each repo (a fake in tests); by default,
+            the lead's model.
         handle_sigint: Let the runner stop on Ctrl+C. Turn off when a UI
             owns the terminal and handles keys itself.
     """
@@ -62,6 +66,7 @@ class Purr:
         recap_agent: RecapAgent | None = None,
         lead: LeadAgent | None = None,
         suggester: Suggester | None = None,
+        picker: Picker | None = None,
         handle_sigint: bool = True,
     ):
         self._config = config
@@ -82,6 +87,7 @@ class Purr:
         self._lead = lead or ClaudeLead(model=config.lead_model)
         model = config.suggestion_model
         self._suggester = suggester or (ClaudeSuggester(model=model) if model else None)
+        self._picker = picker or ClaudePicker(model=config.lead_model)
         self._handle_sigint = handle_sigint
         self._store: Store | None = None
         self._runner: WorkerRunner | None = None
@@ -176,4 +182,12 @@ class Purr:
             RecapWorker(store=store, agent=self._recap_agent),
             SuggestionWorker(store=store, agent=self._agent, suggester=self._suggester),
             GitWorker(store=store, repos=self._repos, github=self._github),
+            UpNextWorker(
+                store=store,
+                github=self._github,
+                repos=self._repos,
+                picker=self._picker,
+                instructions=self._instructions,
+                count=self._config.up_next,
+            ),
         ]

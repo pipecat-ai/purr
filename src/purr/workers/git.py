@@ -14,6 +14,7 @@ from purr.jobs import Failed, NotFound, handles
 from purr.messages import (
     GIT_WORKER,
     ActionResolved,
+    ClonesSynced,
     FileText,
     GetDiff,
     GetFile,
@@ -135,6 +136,7 @@ class GitWorker(BaseWorker):
                 await self._repos.sync(repo, prs)
             except Exception as e:
                 logger.warning(f"Couldn't sync {repo}'s PRs into its clone: {e}")
+        await self.send_bus_message(ClonesSynced(source=self.name))
 
     @handles(GetWorktree)
     async def get_worktree(self, request: GetWorktree) -> Worktree:

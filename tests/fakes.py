@@ -92,6 +92,10 @@ class FakeGitHub:
     async def review_threads(self, ref):
         return list(getattr(self, "threads", []))
 
+    async def history(self, repo):
+        """From ``past``: the PastPRs that say what you know of a repo."""
+        return list(getattr(self, "past", []))
+
 
 class FakeRepos:
     """Stands in for purr.git.GitRepos: worktrees are empty directories."""
@@ -114,6 +118,10 @@ class FakeRepos:
 
     async def file_at(self, pr, path):
         return getattr(self, "files", {}).get((pr.ref, path))
+
+    async def numstat(self, pr):
+        """From ``stats``: PRRef -> [FileChange]; None (not synced) for the rest."""
+        return getattr(self, "stats", {}).get(pr.ref)
 
     async def new_commits(self, pr, since):
         return getattr(self, "commits", None)
@@ -434,3 +442,23 @@ class FakeLead:
                 {"pr": pr, **default, **self.plans.get(pr, {})} for pr in self._pr.findall(notes)
             ]
         }
+
+
+class FakePicker:
+    """Stands in for purr.upnext.ClaudePicker: picks the PRs in ``choose`` (numbers), or
+    the first ``count`` it's offered, and keeps the notes it was given."""
+
+    def __init__(self):
+        self.notes: list[str] = []
+        self.choose: list[int] | None = None
+        self.fail_with: str | None = None
+
+    async def pick(self, notes, count):
+        import re
+
+        self.notes.append(notes)
+        if self.fail_with:
+            raise RuntimeError(self.fail_with)
+        offered = [int(n) for n in re.findall(r"^- #(\d+) ", notes, re.MULTILINE)]
+        chosen = self.choose if self.choose is not None else offered[:count]
+        return {"picks": [{"pr": f"#{n}", "why": f"Why #{n}"} for n in chosen]}

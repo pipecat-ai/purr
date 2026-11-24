@@ -219,6 +219,16 @@ async def test_open_prs_are_synced_and_diffed_locally(tmp_path, upstream):
     assert await repos.diff(moved) is None
 
 
+async def test_what_a_pr_changes_line_by_line(tmp_path, upstream):
+    from purr.models import FileChange
+
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    seven = open_pr(7, git(upstream, "rev-parse", "refs/pull/7/head"))
+    assert await repos.numstat(seven) is None  # not cloned yet
+    await repos.sync("a/b", [seven])
+    assert await repos.numstat(seven) == [FileChange("a.txt", 1, 1)]
+
+
 async def test_a_file_as_it_is_at_the_prs_head(tmp_path, upstream):
     repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
     seven = open_pr(7, git(upstream, "rev-parse", "refs/pull/7/head"))

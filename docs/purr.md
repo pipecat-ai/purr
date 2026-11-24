@@ -42,6 +42,7 @@ One Python asyncio process (`app.py` puts it together) containing these Pipecat 
 5. **`recap`** (`workers/recap.py`): writes the "while you were away" summary.
 6. **`suggestions`** (`workers/suggestions.py`): suggests what you might ask next in a PR's session.
 7. **`activity`** (`workers/activity.py`): records events in the activity log, and logs them.
+8. **`upnext`** (`workers/upnext.py`): what's up next in each watched repo's pool (see Up next).
 7. **`tui`** (`tui/bridge.py`): the Textual app's seat on the bus. The voice agent will be another (see Voice).
 
 The **SQLite store** (`store.py`) is shared by all of them. (Pipecat Subagents has been merged into Pipecat core as `pipecat.workers` / `pipecat.bus`, available since `pipecat-ai` 1.16.0; the standalone `pipecat-subagents` repo is archived.) Workers talk in two ways (see Bus messages): **jobs**, typed requests one worker answers (Pipecat job coordination), and **events**, broadcast to everyone. The TUI is a bus participant, as the voice agent will be, so starting a review will be the same path from either: send a job, listen for events.
@@ -147,6 +148,15 @@ An agent that thinks about what needs doing before the review agents start: `Lea
 - The same planning is what the voice agent will use ("what should I look at first?", "give #3112 a full review"); pipecat 1.16's `LLMWorker` (a bus worker with `@tool` methods) is the shape for that.
 
 **Found something or not.** Every finished review says one thing first. **Only issues count**: suggestions and nits are mentioned, but a review with nothing else found nothing (`found 1 issue, 2 nits`, `nothing found (2 nits)`, `nothing found`). In the PR list, a reviewed PR's mark says it at a glance (✓ green: nothing found; ● red: found issues); the PR's header says it in words, and how deep the review went (`● Full review: found 1 issue · 1 pending action`); while a review waits or runs, the lead's plan is under it (`Planned: a full review, high priority. Core pipeline frame routing fix`); alerts and news say `review: nothing found` / `review: found 2 issues`. Finding nothing is a fine outcome, and the review agent is told so.
+
+## Up next
+
+The pool can be hundreds of PRs. Rather than you choosing, the lead suggests a few worth looking at next in each watched repo: small and straightforward, in code you know. They're the **Up next** group in the repo's list (after Your PRs), best first, each with why after its title, dim; the PR's header says it too (`➜ Up next: Small fix to Deepgram's reconnect; you've reviewed 8 PRs there.`), and home counts them (UP NEXT). `r` takes one as any other.
+
+- **What it goes on** (`purr/upnext.py`), worked out without asking anyone: each pool PR's size, from Purr's clone (`GitRepos.numstat`: `git diff --numstat`, the blobs the sync already brought); whether it's in folders you've worked in, from your latest 50 merged PRs and 50 you reviewed in the repo, with their files (`GitHub.history`, one request per repo every 6 hours, about 7 s for pipecat; folders more than a third of them touched, like `changelog/` and `tests/`, and the top one, say nothing and are left out); whether you've reviewed its author's PRs; and how long it's waited. Small and familiar count most (`score`). The best 15 are the shortlist, each with its reasons in words (`small (12 lines)`, `in services/deepgram, where you've been in 8 PRs`).
+- **The lead chooses** from the shortlist: one tool-less structured call on the lead's model (`lead_model`), with your review style, choosing `up_next` of them (5) and saying why in a line each. **Up next stays full** while the pool has enough: what the lead leaves (all of it, if it can't say: offline, a bad answer) is filled from the top of the shortlist, with its reasons (`fill`).
+- **`s` skips one** that isn't for you (the key shows only on Up next PRs): it leaves Up next for good (`SkipUpNext {pr}` on the upnext worker; the `up_next_skipped` table, which keeps its title and author), the cursor goes on to the next PR, and the lead is asked again at once to fill its place. **It learns**: each time, the lead is told what you skipped lately and the PRs you took (others' PRs you had reviewed there, latest first), next to your review style, and chooses accordingly.
+- **When**: when the PR list changes and after the clones sync (`git.synced`, which the git worker sends after each sync), for each watched repo, asking the lead again only when the shortlist changed: at once when Up next is short (you took one, or skipped it), else not more than every 10 minutes per repo. A PR that's taken (assigned), reviewed or closed leaves Up next at once, and another takes its place a few seconds later. Only what changed is drawn again. It's kept in the `up_next` table, replaced as a whole each time.
 
 ## Review workers
 
@@ -304,6 +314,7 @@ Jobs:
 - `PlanReviews {prs, depth}` (lead worker): plan and start reviews you asked for (TUI `r`; later, voice); answers once they've started, with why any didn't.
 - `StartReview {pr, plan}` (reviews worker, sent by the lead; without a plan, a full review)
 - `Rereview {pr, plan}` (reviews worker, sent by the lead on new commits)
+- `SkipUpNext {pr}` (upnext worker): the PR isn't for you; it leaves Up next for good (`s`).
 - `AnswerComments {pr}` (reviews worker, sent by the lead): have the agent read what others said on a PR of yours and propose what to change and answer (see Your PRs).
 - `SendMessage {pr, text}` (reviews worker): say something in a PR's conversation. Its reply says what that did besides: answered a permission request (a no, with directions), set proposals aside, or went to the agent at work.
 - `AnswerPermission {request_id, allow, remember}` (reviews worker): answers an agent's permission request; `remember` (`repo` or `all`) also keeps its rule as a standing permission.
@@ -325,6 +336,7 @@ Jobs:
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)
 - `github.synced` (a poll finished: what the store says about GitHub is current)
+- `git.synced` (the clones have every open PR the store has: their sizes and diffs are local)
 - `pr.changed {pr, change, title, by}` (from the poller: assigned, unassigned, pooled, unpooled, new_commits, closed, merged, requested, replied; `by` says who replied)
 - `review.started {pr, plan}`
 - `review.progress {pr, text, waiting}`
@@ -349,6 +361,8 @@ Events (`PurrEvent`) are `BusDataMessage` subclasses in `src/purr/messages.py`, 
 - `draft_comments`: id, pr, path, line, side (`LEFT`/`RIGHT`), body, head_sha, created_at. Your inline comments until they're posted (see Commenting).
 - `pending_actions`: id, pr, kind (comment/request_changes/approve; the schema also allows merge, which nothing proposes), description, payload, status (pending/approved/dismissed/executed/failed), created_at, resolved_at, posted_head (the PR's head when it was posted)
 - `review_skills`: repo, skill ('' for Purr's own review), chosen_by (`purr` or `you`), chosen_at
+- `up_next`: repo, number, rank, why, by (`lead`, or `purr` when the lead couldn't say), picked_at. What's up next in each repo (see Up next).
+- `up_next_skipped`: repo, number, title, author, skipped_at. The PRs you said weren't for you (`s`).
 - `prompts`: at, repo, number, text. What you asked PR agents, for the prompt's history (`↑`/`↓`, `ctrl+r`).
 - `activity`: at, pr (optional), kind, data. Every recorded Purr event; feeds the recaps and each PR's timeline.
 - `recaps`: since, until, headline, items, created_at
@@ -395,7 +409,7 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- One row per watched repo, then, in their own group (NOT WATCHED), any other repo with an open PR that concerns you: yours, assigned to you, asking for your review, or reviewed by Purr (one you only commented on, once someone replies). YOURS counts the PRs you opened.
+- One row per watched repo, then, in their own group (NOT WATCHED), any other repo with an open PR that concerns you: yours, assigned to you, asking for your review, or reviewed by Purr (one you only commented on, once someone replies). YOURS counts the PRs you opened, UP NEXT those the lead suggests you look at next (see Up next).
 - `+` adds a repo: type `owner/name` or paste a GitHub URL (on a not-watched repo, it's filled in). Purr checks that the repo exists and starts polling it right away. `-` removes the selected repo (after confirming): its pool disappears, but PRs assigned to you there keep showing up, because those are reviewed regardless.
 - First launch: no repos yet. The list shows only repos with PRs assigned to you, plus a hint to press `+`.
 - Watched repos come first, then the others, each group sorted alphabetically by `owner/name` (case-insensitive), and numbered in that order, so the order and the `1`–`9` shortcuts only change when a repo is added or removed (or another one stops or starts concerning you). Activity shows as counts and a ● marker; rows never move because of it.
@@ -431,7 +445,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 ```
 
 - **Header**: where you are (`Purr › 2 pipecat-ai/pipecat`) and the latest alert from other repos.
-- **Left pane**: the repo's PRs grouped (Needs you, Reviewing, Your PRs, Review requested, Others reviewing, Done, Not reviewed), newest first within each group (Done: latest done first). Columns: number (in its own color), title (bright, as under the cursor; bold when there's news), who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`), a space off the right edge. A thin dim line goes between PRs; each group's heading is its name and count followed by a double line in its color to the edge (`▾ ⚠ NEEDS YOU (1) ════`), two blank lines after the group before it. The cursor stops on headings, as on the files in the diff: `tab` (or `enter`, or a click) on one folds its group to that line (`▸`) and opens it again, for as long as Purr runs. While searching, every match shows, folded or not; going to a PR in a folded group (an alert, `ctrl+p`) opens it. Home's two groups (watched, not watched) have the same headings, without folding (`tui/lists.py`).
+- **Left pane**: the repo's PRs grouped (Needs you, Reviewing, Your PRs, Up next, Review requested, Others reviewing, Done, Not reviewed), newest first within each group (Done: latest done first). Columns: number (in its own color), title (bright, as under the cursor; bold when there's news), who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`), a space off the right edge. A thin dim line goes between PRs; each group's heading is its name and count followed by a double line in its color to the edge (`▾ ⚠ NEEDS YOU (1) ════`), two blank lines after the group before it. The cursor stops on headings, as on the files in the diff: `tab` (or `enter`, or a click) on one folds its group to that line (`▸`) and opens it again, for as long as Purr runs. While searching, every match shows, folded or not; going to a PR in a folded group (an alert, `ctrl+p`) opens it. Home's two groups (watched, not watched) have the same headings, without folding (`tui/lists.py`).
 - **Right pane**: the selected PR, top to bottom:
   - **Header**, which stays put: its title, then `by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · labels`, then where its review stands.
   - **What scrolls**: the PR's description, then where it changes things, then the session with the agent (Claude Code style, see PR session). A PR nobody has reviewed yet opens at its description, so you can decide whether to take it; a reviewed one opens at the end of the conversation.
@@ -476,6 +490,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `page up` / `page down` scroll a page, in either pane (the transcript while typing too); reading the PR's pane, `ctrl+v` / `alt+v` (meta+v) too, as in Emacs (typing, `ctrl+v` pastes)
 - `space` mark/unmark PR; `esc` (or `ctrl+g`) unmarks them all, before it does anything else (the footer says `esc Unmark` meanwhile)
 - `r` start review on marked PRs (or the selected one), assigning you; on one already reviewed, it asks first
+- `s` on an Up next PR: not for you (see Up next)
 - `d` the diff view, to read it line by line and comment (`D`: the whole diff in your pager)
 - `a` / `x` answer the decision box: approve or dismiss a pending action, allow or deny a permission request (`A`: always allow); `x` also says replies to you need no answer
 - `m` merge a PR you approved: once to see where it stands, again to merge (see Merging)
@@ -525,7 +540,7 @@ Not built yet. The design:
 
 Files follow the XDG convention: what you edit is in the config dir (`PURR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/purr`, else `~/.config/purr`): `settings.toml`, your instructions (`review.md`, `code.md`, per repo under `repos/`), and the standing permissions you allowed per repo. What Purr manages is in the data dir (`~/.local/share/purr`): the database, the log, its clones and worktrees.
 
-**Settings** (`config.py`) come from, each over the one before: their defaults, `settings.toml`, the environment (`PURR_DATA_DIR`), and command-line flags (`purr --help`, Typer as Pipecat's CLI: `--data-dir`, `--auto-review/--no-auto-review`, `--max-reviews`, `--permission-mode`, `--sandbox/--no-sandbox`; also `--headless`, `-v`, `--version`, and `purr login`, which only logs in to Claude). `settings.toml` can set any of them (but not where it is itself): `data_dir`, `poll_interval` (60 s), `auto_review`, `auto_answer` (the comments on your PRs), `review_model` (Claude Code's default; the recap uses it too), `lead_model` and `quick_model` (Sonnet), `suggestion_model` (Haiku; empty: no suggestions), `review_budget_usd` (none), `away_after` (15 min), `permission_wait` (5 min), `max_reviews` (3), `permission_mode` (`auto`), `sandbox`, `theme` (`solarized-dark`; one of Textual's). An empty value means none for those that can be none (`lead_model = ""`: Claude Code's default). It's read when Purr starts (a new `theme` applies at once, when you save it from `i` then `o`); a name it doesn't know or a value of the wrong type stops it with the file and the setting. `save_setting` changes one setting in the file, leaving the rest and its comments as they are (the theme picker keeps its choice with it).
+**Settings** (`config.py`) come from, each over the one before: their defaults, `settings.toml`, the environment (`PURR_DATA_DIR`), and command-line flags (`purr --help`, Typer as Pipecat's CLI: `--data-dir`, `--auto-review/--no-auto-review`, `--max-reviews`, `--permission-mode`, `--sandbox/--no-sandbox`; also `--headless`, `-v`, `--version`, and `purr login`, which only logs in to Claude). `settings.toml` can set any of them (but not where it is itself): `data_dir`, `poll_interval` (60 s), `auto_review`, `auto_answer` (the comments on your PRs), `review_model` (Claude Code's default; the recap uses it too), `lead_model` and `quick_model` (Sonnet), `suggestion_model` (Haiku; empty: no suggestions), `review_budget_usd` (none), `away_after` (15 min), `permission_wait` (5 min), `max_reviews` (3), `up_next` (5; 0: none), `permission_mode` (`auto`), `sandbox`, `theme` (`solarized-dark`; one of Textual's). An empty value means none for those that can be none (`lead_model = ""`: Claude Code's default). It's read when Purr starts (a new `theme` applies at once, when you save it from `i` then `o`); a name it doesn't know or a value of the wrong type stops it with the file and the setting. `save_setting` changes one setting in the file, leaving the rest and its comments as they are (the theme picker keeps its choice with it).
 
 Each setting's description is next to it in `config.py` (`_setting(..., about=...)`), and `i` then `o` makes the starter `settings.toml` from them, every setting commented out at its default, then opens it in Purr's editor, which checks it before it saves it, so a typo shows at once (and never reaches the file) rather than stopping the next start.
 

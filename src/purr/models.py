@@ -170,6 +170,25 @@ class FileChange:
 
 
 @dataclass(frozen=True)
+class UpNext:
+    """A PR in the pool worth your looking at next (see purr.upnext), and why."""
+
+    pr: PRRef
+    why: str
+    rank: int  # 0 first
+    by: str  # "lead", or "purr" when the lead couldn't say
+
+
+@dataclass(frozen=True)
+class PastPR:
+    """A PR you wrote (merged) or reviewed, for what you know of a repo (see purr.upnext)."""
+
+    author: str
+    paths: tuple[str, ...]  # the files it changed (the first 50)
+    yours: bool  # you wrote it; else you reviewed it
+
+
+@dataclass(frozen=True)
 class PRComment:
     """What's said on a PR itself, not on a line: a comment, or a review's text."""
 
@@ -256,6 +275,7 @@ class RepoSummary:
     name: str
     watched: bool
     yours: int = 0  # PRs you opened
+    up_next: int = 0  # PRs in the pool worth looking at next
     needs_you: int = 0
     reviewing: int = 0
     not_reviewed: int = 0

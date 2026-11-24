@@ -17,6 +17,7 @@ REPO_KEYS = {
     "open": Binding("o", "open", "GitHub"),  # the PR's page, in your browser
     "search": Binding("slash", "search", "Search", key_display="/"),
     "review": Binding("r", "review", "Review"),
+    "skip": Binding("s", "skip", "Skip"),  # up next: not for you
     "mark": Binding("space", "mark", "Mark"),
     # Whatever the decision box offers: approve or dismiss a proposal, allow or
     # deny a permission request, merge.

@@ -19,6 +19,8 @@ Purr was first built to help review the many pull requests sent to
 
 - **It reviews what's assigned to you** as it comes in, a few at a time. A quick planning
   step decides how deep: small changes get a quick look, risky ones a full review.
+- **It suggests what to look at next.** From the PRs nobody has taken, the lead picks a few
+  worth your time: small ones, in code you know, with why.
 - **It helps with your own PRs.** When someone comments on one, the agent checks what they
   said against the code and proposes what to change and what to answer, for you to post.
 - **It knows what's waiting on you.** PRs are grouped: *Needs you* (a review to post, a

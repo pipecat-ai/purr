@@ -30,6 +30,7 @@ from purr.models import (
     ReviewPlan,
     ReviewStatus,
     Severity,
+    UpNext,
 )
 from purr.news import NEWS_KINDS, news
 
@@ -265,6 +266,32 @@ MIGRATIONS: list[str] = [
     # PRs you opened: what you're working on.
     """
     ALTER TABLE prs ADD COLUMN authored INTEGER NOT NULL DEFAULT 0;
+    """,
+    # What's up next in each repo: the PRs in its pool worth looking at next (see
+    # purr.upnext), best first, and why. Replaced as a whole each time.
+    """
+    CREATE TABLE up_next (
+        repo      TEXT NOT NULL COLLATE NOCASE,
+        number    INTEGER NOT NULL,
+        rank      INTEGER NOT NULL,
+        why       TEXT NOT NULL,
+        by        TEXT NOT NULL,  -- 'lead', or 'purr' when the lead couldn't say
+        picked_at TEXT NOT NULL,
+        PRIMARY KEY (repo, number)
+    );
+    """,
+    # The PRs you said weren't for you when they were up next (s): never up next
+    # again, and the lead's told, so it learns what you skip. Kept with their title
+    # and author once they've closed.
+    """
+    CREATE TABLE up_next_skipped (
+        repo       TEXT NOT NULL COLLATE NOCASE,
+        number     INTEGER NOT NULL,
+        title      TEXT NOT NULL,
+        author     TEXT NOT NULL,
+        skipped_at TEXT NOT NULL,
+        PRIMARY KEY (repo, number)
+    );
     """,
 ]
 
@@ -662,6 +689,8 @@ class Store:
                 names.name,
                 names.watched,
                 COALESCE(SUM(prs.authored), 0) AS yours,
+                COALESCE(SUM(prs.state = 'not_reviewed' AND prs.assignees = '[]'
+                             AND up_next.number IS NOT NULL), 0) AS up_next,
                 COALESCE(SUM(prs.state = 'needs_you'), 0) AS needs_you,
                 COALESCE(SUM(prs.state = 'reviewing'), 0) AS reviewing,
                 COALESCE(
@@ -672,6 +701,7 @@ class Store:
                 (SELECT MAX(at) FROM activity WHERE activity.repo = names.name) AS last_activity
             FROM names
             LEFT JOIN prs ON prs.repo = names.name AND prs.gh_state = 'open'
+            LEFT JOIN up_next ON up_next.repo = prs.repo AND up_next.number = prs.number
             GROUP BY names.name, names.watched
             ORDER BY names.name COLLATE NOCASE
             """
@@ -681,6 +711,7 @@ class Store:
                 name=row["name"],
                 watched=bool(row["watched"]),
                 yours=row["yours"],
+                up_next=row["up_next"],
                 needs_you=row["needs_you"],
                 reviewing=row["reviewing"],
                 not_reviewed=row["not_reviewed"],
@@ -709,6 +740,64 @@ class Store:
         )
         await self._db.commit()
         return removed
+
+    async def set_up_next(self, repo: str, picks: Iterable[UpNext]) -> None:
+        """What's up next in ``repo`` now, in place of what was."""
+        await self._db.execute("DELETE FROM up_next WHERE repo = ?", (repo,))
+        await self._db.executemany(
+            "INSERT INTO up_next (repo, number, rank, why, by, picked_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [(repo, p.pr.number, p.rank, p.why, p.by, _now()) for p in picks],
+        )
+        await self._db.commit()
+
+    async def up_next(self, repo: str) -> list[UpNext]:
+        """What's up next in ``repo``, best first: those still in its pool, unreviewed."""
+        rows = await self._fetchall(
+            """
+            SELECT up_next.* FROM up_next
+            JOIN prs ON prs.repo = up_next.repo AND prs.number = up_next.number
+            WHERE up_next.repo = ? AND prs.gh_state = 'open' AND prs.state = 'not_reviewed'
+              AND prs.assignees = '[]' AND NOT prs.authored
+            ORDER BY up_next.rank
+            """,
+            (repo,),
+        )
+        return [UpNext(PRRef(r["repo"], r["number"]), r["why"], r["rank"], r["by"]) for r in rows]
+
+    async def skip_up_next(self, ref: PRRef) -> None:
+        """Not for you: out of what's up next, for good."""
+        await self._db.execute(
+            """
+            INSERT OR REPLACE INTO up_next_skipped (repo, number, title, author, skipped_at)
+            SELECT repo, number, title, author, ? FROM prs WHERE repo = ? AND number = ?
+            """,
+            (_now(), ref.repo, ref.number),
+        )
+        await self._db.execute(
+            "DELETE FROM up_next WHERE repo = ? AND number = ?", (ref.repo, ref.number)
+        )
+        await self._db.commit()
+
+    async def skipped(self, repo: str, *, limit: int = 10) -> list[PR]:
+        """The PRs you said weren't for you in ``repo``, latest first (as they were then)."""
+        rows = await self._fetchall(
+            "SELECT * FROM up_next_skipped WHERE repo = ? ORDER BY skipped_at DESC LIMIT ?",
+            (repo, limit),
+        )
+        return [PR(r["repo"], r["number"], r["title"], r["author"], "", "", "") for r in rows]
+
+    async def taken(self, repo: str, *, limit: int = 10) -> list[PR]:
+        """Others' PRs in ``repo`` you had reviewed lately, latest first."""
+        rows = await self._fetchall(
+            """
+            SELECT prs.* FROM prs JOIN reviews ON reviews.pr_id = prs.id
+            WHERE prs.repo = ? AND NOT prs.authored
+            GROUP BY prs.id ORDER BY MAX(reviews.started_at) DESC LIMIT ?
+            """,
+            (repo, limit),
+        )
+        return [_pr(row) for row in rows]
 
     async def mark_synced(self, names: Iterable[str], *, at: str | None = None) -> None:
         """Record a successful sync of these repos, as of ``at`` (default: now)."""

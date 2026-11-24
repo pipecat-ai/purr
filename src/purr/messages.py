@@ -29,6 +29,7 @@ RECAP_WORKER = "recap"
 GIT_WORKER = "git"
 LEAD_WORKER = "lead"
 SUGGEST_WORKER = "suggestions"
+UP_NEXT_WORKER = "upnext"
 
 # -- Jobs (see purr.jobs): each request names the worker that handles it, and its reply.
 
@@ -424,6 +425,14 @@ class AnswerComments(Request[Answering]):
 
 
 @dataclass(kw_only=True)
+class SkipUpNext(Request[Done]):
+    """Not for you: the PR leaves what's up next for good, and the lead's told (``s``)."""
+
+    worker: ClassVar[str] = UP_NEXT_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class MessageSent:
     """What writing did, besides going to the agent (see ReviewWorker.send_followup)."""
 
@@ -538,6 +547,15 @@ class Synced(PurrEvent):
     """A poll finished: the store matches GitHub (as of now)."""
 
     kind: ClassVar[str] = "github.synced"
+    recorded: ClassVar[bool] = False
+
+
+@dataclass(kw_only=True)
+class ClonesSynced(PurrEvent):
+    """The repos' clones have every open PR the store has (as of now): their sizes and
+    diffs are local."""
+
+    kind: ClassVar[str] = "git.synced"
     recorded: ClassVar[bool] = False
 
 
