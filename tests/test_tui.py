@@ -681,7 +681,7 @@ async def test_o_opens_the_pr_on_github(tmp_path, opened):
     async with app.run_test(size=(140, 30)) as pilot:
         await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
-        assert {"Open", "GitHub"} <= footer(app)
+        await until(pilot, lambda: {"Open", "GitHub"} <= footer(app))
         await pilot.press("o")  # at home, the repo's page
         assert opened == ["https://github.com/pipecat-ai/pipecat"] and home(app)
         await pilot.press("enter")
@@ -1036,7 +1036,7 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         # After a review, the header says where its worktree is; c opens its session there.
         await pilot.press("r")
         await until(pilot, lambda: "[a] approve" in decision(app))
-        assert header(app).endswith(f"\nWorktree {worktree}")  # just where, no key hints
+        await until(pilot, lambda: header(app).endswith(f"\nWorktree {worktree}"))  # no key hints
         await pilot.press("c")
         await until(pilot, lambda: len(ran) == 2)
         command, cwd, env, banner = ran[-1]

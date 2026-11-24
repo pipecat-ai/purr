@@ -1,5 +1,7 @@
 """The PR's conversation as a log: what stays in view when its space changes."""
 
+import asyncio
+
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static
@@ -18,10 +20,19 @@ class Pane(App):
             yield Static("box", id="box")
 
 
+async def until(pilot, condition) -> None:
+    async def wait():
+        while not condition():
+            await pilot.pause(0.02)
+
+    await asyncio.wait_for(wait(), 5)
+
+
 async def _written(pilot, log: Transcript) -> None:
     for n in range(40):
         log.write(f"line {n}")
-    await pilot.pause()
+    # A RichLog adds what's written, and scrolls to its end, after a refresh.
+    await until(pilot, lambda: log.max_scroll_y > 0 and log.scroll_y == log.max_scroll_y)
 
 
 async def test_the_last_lines_stay_in_view_when_it_gets_shorter():
@@ -29,12 +40,9 @@ async def test_the_last_lines_stay_in_view_when_it_gets_shorter():
     async with app.run_test(size=(40, 20)) as pilot:
         log = app.query_one(Transcript)
         await _written(pilot, log)
-        assert log.scroll_y == log.max_scroll_y
         app.query_one("#box").display = True
-        await pilot.pause()
-        await pilot.pause()
-        assert log.size.height < 20
-        assert log.scroll_y == log.max_scroll_y  # "line 39" still shows
+        await until(pilot, lambda: log.size.height < 20)
+        await until(pilot, lambda: log.scroll_y == log.max_scroll_y)  # "line 39" still shows
 
 
 async def test_where_you_scrolled_to_stays_when_it_gets_shorter():
@@ -43,8 +51,8 @@ async def test_where_you_scrolled_to_stays_when_it_gets_shorter():
         log = app.query_one(Transcript)
         await _written(pilot, log)
         log.scroll_to(y=3, animate=False)
-        await pilot.pause()
+        await until(pilot, lambda: log.scroll_y == 3)
         app.query_one("#box").display = True
-        await pilot.pause()
-        await pilot.pause()
+        await until(pilot, lambda: log.size.height < 20)
+        await pilot.pause(0.1)  # a few refreshes: if it were to scroll, it would have
         assert log.scroll_y == 3
