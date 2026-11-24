@@ -39,7 +39,6 @@ from purr.tui.diffview import CommentScreen, DiffView  # noqa: E402
 from tests.fakes import (  # noqa: E402
     FakeGitHub,
     FakeLead,
-    FakePicker,
     FakeRecapAgent,
     FakeRepos,
     FakeSuggester,
@@ -73,7 +72,49 @@ PRS = [
     remote(7002, title="Add Sarvam TTS voices", author="grace", created_at=ago(days=1, hours=3)),
     remote(6996, title="Example: phone bot with Twilio", author="heidi", created_at=ago(days=5)),
     remote(6991, title="Bump aiohttp to 3.13", author="ivan", created_at=ago(days=6)),
+    remote(6987, title="Fix the Daily transport's docstrings", author="judy",
+           created_at=ago(days=7)),
+    remote(6983, title="Rework the frame serializers", author="ken", created_at=ago(days=8)),
 ]  # fmt: skip
+
+YOURS = 7019  # a PR you opened
+MINE = [
+    remote(YOURS, title="Reconnect Deepgram TTS without losing words", author="me",
+           created_at=ago(hours=20)),
+]  # fmt: skip
+
+# How big each PR in the pool is (from Purr's clone, which the demo doesn't have).
+SIZES = {
+    7004: [FileChange("src/pipecat/services/google/gemini_live/llm.py", 12, 4)],
+    7002: [FileChange("src/pipecat/services/sarvam/tts.py", 38, 2)],
+    6996: [FileChange("examples/phone-bot-twilio/bot.py", 420, 0)],
+    6991: [FileChange("pyproject.toml", 1, 1), FileChange("uv.lock", 40, 40)],
+    6987: [FileChange("src/pipecat/transports/daily/transport.py", 2, 2)],
+    6983: [FileChange("src/pipecat/serializers/base_serializer.py", 610, 450)],
+}
+
+# What the lead says about what's up next, best first.
+UP_NEXT = {
+    7004: "Small update to Gemini Live's models; you've reviewed 4 of frank's PRs.",
+    6987: "Docs only, 4 lines in the Daily transport: quick to check.",
+    7002: "New Sarvam voices, 40 lines in code you've worked on.",
+}
+
+# What the panes of your PR and the first one up next say.
+OTHER_DETAILS = {
+    YOURS: PRDetails(
+        body="Reconnects to Deepgram's TTS websocket as soon as it drops, so the first "
+        "words after a drop aren't lost.",
+        base="main", head="deepgram-tts-reconnect", additions=46, deletions=12,
+        changed_files=1, files=(FileChange("src/pipecat/services/deepgram/tts.py", 46, 12),),
+        checks="SUCCESS",
+    ),
+    7004: PRDetails(
+        body="Adds the latest Gemini Live models to the list, and drops the retired ones.",
+        base="main", head="gemini-live-models", additions=12, deletions=4, changed_files=1,
+        files=tuple(SIZES[7004]), checks="SUCCESS",
+    ),
+}  # fmt: skip
 
 DESCRIPTION = """\
 When the user interrupts, pending function calls are now cancelled instead of
@@ -232,6 +273,14 @@ class DemoSuggester(FakeSuggester):
         return self.LINES[min(len(self.notes), len(self.LINES)) - 1]
 
 
+class DemoPicker:
+    """The lead, choosing what's up next as it might: UP_NEXT."""
+
+    async def pick(self, notes, count):
+        picks = [{"pr": f"#{number}", "why": why} for number, why in UP_NEXT.items()]
+        return {"picks": picks[:count]}
+
+
 class DemoAgent:
     """Reviews #7012 as scripted, answers one question, and keeps reviewing #7008."""
 
@@ -311,16 +360,22 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
     github = FakeGitHub()
     github.repos = {REPO}
     github.open[REPO] = PRS
+    github.mine = MINE
     github.assigned = [pr for pr in PRS if "me" in pr.assignees]
     github.requested = [pr for pr in PRS if "me" in pr.requested]
     ref = PRRef(REPO, FIX)
     github.details[ref] = DETAILS
+    github.details |= {PRRef(REPO, number): details for number, details in OTHER_DETAILS.items()}
     github.diffs[ref] = DIFF
     data = Path(os.environ["PURR_DATA_DIR"])
     repos = FakeRepos(data)
     repos.files = {(ref, LLM): _source()}
+    repos.stats = {PRRef(REPO, number): changes for number, changes in SIZES.items()}
     config = Config(
-        data_dir=data, config_dir=Path(os.environ["PURR_CONFIG_DIR"]), poll_interval=3600
+        data_dir=data,
+        config_dir=Path(os.environ["PURR_CONFIG_DIR"]),
+        poll_interval=3600,
+        up_next=len(UP_NEXT),
     )
     purr = Purr(
         config,
@@ -331,7 +386,7 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=DemoSuggester(),
-        picker=FakePicker(),
+        picker=DemoPicker(),
         handle_sigint=False,
     )
     return PurrApp(purr), github
@@ -342,8 +397,11 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await app.bus.request(WatchRepo(repo=REPO))
     while not await app.purr.store.pending_actions(PRRef(REPO, FIX)):
         await pilot.pause(0.05)  # #7012's review: done, and waiting on you
+    while len(await app.purr.store.up_next(REPO)) < len(UP_NEXT):
+        await pilot.pause(0.05)  # the lead's picks: what's up next
     await until(pilot, lambda: len(app.repo_names) == 1)
-    await record.shot(2.2)  # home: your repos, and what needs you
+    await app.main.repos.reload()
+    await record.shot(2.5)  # home: your repos, yours, what needs you, what's up next
 
     await pilot.press("1")
     app.main.repo.select(f"{REPO}#{FIX}", repo=REPO)
@@ -352,6 +410,22 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await until(pilot, lambda: getattr(session.pr, "number", None) == FIX)
     await until(pilot, lambda: "Request changes?" in str(decision.render()))
     await record.shot(3.5)  # the list, grouped, and the review that needs you
+
+    # n, down the list: a review at work, your PR, then the first PR up next, and why.
+    header = session.query_one("#pr-header")
+    for number, says, seconds in [
+        (7008, "Reviewing", 1.0),
+        (YOURS, "Your PR", 1.8),
+        (7004, "Up next:", 3.5),
+    ]:
+        await pilot.press("n")
+        await until(pilot, lambda n=number: getattr(session.pr, "number", None) == n)
+        await until(pilot, lambda s=says: s in str(header.render()))
+        await record.shot(seconds)
+    for _ in range(3):
+        await pilot.press("p")  # back to the review that needs you
+    await until(pilot, lambda: getattr(session.pr, "number", None) == FIX)
+    await until(pilot, lambda: "Request changes?" in str(decision.render()))
 
     await pilot.press("d")  # the diff, in the list's place, next to the conversation
     repo = app.main.repo
