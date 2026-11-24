@@ -106,6 +106,25 @@ the mark to select from, along with the usual `shift`+arrows, `ctrl+x` `ctrl+c` 
 commands: `/help`, `/review [quick|full]`, `/model`, `/cost`, `/theme`, `/compact`, and the
 repo's own skills. Reading, `ctrl+v` and `alt+v` page down and up, as in Emacs.
 
+## 🔍 How reviews work
+
+- **A lead plans them.** One short call per batch of PRs decides how deep each review goes
+  (quick for small, low-risk changes, full for anything risky), what it should look at
+  hardest, and which go first.
+- **Each review is a Claude agent** working in a checkout of the PR. It follows the repo's
+  `CLAUDE.md` or `AGENTS.md`, and your own `review.md` and `code.md`.
+- **Full reviews follow the repo's own review skill** when it has one (Pipecat's
+  `code-review`), started the way you'd start it in Claude Code:
+  `/pipecat:code-review <PR URL>`. Purr picks the skill when it's clear which one it is, and
+  asks you when it isn't; `i` in the repo changes it.
+- **Otherwise, Purr's own review**: the diff, the linked issues, the review threads so far,
+  and the code around the change, looking for bugs, regressions, missing tests and security
+  problems. Quick reviews run on Sonnet and stop there; full ones also run independent checks
+  in parallel, with subagents.
+- **Every review ends with findings and a proposal** (approve, comment or request changes,
+  with inline comments) for you to post or dismiss. New commits get a re-review in the same
+  conversation.
+
 ## 🎨 Make it yours
 
 `i` opens the settings. Each file opens in Purr's own editor: `ctrl+s` saves, `esc` goes back to
