@@ -155,3 +155,41 @@ async def test_skipping_and_taking_teach_the_lead(tmp_path):
     assert "- #1 " not in told.split("The user")[0]  # never offered again
     assert "lately took:\n- #2 “Fix 2”" in told and "weren't for them:\n- #1 “Fix 1”" in told
     await store.close()
+
+
+async def test_up_next_stays_full(tmp_path):
+    from purr.models import PRRef
+    from purr.store import Store
+    from purr.upnext import fill
+    from purr.workers import UpNextWorker
+    from tests.fakes import FakeGitHub, FakePicker, FakeRepos, remote
+
+    repo = "pipecat-ai/pipecat"
+    store = await Store.open(":memory:")
+    await store.add_repo(repo)
+    for number in (1, 2, 3, 4):
+        await store.upsert_pr(remote(number).to_pr("me"))
+    repos, picker = FakeRepos(tmp_path), FakePicker()
+    repos.stats = {PRRef(repo, n): [FileChange("x.py", n, 0)] for n in (1, 2, 3, 4)}
+    worker = UpNextWorker(store=store, github=FakeGitHub(), repos=repos, picker=picker, count=2)
+
+    # The lead picks fewer than asked: the rest comes from the top of the shortlist.
+    picker.choose = [3]
+    await worker.pick(repo)
+    assert [(u.pr.number, u.by) for u in await store.up_next(repo)] == [(3, "lead"), (1, "purr")]
+
+    # You take one: its place is filled at once, however recently the lead was asked.
+    await store.upsert_pr(remote(3, assignees=("me",)).to_pr("me"))
+    picker.choose = None
+    assert await worker.pick(repo)
+    assert len(picker.notes) == 2
+    assert [u.pr.number for u in await store.up_next(repo)] == [1, 2]
+    # Full, and the pool changes: the lead isn't asked again so soon.
+    await store.upsert_pr(remote(5).to_pr("me"))
+    repos.stats[PRRef(repo, 5)] = [FileChange("y.py", 1, 0)]
+    assert not await worker.pick(repo) and len(picker.notes) == 2
+
+    # Fewer in the pool than places: all of it.
+    short = [signals(pr(n), [FileChange("x.py", 1, 0)], Known(), NOW) for n in (7, 8)]
+    assert [u.pr.number for u in fill([], short, count=5)] == [7, 8]
+    await store.close()

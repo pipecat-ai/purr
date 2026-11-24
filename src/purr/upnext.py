@@ -10,8 +10,9 @@ with why. What it goes on is worked out here, without asking anyone:
 - how long it's waited.
 
 :func:`shortlist` orders the pool by those, each with its reasons in words; the
-lead chooses from the top of it. If it can't, the top of the shortlist is what's
-up next, its reasons joined.
+lead chooses from the top of it. Up next stays full while the pool has enough:
+whatever the lead leaves (or all of it, if it can't say) is filled from the top
+of the shortlist, its reasons joined (:func:`fill`).
 """
 
 import re
@@ -145,14 +146,15 @@ lines are, whether the user has worked in that code or reviewed the author's PRs
 before, and how long it's waited.
 
 Favor PRs the user can review well and quickly: small and straightforward, in
-code they know. Having waited long counts a little. Leave out ones that look like
-they need someone else (a big feature in code the user has never touched),
-unless there's nothing better. The user's own instructions, and what they took
-or skipped lately, say what they care about.
+code they know. Having waited long counts a little. Ones that look like they need
+someone else (a big feature in code the user has never touched) go last. The
+user's own instructions, and what they took or skipped lately, say what they care
+about.
 
-For each one you choose, `why`: one short line for the user, specific to the PR
-(e.g. "Small fix to Deepgram's reconnect; you've reviewed 8 PRs there."). Choose
-at most {count}. Judge from what's given; don't invent details.
+Choose {count} (fewer only if there aren't that many), and for each, `why`: one
+short line for the user, specific to the PR (e.g. "Small fix to Deepgram's
+reconnect; you've reviewed 8 PRs there."). Judge from what's given; don't invent
+details.
 """
 
 PICK_SCHEMA = {
@@ -227,9 +229,13 @@ def _number(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def fallback(shortlisted: Sequence[Signals], count: int) -> list[UpNext]:
-    """Up next when the lead can't say: the top of the shortlist, with its reasons."""
-    return [UpNext(s.pr.ref, why(s), rank, by="purr") for rank, s in enumerate(shortlisted[:count])]
+def fill(picks: Sequence[UpNext], shortlisted: Sequence[Signals], count: int) -> list[UpNext]:
+    """The lead's picks, then the best of the rest of the shortlist, with their reasons,
+    until there are ``count`` (or no more): up next stays full while the pool has enough."""
+    chosen = {pick.pr for pick in picks}
+    rest = [s for s in shortlisted if s.pr.ref not in chosen][: max(count - len(picks), 0)]
+    filled = [UpNext(s.pr.ref, why(s), len(picks) + i, by="purr") for i, s in enumerate(rest)]
+    return [*picks, *filled]
 
 
 class Picker(Protocol):

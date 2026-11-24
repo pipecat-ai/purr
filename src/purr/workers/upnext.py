@@ -20,7 +20,7 @@ from purr.upnext import (
     Picker,
     Signals,
     candidates,
-    fallback,
+    fill,
     notes,
     picks_from,
     shortlist,
@@ -34,15 +34,16 @@ ASK_EVERY = 10 * 60  # seconds at least between asking the lead about one repo
 class UpNextWorker(BaseWorker):
     """Keeps what's up next in each watched repo (see :mod:`purr.upnext`).
 
-    After the clones sync (``git.synced``), for each watched repo: the PRs in its
-    pool are sized from the clone and weighed against what you know of the repo
-    (your merged and reviewed PRs, from GitHub every few hours), and the most
-    promising go to the lead, which chooses ``count`` of them and says why. It asks
-    again only when that shortlist changed, and not more often than ``ask_every``;
-    if the lead can't say, the top of the shortlist is up next.
+    When the PR list changes and after the clones sync (``git.synced``), for each
+    watched repo: the PRs in its pool are sized from the clone and weighed against
+    what you know of the repo (your merged and reviewed PRs, from GitHub every few
+    hours), and the most promising go to the lead, which chooses ``count`` of them
+    and says why. What it leaves (all of it, if it can't say) is filled from the top
+    of the shortlist, so up next stays full while the pool has enough.
 
-    ``SkipUpNext {pr}`` (``s``): a PR that isn't for you leaves for good, and the
-    lead's asked again at once, told about it, as about the PRs you took lately.
+    It asks again when that shortlist changed: at once when up next is short (you
+    took one, or skipped it: ``SkipUpNext {pr}``, ``s``), else not more often than
+    ``ask_every``. The lead's told what you skipped and took lately.
 
     Args:
         name: Bus name.
@@ -98,12 +99,13 @@ class UpNextWorker(BaseWorker):
         await super().on_bus_message(message)
         if isinstance(message, ClonesSynced):
             self._wake.set()
+        elif isinstance(message, PRListUpdated) and message.source != self.name:
+            self._wake.set()  # one taken, say: its place is filled
 
     @handles(SkipUpNext)
     async def skip(self, request: SkipUpNext) -> Done:
         await self._store.skip_up_next(request.pr)
-        self._asked.pop(request.pr.repo, None)  # one fewer: the lead fills its place
-        self._wake.set()
+        self._wake.set()  # one fewer: its place is filled
         await self.send_bus_message(PRListUpdated(source=self.name))
         return Done()
 
@@ -124,11 +126,14 @@ class UpNextWorker(BaseWorker):
 
     async def pick(self, repo: str) -> bool:
         """Work out what's up next in ``repo``, unless its shortlist is as when the lead was
-        last asked, or that was too recently. Returns whether what's up next changed."""
+        last asked, or (while up next is full) that was too recently. Returns whether
+        what's up next changed."""
         short = await self._shortlist(repo)
         asked = self._asked.get(repo)
         key = tuple((s.pr.ref, s.pr.head_sha) for s in short)
-        if asked and (asked[0] == key or time.monotonic() - asked[1] < self._ask_every):
+        full = len(await self._store.up_next(repo)) >= min(self._count, len(short))
+        recently = asked and time.monotonic() - asked[1] < self._ask_every
+        if asked and (asked[0] == key or (full and recently)):
             return False
         self._asked[repo] = (key, time.monotonic())
         picks = await self._choose(repo, short) if short else []
@@ -149,7 +154,7 @@ class UpNextWorker(BaseWorker):
         return shortlist(signals(pr, changes, known, now) for pr, changes in sized if changes)
 
     async def _choose(self, repo: str, short: list[Signals]) -> list[UpNext]:
-        """The lead's choice from the shortlist; its top, if the lead can't say."""
+        """The lead's choice from the shortlist, filled from its top to ``count``."""
         told = notes(
             repo,
             short,
@@ -158,11 +163,11 @@ class UpNextWorker(BaseWorker):
             skipped=await self._store.skipped(repo),
         )
         try:
-            output = await self._picker.pick(told, self._count)
+            picks = picks_from(await self._picker.pick(told, self._count), short, self._count)
         except Exception as e:
             logger.warning(f"The lead couldn't say what's up next in {repo}: {e}")
-            return fallback(short, self._count)
-        return picks_from(output, short, self._count)
+            picks = []
+        return fill(picks, short, self._count)
 
     async def _known_of(self, repo: str) -> Known:
         """What you know of the repo, asked of GitHub every few hours (none, if it can't say)."""

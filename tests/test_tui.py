@@ -1397,32 +1397,48 @@ async def test_your_own_prs_have_a_group_and_a_column(tmp_path):
 async def test_up_next_in_the_list_the_pr_and_at_home(tmp_path):
     from purr.models import FileChange, PRRef
 
-    app, github = make_app(tmp_path)
-    github.open["pipecat-ai/pipecat"] = [remote(1, title="Big one"), remote(2, title="Tiny fix")]
+    app, github = make_app(tmp_path, up_next=2)
+    github.open["pipecat-ai/pipecat"] = [
+        remote(1, title="Big one"),
+        remote(2, title="Tiny fix"),
+        remote(3, title="Docs typo"),
+    ]
     app.purr._repos.stats = {
         PRRef("pipecat-ai/pipecat", 1): [FileChange("src/big.py", 900, 0)],
         PRRef("pipecat-ai/pipecat", 2): [FileChange("src/x.py", 2, 1)],
+        PRRef("pipecat-ai/pipecat", 3): [FileChange("docs/a.md", 1, 1)],
     }
-    app.purr._picker.choose = [2]
+    app.purr._picker.choose = [2]  # the lead picks one: the other place is filled
+
+    def listed() -> str:
+        return "\n".join(option_texts(app))
+
+    def in_order(*parts: str) -> bool:
+        text = listed()
+        return all(part in text for part in parts) and sorted(parts, key=text.index) == [*parts]
+
     async with app.run_test(size=(160, 30)) as pilot:
         await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
-        await until(pilot, lambda: "UP NEXT" in " ".join(option_texts_of(app.main.repos)))
-        await until(pilot, lambda: option_texts_of(app.main.repos)[-1].split()[5] == "1")
+        await until(pilot, lambda: option_texts_of(app.main.repos)[-1].split()[5] == "2")
 
         await pilot.press("1")
-        await until(pilot, lambda: len(pr_ids(app)) == 2)
-        text = "\n".join(option_texts(app))
-        assert text.index("UP NEXT (1)") < text.index("Tiny fix  Why #2") < text.index("Big one")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        await until(
+            pilot,
+            lambda: in_order(
+                "UP NEXT (2)", "Tiny fix  Why #2", "Docs typo  Small (2 lines)", "Big one"
+            ),
+        )
         app.main.repo.select("pipecat-ai/pipecat#2", repo="pipecat-ai/pipecat")
         await until(pilot, lambda: "➜ Up next: Why #2" in header(app))
 
-        # s: not for you. Only up next says so; the cursor goes on to the next PR.
+        # s: not for you (only up next says so). The cursor goes on to the next PR, and
+        # up next is full again.
         await until(pilot, lambda: "Skip" in footer(app))
         await pilot.press("s")
-        await until(pilot, lambda: "UP NEXT" not in "\n".join(option_texts(app)))
-        assert app.main.repo.selected_pr().number == 1
-        await until(pilot, lambda: "Skip" not in footer(app))
+        await until(pilot, lambda: in_order("UP NEXT (2)", "Docs typo", "Big one  900 lines"))
+        assert app.main.repo.selected_pr().number == 3
         skipped = await app.purr.store.skipped("pipecat-ai/pipecat")
         assert [pr.number for pr in skipped] == [2]
 
