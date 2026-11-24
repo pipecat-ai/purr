@@ -2,11 +2,7 @@
 
 This is the only place Purr writes to GitHub, and it only runs after the user
 approved a pending action (or, for assignment, asked for a review; for a merge,
-pressed ``m`` and confirmed). Writes go through ``gh``, as the user.
-
-What Purr posts says so: the review's text and each reply in a thread end with
-a small signature ("Sent from Purr.", linking to Purr, by default). Inline
-comments don't; they belong to the review, whose text already says it. An
+pressed ``m`` and confirmed). Writes go through ``gh``, as the user. An
 approval with nothing else to say is "LGTM".
 """
 
@@ -61,20 +57,6 @@ class Posted:
     warnings: list[str] = field(default_factory=list)
 
 
-def signed(text: str, signature: str) -> str:
-    """``text`` with Purr's signature at the end, in small print (none: as it is)."""
-    if not signature:
-        return text
-    mark = f"<sub>{signature}</sub>"
-    return f"{text.rstrip()}\n\n{mark}" if text.strip() else mark
-
-
-def unsigned(text: str, signature: str) -> str:
-    """``text`` without Purr's signature at its end, if it has it (to edit it again)."""
-    mark = f"<sub>{signature}</sub>"
-    return text.removesuffix(mark).rstrip() if signature and text.endswith(mark) else text
-
-
 def _folded(body: str, comments: list[dict]) -> str:
     """Inline comments written into the review body, for when GitHub won't place them."""
     notes = "\n".join(f"- `{c['path']}:{c['line']}`: {c['body']}" for c in comments)
@@ -86,13 +68,11 @@ async def execute(
     action: PendingAction,
     *,
     head_sha: str,
-    signature: str = "",
     mine: Sequence[DraftComment] = (),
 ) -> Posted:
     """Post an approved action: the review, with your inline comments (``mine``) next to
     the agent's, then any replies in existing threads.
 
-    The review's text and each reply end with ``signature`` (none: unsigned).
     Raises ActionError if the review itself can't be posted. A reply that fails
     after the review went up is a warning instead, so retrying can't post the
     review twice.
@@ -103,29 +83,24 @@ async def execute(
     replies = [
         r for r in action.payload.get("replies") or [] if r.get("thread_id") and r.get("body")
     ]
-    url = await _review(
-        writer, action, event, head_sha, mine, only_replies=bool(replies), signature=signature
-    )
+    url = await _review(writer, action, event, head_sha, mine, only_replies=bool(replies))
     warnings = []
     for reply in replies:
         try:
-            body = signed(reply["body"], signature)
-            reply_url = await writer.reply_to_thread(reply["thread_id"], body)
+            reply_url = await writer.reply_to_thread(reply["thread_id"], reply["body"])
             url = url or reply_url
         except ActionError as e:
             warnings.append(f"A reply in a review thread didn't go through: {e}")
     return Posted(url=url, warnings=warnings)
 
 
-async def post_comments(
-    writer: GitHubWriter, ref: PRRef, mine: Sequence[DraftComment], *, signature: str = ""
-) -> str:
+async def post_comments(writer: GitHubWriter, ref: PRRef, mine: Sequence[DraftComment]) -> str:
     """Your inline comments as a review of their own (a comment), on the commit they're on
     (all the same one). Raises ActionError if GitHub doesn't take it."""
     return await writer.submit_review(
         ref,
         event="COMMENT",
-        body=signed("", signature),
+        body="",
         comments=[comment.for_github() for comment in mine],
         commit_id=mine[0].head_sha,
     )
@@ -139,7 +114,6 @@ async def _review(
     mine: Sequence[DraftComment],
     *,
     only_replies: bool,
-    signature: str,
 ) -> str:
     body = str(action.payload.get("body") or "")
     comments = [
@@ -156,7 +130,7 @@ async def _review(
         return await writer.submit_review(
             action.pr,
             event=event,
-            body=signed(body, signature),
+            body=body,
             comments=comments,
             commit_id=head_sha,
         )
@@ -168,7 +142,7 @@ async def _review(
         return await writer.submit_review(
             action.pr,
             event=event,
-            body=signed(_folded(body, comments), signature),
+            body=_folded(body, comments),
             comments=[],
             commit_id=head_sha,
         )

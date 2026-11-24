@@ -140,9 +140,8 @@ list; it applies at once.
 ## 💡 Good to know
 
 - **Purr never posts on its own.** The agents can read GitHub but not change it: they propose,
-  and Purr posts what you approve, as you, signed "Sent from Purr." The agent's review goes out
-  with `a`; your own comments, replies and edits go out when you save them, and deleting one
-  asks first.
+  and Purr posts what you approve, as you. The agent's review goes out with `a`; your own
+  comments, replies and edits go out when you save them, and deleting one asks first.
 - **The agents ask before anything risky.** Reading code and safe commands just run; anything
   else waits for your OK, and `A` keeps a rule so it doesn't ask again. This is the Agent SDK's
   permission system (Claude Code's, underneath), so the rules go in `~/.claude/settings.json`.

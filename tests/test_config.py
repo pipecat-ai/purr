@@ -42,7 +42,6 @@ def test_settings_from_the_file(dirs):
         away_after = 600
         lead_model = ""          # Claude Code's default
         review_model = "claude-opus-5-5"
-        signature = ""           # unsigned
         review_budget_usd = 2
         theme = "nord"
         """,
@@ -51,7 +50,7 @@ def test_settings_from_the_file(dirs):
     assert config.theme == "nord"
     assert config.max_reviews == 5 and config.away_after == 600
     assert config.lead_model is None and config.review_model == "claude-opus-5-5"
-    assert config.signature == "" and config.review_budget_usd == 2.0
+    assert config.review_budget_usd == 2.0
 
 
 def test_what_the_file_cant_say(dirs):
@@ -105,5 +104,9 @@ def test_saving_one_setting_leaves_the_rest(dirs):
     path.write_text('max_reviews = 5  # mine\ntheme = "nord"\n')
     save_setting(path, "theme", "dracula")  # the line that sets it
     assert path.read_text() == 'max_reviews = 5  # mine\ntheme = "dracula"\n'
-    save_setting(path, "signature", "")  # none there: a last line
-    assert read_settings(path) == {"max_reviews": 5, "theme": "dracula", "signature": ""}
+    save_setting(path, "permission_mode", "default")  # none there: a last line
+    assert read_settings(path) == {
+        "max_reviews": 5,
+        "theme": "dracula",
+        "permission_mode": "default",
+    }

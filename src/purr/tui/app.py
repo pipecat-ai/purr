@@ -77,7 +77,7 @@ _MENU = {
     "code": ("c", "Code style", "What good code looks like to you; reviews hold PRs to it"),
     "permissions": ("p", "Permissions", "What the agents may run without asking"),
     "skill": ("s", "Review skill", "Which of the repo's own skills its reviews follow"),
-    "settings": ("o", "Settings", "Models, polling, reviews at once, signature…"),
+    "settings": ("o", "Settings", "Models, polling, reviews at once, sandbox…"),
     "theme": ("t", "Theme", "Purr's colors, each shown as you pick"),
 }
 # What each of your instruction files is for, over the editor.
@@ -363,7 +363,7 @@ class PurrApp(App):
 
         self._edit(
             path,
-            about="Purr's settings: models, polling, signature, theme…",
+            about="Purr's settings: models, polling, sandbox, theme…",
             applies="next time Purr starts (the theme, now)",
             check=parse_settings,
             saved=saved,

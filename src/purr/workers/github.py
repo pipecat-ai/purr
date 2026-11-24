@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.actions import ActionError, GhWriter, GitHubWriter, execute, post_comments, signed
+from purr.actions import ActionError, GhWriter, GitHubWriter, execute, post_comments
 from purr.github import GitHub, GitHubError, RemotePR, Snapshot
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, handles
 from purr.merging import blockers, concerns, new_concerns
@@ -132,10 +132,8 @@ class GitHubWorker(BaseWorker):
         github: GitHub,
         writer: GitHubWriter | None = None,
         interval: float = 60.0,
-        signature: str = "",
     ):
         super().__init__(name)
-        self._signature = signature  # at the end of what Purr posts (see purr.actions)
         self._store = store
         self._github = github
         self._writer = writer or GhWriter()
@@ -396,9 +394,7 @@ class GitHubWorker(BaseWorker):
         mine = await self._store.draft_comments(action.pr)
         here = [comment for comment in mine if comment.head_sha == head_sha]
         try:
-            posted = await execute(
-                self._writer, action, head_sha=head_sha, signature=self._signature, mine=here
-            )
+            posted = await execute(self._writer, action, head_sha=head_sha, mine=here)
         except ActionError as e:
             # Back to pending, so it can be retried.
             await self._store.transition_action(
@@ -431,7 +427,7 @@ class GitHubWorker(BaseWorker):
         url = ""
         for head in dict.fromkeys(comment.head_sha for comment in mine):
             on_it = [comment for comment in mine if comment.head_sha == head]
-            url = await post_comments(self._writer, ref, on_it, signature=self._signature) or url
+            url = await post_comments(self._writer, ref, on_it) or url
             await self._store.remove_comments(comment.id for comment in on_it)
         if mine:
             await self.send_bus_message(CommentsChanged(source=self.name, pr=str(ref)))
@@ -485,9 +481,8 @@ class GitHubWorker(BaseWorker):
     async def reply_to_thread(self, request: ReplyToThread) -> Posted:
         if not request.body.strip():
             raise Invalid("A reply needs some words")
-        body = signed(request.body, self._signature)
         try:
-            url = await self._writer.reply_to_thread(request.thread_id, body)
+            url = await self._writer.reply_to_thread(request.thread_id, request.body)
         except ActionError as e:
             raise Failed(f"GitHub didn't take it: {e}") from e
         return Posted(url=url)
@@ -496,9 +491,8 @@ class GitHubWorker(BaseWorker):
     async def edit_github_comment(self, request: EditGitHubComment) -> Posted:
         if not request.body.strip():
             raise Invalid("A comment needs some words")
-        body = signed(request.body, self._signature)
         try:
-            url = await self._writer.edit_review_comment(request.comment_id, body)
+            url = await self._writer.edit_review_comment(request.comment_id, request.body)
         except ActionError as e:
             raise Failed(f"GitHub didn't take it: {e}") from e
         return Posted(url=url)
@@ -508,7 +502,7 @@ class GitHubWorker(BaseWorker):
         if not request.body.strip():
             raise Invalid("A comment needs some words")
         comment = {"path": request.path, "line": request.line, "side": request.side,
-                   "body": signed(request.body, self._signature)}  # fmt: skip
+                   "body": request.body}  # fmt: skip
         if request.start_line is not None and request.start_line != request.line:
             comment |= {"start_line": request.start_line, "start_side": request.start_side}
         return await self._posting(
@@ -519,15 +513,13 @@ class GitHubWorker(BaseWorker):
     async def post_pr_comment(self, request: PostPRComment) -> Posted:
         if not request.body.strip():
             raise Invalid("A comment needs some words")
-        body = signed(request.body, self._signature)
-        return await self._posting(self._writer.post_pr_comment(request.pr, body))
+        return await self._posting(self._writer.post_pr_comment(request.pr, request.body))
 
     @handles(EditPRComment)
     async def edit_pr_comment(self, request: EditPRComment) -> Posted:
         if not request.body.strip():
             raise Invalid("A comment needs some words")
-        body = signed(request.body, self._signature)
-        return await self._posting(self._writer.edit_pr_comment(request.comment_id, body))
+        return await self._posting(self._writer.edit_pr_comment(request.comment_id, request.body))
 
     @handles(DeleteGitHubComment)
     async def delete_github_comment(self, request: DeleteGitHubComment) -> Done:

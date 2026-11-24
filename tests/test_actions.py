@@ -2,7 +2,6 @@
 
 import asyncio
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from pipecat.workers.base_worker import BaseWorker
@@ -202,7 +201,7 @@ async def test_rewriting_the_agents_comment_and_replying_in_a_thread(setup):
     await request(client, ApproveAction(action_id=pending.id), timeout=5)
     assert writer.reviews[0]["comments"][0]["body"] == "A race, I think"  # yours, posted
 
-    # A reply in a thread on GitHub goes now, signed.
+    # A reply in a thread on GitHub goes now.
     with pytest.raises(Invalid):
         await request(client, ReplyToThread(pr=REF, thread_id="T1", body=" "), timeout=5)
     await request(client, ReplyToThread(pr=REF, thread_id="T1", body="Fixed, thanks"), timeout=5)
@@ -292,77 +291,24 @@ async def test_assigning_yourself(setup):
     assert (await store.get_pr(REF)).assigned_to_me is True
 
 
-async def test_what_purr_posts_says_so():
-    sig = "Sent from Purr."
-    writer = FakeWriter()
-    replies = [{"thread_id": "T1", "body": "Fixed now, thanks."}]
-    await execute(
-        writer, action(body="Two things.", comments=COMMENTS, replies=replies),
-        head_sha="abc", signature=sig,
-    )  # fmt: skip
-    [review] = writer.reviews
-    assert review["body"] == "Two things.\n\n<sub>Sent from Purr.</sub>"
-    assert review["comments"][0]["body"] == "Race here"  # the review's text already says it
-    assert writer.replies == [("T1", "Fixed now, thanks.\n\n<sub>Sent from Purr.</sub>")]
-
-    # An approval with nothing else to say: LGTM, and where it came from.
-    writer = FakeWriter()
-    await execute(writer, action(ActionKind.APPROVE), head_sha="abc", signature=sig)
-    assert writer.reviews[0]["body"] == "LGTM\n\n<sub>Sent from Purr.</sub>"
-    writer = FakeWriter()
-    await execute(writer, action(ActionKind.APPROVE), head_sha="abc")
-    assert writer.reviews[0]["body"] == "LGTM"
-
-    # Comments folded into the text: the signature stays last.
-    writer = FakeWriter()
-    writer.fail_with = ["Unprocessable Entity: Line could not be resolved"]
-    await execute(
-        writer, action(body="Two things.", comments=COMMENTS), head_sha="abc", signature=sig
-    )
-    assert writer.reviews[0]["body"] == (
-        "Two things.\n\n- `bus.py:42`: Race here\n\n<sub>Sent from Purr.</sub>"
-    )
-
-    # No signature configured: posted as written.
-    writer = FakeWriter()
-    await execute(writer, action(body="Two things."), head_sha="abc", signature="")
-    assert writer.reviews[0]["body"] == "Two things."
-
-
-def test_the_proposal_shows_the_signature():
+def test_the_proposal_shows_what_would_be_posted():
     import io
 
     from rich.console import Console
 
     from purr.tui.session import render_proposal
 
-    proposal = {
-        "kind": "comment",
-        "description": "Comment",
-        "body": "Looks good.",
+    def shown(proposal: dict) -> list[str]:
+        console = Console(width=100, record=True, file=io.StringIO())
+        console.print(render_proposal(proposal))
+        return [line.strip() for line in console.export_text().splitlines()]
+
+    lines = shown({
+        "kind": "comment", "description": "Comment", "body": "Looks good.",
         "replies": [{"thread_id": "T1", "body": "Done."}],
-    }
-    console = Console(width=100, record=True, file=io.StringIO())
-    console.print(render_proposal(proposal, "Sent from Purr."))
-    lines = [line.strip() for line in console.export_text().splitlines()]
-    assert lines[lines.index("Looks good.") + 1] == "Sent from Purr."
-    assert "↳ reply in thread  Done.  Sent from Purr." in lines
-
-
-def test_the_default_signature_links_to_purr_and_reads_plainly_in_purr():
-    import io
-
-    from rich.console import Console
-
-    from purr.config import Config
-    from purr.tui.session import render_proposal
-
-    signature = Config(data_dir=Path("/tmp")).signature
-    assert signature == "Sent from [Purr](https://github.com/pipecat-ai/purr)."
-    console = Console(width=100, record=True, file=io.StringIO())
-    console.print(render_proposal({"kind": "approve", "description": "Approve"}, signature))
-    lines = [line.strip() for line in console.export_text().splitlines()]
-    assert lines[-2:] == ["LGTM", "Sent from Purr."]
+    })  # fmt: skip
+    assert lines[-2:] == ["Looks good.", "↳ reply in thread  Done."]
+    assert shown({"kind": "approve", "description": "Approve"})[-1] == "LGTM"
 
 
 READY = MergeCheck(
