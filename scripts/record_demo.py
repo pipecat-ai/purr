@@ -39,7 +39,6 @@ from purr.tui.diffview import CommentScreen, DiffView  # noqa: E402
 from tests.fakes import (  # noqa: E402
     FakeGitHub,
     FakeLead,
-    FakeRecapAgent,
     FakeRepos,
     FakeSuggester,
     FakeWriter,
@@ -383,7 +382,6 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
         agent=DemoAgent(),
         repos=repos,
         writer=FakeWriter(github),
-        recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
         suggester=DemoSuggester(),
         picker=DemoPicker(),

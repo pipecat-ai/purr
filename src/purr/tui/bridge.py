@@ -6,7 +6,7 @@ from textual.app import App
 from textual.message import Message
 
 from purr.jobs import R, Request, request
-from purr.messages import PurrEvent, UserActive
+from purr.messages import PurrEvent
 
 
 class BusEvent(Message):
@@ -37,6 +37,3 @@ class UIWorker(BaseWorker):
     async def request(self, req: Request[R]) -> R:
         """Send ``req`` and wait for its reply; raises the PurrError it came back with."""
         return await request(self, req)
-
-    async def active(self) -> None:
-        await self.send_bus_message(UserActive(source=self.name))

@@ -3,11 +3,10 @@
 import asyncio
 import os
 import time
-from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
-from textual import events, work
+from textual import work
 from textual.app import App
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -60,12 +59,10 @@ from purr.tui.dialogs import (
 from purr.tui.editor import EditorScreen, check_json, shown
 from purr.tui.keyhelp import KeysScreen, key_groups
 from purr.tui.overview import DetailsCache
-from purr.tui.recap import RecapScreen
 from purr.tui.screens import MainScreen
 from purr.tui.session import SessionState
 from purr.tui.switcher import PurrSwitcher, short_name
 from purr.tui.working import Working
-from purr.workers.recap import LAST_ACTIVE
 
 _NOWHERE = object()
 # The app's keys that the screen on top (a dialog, the diff) gets instead.
@@ -120,7 +117,6 @@ class PurrApp(App):
         # The keys that work everywhere: ? lists them; the footer has the place's own.
         Binding("ctrl+p", "command_palette", "Find", show=False, priority=True),  # repo, PR
         Binding("ctrl+n", "next_alert", "News", show=False, priority=True),  # the latest
-        Binding("w", "recap", "Recap", show=False),
         Binding("i", "instructions", "Settings", show=False),
         Binding("0", "home", "Home", show=False),
         *[Binding(str(n), f"jump({n})", "Repo 1–9", show=False) for n in range(1, 10)],
@@ -149,8 +145,6 @@ class PurrApp(App):
         self._needs_you: dict[str, int] = {}  # repo -> PRs needing you there
         self._reload_scheduled = False
         self._stopping = False
-        self._last_active: datetime | None = None  # last key or voice turn
-        self._last_reported: datetime | None = None
 
     def _use_theme(self, name: str) -> None:
         """Start in the theme (settings): it, what the named colors are in it, Purr's own."""
@@ -196,9 +190,6 @@ class PurrApp(App):
 
     async def on_mount(self) -> None:
         await self.purr.start(self.bus)
-        # When the user was last around, including in an earlier run.
-        if last := await self.purr.store.get_meta(LAST_ACTIVE):
-            self._last_active = datetime.fromisoformat(last)
         # What's happened since you last looked, including before this run.
         self.alerts = {str(ref): what for ref, what in await self.purr.store.unseen()}
         await self.push_screen(self.main)
@@ -226,26 +217,6 @@ class PurrApp(App):
             self.notify(str(e), severity="warning")
             return
         await self.open_repo(name)
-
-    # -- Away and back ----------------------------------------------------------
-
-    async def on_event(self, event: events.Event) -> None:
-        if isinstance(event, events.Key):
-            self._touch()
-        await super().on_event(event)
-
-    def _touch(self) -> None:
-        now = datetime.now(UTC)
-        away_after = self.purr.config.away_after
-        last = self._last_active
-        if last is None:
-            last = self._last_active = now  # first run ever
-        if (now - last).total_seconds() > away_after and not self._modal_open():
-            self.push_screen(RecapScreen(since=last.isoformat(timespec="seconds")))
-        self._last_active = now
-        if self._last_reported is None or (now - self._last_reported).total_seconds() > 60:
-            self._last_reported = now
-            self.run_worker(self.bus.active())
 
     async def action_instructions(self) -> None:
         """i: the settings menu: how reviews go (your review and code style, the agents'
@@ -368,14 +339,6 @@ class PurrApp(App):
             check=parse_settings,
             saved=saved,
         )
-
-    async def action_recap(self) -> None:
-        if self._modal_open():
-            return
-        if recap := await self.purr.store.latest_recap():
-            await self.push_screen(RecapScreen(recap=recap))
-        else:
-            self.notify("No recaps yet.")
 
     # -- Navigation -------------------------------------------------------------
 

@@ -12,7 +12,8 @@ from purr.store import Store
 class ActivityWorker(BaseWorker):
     """Appends every recorded :class:`PurrEvent` to the store's activity log.
 
-    The activity log is what recaps and each PR's timeline are built from.
+    The activity log is what news that survives restarts, and each PR's timeline,
+    are built from.
     Events are also logged, briefly, so headless runs show what's happening.
     """
 

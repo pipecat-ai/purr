@@ -19,7 +19,7 @@ Purr should feel like Claude Code, but organized around PRs: your repos and thei
 - Run many reviews concurrently without disturbing the user's working copy.
 - Resume any PR's review session at any time, including after restarting the app.
 - Inside a PR, work as you would in Claude Code: a full conversational session in the PR's worktree.
-- Catch up after being away: an agent-written recap of what happened, with what needs you first.
+- Catch up after being away: what happened to each PR since you last looked at it is news (bold titles, the top bar, `ctrl+n`), and what needs you is first in the list.
 - Move between repos and PRs instantly, and notice when something happens in another repo. Everything should feel fast.
 - Control everything by keyboard, and later by voice, interchangeably.
 - Never take a visible action on GitHub (comments, review verdicts, merges) without approval.
@@ -39,11 +39,10 @@ One Python asyncio process (`app.py` puts it together) containing these Pipecat 
 2. **`git`** (`workers/git.py`): Purr's own clone of each repo, local diffs, and the PRs' worktrees.
 3. **`lead`** (`workers/lead.py`): plans each review (depth, priority, focus) and starts it.
 4. **`reviews`** (`workers/reviews.py`): one Claude Agent SDK session per PR, run as a task each, a few at a time; everything you say in a PR's conversation goes through it.
-5. **`recap`** (`workers/recap.py`): writes the "while you were away" summary.
-6. **`suggestions`** (`workers/suggestions.py`): suggests what you might ask next in a PR's session.
-7. **`activity`** (`workers/activity.py`): records events in the activity log, and logs them.
-8. **`upnext`** (`workers/upnext.py`): what's up next in each watched repo's pool (see Up next).
-7. **`tui`** (`tui/bridge.py`): the Textual app's seat on the bus. The voice agent will be another (see Voice).
+5. **`suggestions`** (`workers/suggestions.py`): suggests what you might ask next in a PR's session.
+6. **`activity`** (`workers/activity.py`): records events in the activity log, and logs them.
+7. **`upnext`** (`workers/upnext.py`): what's up next in each watched repo's pool (see Up next).
+8. **`tui`** (`tui/bridge.py`): the Textual app's seat on the bus. The voice agent will be another (see Voice).
 
 The **SQLite store** (`store.py`) is shared by all of them. (Pipecat Subagents has been merged into Pipecat core as `pipecat.workers` / `pipecat.bus`, available since `pipecat-ai` 1.16.0; the standalone `pipecat-subagents` repo is archived.) Workers talk in two ways (see Bus messages): **jobs**, typed requests one worker answers (Pipecat job coordination), and **events**, broadcast to everyone. The TUI is a bus participant, as the voice agent will be, so starting a review will be the same path from either: send a job, listen for events.
 
@@ -64,7 +63,7 @@ Relevant docs (verify current APIs before building):
 │  Voice agent ──┼──────── Pipecat local bus ─────────┼── lead (plans reviews)
 │  (planned)     │        (jobs + events)             ├── reviews ──► Claude Agent SDK
 │                                                     │   (a task per PR,     (worktree per PR)
-│                                                     ├── recap, activity    │
+│                                                     ├── upnext, activity   │
 │                         SQLite store ◄──────────────┘                      │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -74,7 +73,7 @@ Relevant docs (verify current APIs before building):
 One Purr instance covers several repos; you don't run one per repo:
 
 - PRs assigned to you, asking for your review, or that you took part in can be in any repo, and Purr tracks all of them (see Triggers).
-- One process means one recap (and later one voice agent and one push-to-talk key). A Purr per repo would split "what happened" across windows, and compete for the microphone.
+- One process means one list of what needs you (and later one voice agent and one push-to-talk key). A Purr per repo would split "what happened" across windows, and compete for the microphone.
 - It's the first goal: all relevant PRs in one place.
 
 Two things keep this cheap:
@@ -211,7 +210,7 @@ Opening a PR (`enter`, or `tab` to its pane) puts you in a Claude Code-style ter
 - Same guardrails as the review: anything GitHub-visible becomes a pending action.
 - **Writing while the agent works** goes to it straight away, as in Claude Code: it reads it at its next step (Claude Code absorbs it mid-turn), or as a turn of its own while its background agents are out. Each run has an inbox the review worker puts your messages in, and the run sends them into the live session (`client.query`). That takes knowing when the run is really over, which a result doesn't say (a turn ends, but background agents, or your message, may still be owed a turn): Purr sets `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`, and the run ends when the CLI reports `idle` after a turn's result, with nothing of yours unsent or not yet taken up. A message sent just as it went idle waits for the CLI to take it up (`running`). From a CLI that reports no state, messages wait in the inbox, and whatever's left when a run ends goes as a follow-up. Claude Code stores what it absorbed mid-turn as an attachment (`queued_command`) that the SDK's session reader leaves out, so reloading reads those from the session file and puts them back after the message they followed. A slash command can't go in while the agent works (`Busy`): it stays in the prompt until it's done.
 - **Deciding happens in the conversation, not in per-finding cards.** You keep digging with the agent until you agree on what to post; "drop the nit", "reword the race comment", "make it a comment instead" make it propose again, and the new proposal replaces the old one. Writing while a proposal waits sets it aside straight away (as `x` would), so what's on screen is never a proposal the conversation has moved past; your message carries a note for the agent (a `<purr-note>`, which the transcript leaves out) saying so, and to propose again, changed or as it was, if it still recommends posting something. The thread says so (`◼ Proposal set aside: …`, then your message), also when reloaded, from the note. Slash commands (`/compact`, a skill) aren't replies and leave it be. The transcript shows each proposal in full (verdict, overall comment, every inline comment and thread reply), so `a` posts exactly what you've read.
-- Permission prompts: when Claude Code asks about a tool call, the prompt shows inline as in Claude Code (`a` allow once / `A` always / `x` deny, the same keys as approving or dismissing a proposal) and the PR moves to **Needs you**. See Permissions for `A`. Writing instead is a no with directions, like Claude Code's "No, and tell Claude what to do differently": the tool call is denied with your message, the agent reads it there and carries on in the same run, and the thread shows it under the call: `⎿ Not allowed: you wrote instead`, then your message. The agent waits up to `permission_wait` (5 minutes) and then carries on without it, saying at the end what it wanted to run and why; the recap mentions it. The wait has to be bounded: Claude Code gives up on an unanswered permission request after about 10 minutes, and after that its session refuses every tool call.
+- Permission prompts: when Claude Code asks about a tool call, the prompt shows inline as in Claude Code (`a` allow once / `A` always / `x` deny, the same keys as approving or dismissing a proposal) and the PR moves to **Needs you**. See Permissions for `A`. Writing instead is a no with directions, like Claude Code's "No, and tell Claude what to do differently": the tool call is denied with your message, the agent reads it there and carries on in the same run, and the thread shows it under the call: `⎿ Not allowed: you wrote instead`, then your message. The agent waits up to `permission_wait` (5 minutes) and then carries on without it, saying at the end what it wanted to run and why. The wait has to be bounded: Claude Code gives up on an unanswered permission request after about 10 minutes, and after that its session refuses every tool call.
 - The agent's reasoning shows in the transcript the way Claude Code shows it: dimmed, ahead of what it leads to, a line per thought (its heading or first sentence: `Checking the lock file…`). In full, even summarized, it's about ten times what the agent says (measured: 137k characters of thinking to 14k of replies), so `t` shows it in full only when you ask, and again a line each on the next `t`. Purr asks for summarized thinking (`thinking={"type": "adaptive", "display": "summarized"}`); the SDK's default returns it empty.
 - `z` zooms the session to full screen (starting a review does too) and `esc` zooms out; unzoomed, `esc` stops the agent while it works (see Reviews), else leaves the prompt, and from the pane goes home (see Repo screen).
 - **While the agent works**, a line above the prompt moves, like Claude Code's: a star that grows and shrinks, a cat verb ("Prowling…", a new one every 20 s), how long it's been (`50s`, `1m 2s`), how many of its tasks are out in the background (`· 2 in the background`: the run sends a `background` entry whenever that changes, which the transcript doesn't show) and `esc to stop`. It sits outside the scrolling conversation, so it shows even when you've scrolled up, and goes away when the agent's done or waiting on you (a question, a proposal) or for its turn in the queue. The PR's mark in the list spins the same way. A turn that ends with agents still in the background isn't "done": only the run's last result is.
@@ -278,37 +277,13 @@ The repo's own skills and agents aren't prompt text: they're loaded as a plugin,
 
 Where it differs from Claude Code on purpose: nothing from the PR's own `.claude/` is loaded, since the PR could tamper with it. Skills and agents come from the default branch instead, and the repo's `settings.json` (hooks) isn't used at all. Tool permissions are Claude Code's own, plus Purr's one rule (see Permissions).
 
-## While you were away
+## The activity log
 
-If things happen while you're not looking, Purr shows you a recap when you come back, written by an agent and focused on PRs.
-
-- **Activity log.** Every Purr event that's worth keeping (`recorded`) is appended to an `activity` table: PRs entering the pool or getting assigned to you, review requests and replies, new commits on PRs under review, PRs closed or merged, reviews started, finished or failed, actions proposed or resolved, agents blocked on a permission prompt. Progress, streamed session messages and list refreshes aren't. It doubles as each PR's timeline.
-- **What it says** comes from one table, `purr/news.py`: per kind of event (and of PR change), how it reads as news, how the recap agent is told about it, and whether a recap mentions it at all. The alerts, the bold titles and the recap say the same because of it.
-- **Being away.** The TUI (any key; later, the voice agent, any turn) reports activity on the bus (`user.active`, throttled). The last-active time is persisted. You're away after N minutes without activity (default 15) or while the app was closed. While it was closed nothing ran, but the first poll after startup records what changed on GitHub in the meantime, so that shows up too.
-- **Coming back.** On your first key after being away, the "While you were away" panel opens (saying so when nothing notable happened). The notable events are listed immediately; the agent's summary comes in on top of them within a few seconds, so you're never waiting on it.
-- **The recap agent** is an Agent SDK query with no tools (same Claude Code login as the reviews). Input: the activity since you left plus the current state of the PRs involved. Output: a one-line headline plus one item per PR, ordered by what needs you (decisions, blocked agents, failures), then finished reviews, then new PRs. Items are selectable and jump to the PR.
-- Recaps are stored. `w` reopens the latest (later, by voice: "what did I miss?").
-
-```
-┌─ While you were away · 14:02 → 15:47 ─────────────────────────────────┐
-│ 3 PRs need you, 1 review failed, 1 new PR is being reviewed.          │
-│                                                                       │
-│ ▸ ⚠ pipecat#2841  Review done: wants to request changes (race)        │
-│   ⚠ pipecat#2850  Review done: ready to approve                       │
-│   ⚠ whisker#112   Agent blocked: asks to run the full test suite      │
-│   ✗ daily-x#77    Review failed: couldn't check out the PR head       │
-│   ● pipecat#2862  Assigned to you, review in progress                 │
-│                                                                       │
-│ 14 events                                                             │
-│ 14:05  pipecat#2841   review finished: …                              │
-│                                                                       │
-│ enter open PR · esc close                                             │
-└───────────────────────────────────────────────────────────────────────┘
-```
+Every Purr event that's worth keeping (`recorded`) is appended to an `activity` table: PRs entering the pool or getting assigned to you, review requests and replies, new commits on PRs under review, PRs closed or merged, reviews started, finished or failed, actions proposed or resolved, agents blocked on a permission prompt. Progress, streamed session messages and list refreshes aren't. It doubles as each PR's timeline, and it's where the news comes from after a restart (see Alerts from other repos): while Purr was closed nothing ran, but the first poll after startup records what changed on GitHub in the meantime, so that's news too.
 
 ## Bus messages
 
-Jobs are requests one worker answers, within a timeout (60 s; 180 s for `PlanReviews` and `MakeRecap`, 120 s for `GetWorktree`). Each is a dataclass in `src/purr/messages.py` that names the worker that handles it and its reply, also a dataclass: `class SendMessage(Request[MessageSent])`. The plumbing is in `src/purr/jobs.py`, once: a worker handles one with a method decorated `@handles(SendMessage)` that takes the request and returns the reply, and any worker (the TUI, the lead, a test) sends one with `request(sender, SendMessage(pr=..., text=...))`, which returns the reply. On the bus they're JSON (pydantic encodes the dataclasses), so they could cross a network bus later. A request that can't be done raises a `PurrError`, which goes back as itself (class and message), so a caller can tell `Busy` from `NotFound` from `Invalid`, `Failed` or `Unanswered` (no answer in time) without reading the text; anything else a handler raises is logged and goes back as a plain `PurrError`, so the asker hears about it at once rather than timing out.
+Jobs are requests one worker answers, within a timeout (60 s; 180 s for `PlanReviews`, 120 s for `GetWorktree`). Each is a dataclass in `src/purr/messages.py` that names the worker that handles it and its reply, also a dataclass: `class SendMessage(Request[MessageSent])`. The plumbing is in `src/purr/jobs.py`, once: a worker handles one with a method decorated `@handles(SendMessage)` that takes the request and returns the reply, and any worker (the TUI, the lead, a test) sends one with `request(sender, SendMessage(pr=..., text=...))`, which returns the reply. On the bus they're JSON (pydantic encodes the dataclasses), so they could cross a network bus later. A request that can't be done raises a `PurrError`, which goes back as itself (class and message), so a caller can tell `Busy` from `NotFound` from `Invalid`, `Failed` or `Unanswered` (no answer in time) without reading the text; anything else a handler raises is logged and goes back as a plain `PurrError`, so the asker hears about it at once rather than timing out.
 
 Jobs:
 - `PlanReviews {prs, depth}` (lead worker): plan and start reviews you asked for (TUI `r`; later, voice); answers once they've started, with why any didn't.
@@ -321,7 +296,6 @@ Jobs:
 - `SetModel {pr, model}` (reviews worker): the model for a PR's conversation (`/model`).
 - `ListRepoSkills {repo}` / `ListReviewSkills {repo}` (reviews worker): a repo's skills, for `/help` and completion; those that may be for reviewing, and which one its reviews follow.
 - `ChooseReviewSkill {repo, skill}` (reviews worker): have its reviews follow `skill` ('' for Purr's own; none: ask again next run). Answers a `review.skill_question` too.
-- `MakeRecap {since}` (when you come back, or on demand)
 - `SuggestPrompt {pr}` (suggestions worker): what you might ask next in the PR's session, from the end of its conversation (see PR session).
 - `WatchRepo {repo}` / `UnwatchRepo {repo}` (GitHub worker; `repo` can be `owner/name` or a GitHub URL)
 - `AssignMe {pr}` (GitHub worker): assigns you, when `r` starts a review of a PR that isn't yours yet (one in the pool, one asking for your review, or, once you confirm, one someone else has).
@@ -347,8 +321,6 @@ Events (broadcast, everyone listens):
 - `session.message {pr, message}` (one streamed SDK message: text, tool call or tool result)
 - `session.permission_request {pr, request_id, tool, description, reason, rule}` / `session.permission_resolved {pr, request_id, allowed, answered, description}`
 - `review.skill_question {repo, skills}` (a repo's reviews wait to hear which of its skills to follow) / `review.skill_chosen {repo, skill, chosen_by}`
-- `user.active` (from the TUI, throttled)
-- `recap.ready {recap_id, headline}`
 
 Events (`PurrEvent`) are `BusDataMessage` subclasses in `src/purr/messages.py`, broadcast (no target), with plain JSON fields (PRs as `owner/repo#123` strings), since everything that listens gets them, and most go into the activity log. Every event is also logged as one line, its values cut to 200 characters: a `session.message` carries whole tool results, which the session's transcript already keeps.
 
@@ -364,9 +336,7 @@ Events (`PurrEvent`) are `BusDataMessage` subclasses in `src/purr/messages.py`, 
 - `up_next`: repo, number, rank, why, by (`lead`, or `purr` when the lead couldn't say), picked_at. What's up next in each repo (see Up next).
 - `up_next_skipped`: repo, number, title, author, skipped_at. The PRs you said weren't for you (`s`).
 - `prompts`: at, repo, number, text. What you asked PR agents, for the prompt's history (`↑`/`↓`, `ctrl+r`).
-- `activity`: at, pr (optional), kind, data. Every recorded Purr event; feeds the recaps and each PR's timeline.
-- `recaps`: since, until, headline, items, created_at
-- `meta`: key/value, e.g. `last_active_at`
+- `activity`: at, pr (optional), kind, data. Every recorded Purr event; the news after a restart, and each PR's timeline.
 
 - `runs`: one per time an agent works on a PR: kind (`review`, `resume`, `rereview`, or `message` for one of yours), repo, number, review and session ids, queued_at / started_at / finished_at (UTC, ms; queued to started is time waiting for a slot), status (`queued`, `running`, `finished`, `failed`, `interrupted` by a shutdown), error, and what the SDK reports at the end: model, cost_usd, turns, duration_ms, api_duration_ms, input/output/cache read/cache write tokens.
 - `messages`: every message of every run, in order: at (UTC, ms), run, repo, number, kind (`prompt`, `thinking`, `text`, `tool_use`, `tool_result`, `task` (a background agent or command starting or ending), `permission_request`, `permission_answer`, `result`, `error`), author (`purr`, `you`, `agent`, `tool`) and the message itself as JSON (tool results are capped at 2,000 characters, as in the transcript).
@@ -390,7 +360,7 @@ WHERE q.kind = 'permission_request' GROUP BY q.id;
 
 ## TUI
 
-Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs plus the selected PR's session) → **a PR session** zoomed to full screen. The recap panel opens on top of whichever screen you're on.
+Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs plus the selected PR's session) → **a PR session** zoomed to full screen.
 
 ### Repo list (home)
 
@@ -417,7 +387,7 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 
 ### Repo screen
 
-Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere else (alerts, recaps, the switcher) as `whisker#112`, the repo name without its owner.
+Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere else (alerts, the switcher) as `whisker#112`, the repo name without its owner.
 
 ```
 ┌─ Purr › 2 pipecat-ai/pipecat ───────────────────────────────────────────── 🔔 1 · whisker#112 needs you ─┐
@@ -483,7 +453,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `o` opens the PR on GitHub, in your browser (at home, the repo), from either pane (`tui/browser.py`: the system's opener, `open` or `xdg-open`, its output thrown away so a browser starting up doesn't write over the screen).
 - `tab` (or `shift+tab`) switches between the PR list and the PR's pane, from its prompt too (the prompt never takes a tab). On a group's heading in the list, `tab` folds or opens the group instead (the footer says which: `Fold/open` there, `PR` on a PR), and `shift+tab` still switches.
 - `?` on any page lists every key that works there (`tui/keyhelp.py`): made from the active bindings, grouped from the focused pane outwards (the pane, the repo, everywhere), so it can't drift; each page's footer shows `? Keys` first.
-- The footer (`tui/keybar.py`, Purr's own: Textual's is one line, which a pane's keys outgrow) shows every key that works where you are, on as many lines as that takes (two at 140 columns), never breaking a key across lines, a ` │ ` between keys: the focused pane's first, in the order it binds them, then the repo's, each key once (the nearest binding of it); those that work everywhere (`ctrl+p`, `ctrl+n`, `w`, `i`, `0`, `1–9`, `q`) are left to `?`. Keys in a group go together (`n p Next/prev`). What it shows changes with where you are: in the prompt, `enter` sends, `ctrl+j`, `↑` history, `ctrl+r` and `esc` (the letter keys are for typing there); in the search box, `enter` and `esc`; on a group's heading, `tab Fold/open`; in the diff, `⇧↑ ⇧↓` select, and `esc` unselects while there's a selection (`d` closes then). Every key works from either pane, since they're about the PR (selected in the list, shown in the pane): `RepoView` binds them all, and each pane binds the ones it shows first, running the repo view's action. One table says which (`tui/keys.py`). `?` lists them grouped, with the ones the footer leaves out (moving, paging, the Emacs keys).
+- The footer (`tui/keybar.py`, Purr's own: Textual's is one line, which a pane's keys outgrow) shows every key that works where you are, on as many lines as that takes (two at 140 columns), never breaking a key across lines, a ` │ ` between keys: the focused pane's first, in the order it binds them, then the repo's, each key once (the nearest binding of it); those that work everywhere (`ctrl+p`, `ctrl+n`, `i`, `0`, `1–9`, `q`) are left to `?`. Keys in a group go together (`n p Next/prev`). What it shows changes with where you are: in the prompt, `enter` sends, `ctrl+j`, `↑` history, `ctrl+r` and `esc` (the letter keys are for typing there); in the search box, `enter` and `esc`; on a group's heading, `tab Fold/open`; in the diff, `⇧↑ ⇧↓` select, and `esc` unselects while there's a selection (`d` closes then). Every key works from either pane, since they're about the PR (selected in the list, shown in the pane): `RepoView` binds them all, and each pane binds the ones it shows first, running the repo view's action. One table says which (`tui/keys.py`). `?` lists them grouped, with the ones the footer leaves out (moving, paging, the Emacs keys).
 - `n` / `p` next / previous: repo, or PR, over the groups' headings (the arrows stop on them). Moving stops at either end of the list rather than wrapping round, and at a group's first PR its heading shows too. They only change which PR the PR's pane shows, never the focus, so from the pane you read PRs one after another.
 - `/` search the PR list as you type (number, title, author, assignees; every word has to match), in a box above the list. `enter` (or `esc`) goes back to the list, keeping the results. The search stays (shown above the list, per repo, also after leaving it) until `esc` clears it (from the list or the PR's pane: every PR again, the cursor on the one it was on; the footer says `esc Clear search` meanwhile), or you press `/` and delete it.
 - `esc` goes a step back at a time: zoomed (the PR's pane or the diff), it zooms out, the focus where it was; in the PR's pane, it stops the agent at work (see Reviews). Then it goes home from the list or the PR's pane, once there's no search. From the search box it goes back to the list (the search stays); with a search on, it clears it; from the prompt it goes back to the PR's pane (the `/` suggestions close first): a further `esc` goes home. Anything half-typed in the prompt is there when you're back.
@@ -498,7 +468,6 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `z` zoom the PR session to full screen, and back, the focus where it was (the PR's pane, or the list). The transcript is written again to fill its new width (a RichLog wraps each line once, as it's written; `Transcript.Rewrap`), as when the terminal's resized
 - `c` open the PR's session in Claude Code, `!` a shell in its worktree
 - `i` the settings (`SettingsScreen`): in two sections, how reviews go (*Reviews, in every repo*, or *in owner/repo* inside one: review style `r`, code style `c`, the agents' permissions `p`, the repo's review skill `s`) and *Purr* (its settings `o`, its theme `t`: Textual's themes in a list, each shown as you move to it, Purr's own colors too; `enter` keeps it in `settings.toml`, `esc` goes back to the one you had). Each entry says what it's for and where it is (its file, or the theme in use); the arrows and `enter`, or its letter, open it over the menu, and closing that comes back to the menu, drawn again. Files open in Purr's editor (`tui/editor.py`), full screen, with the prompt's keys (Emacs's, and Textual's: shift to select, `ctrl+x`/`c`/`v`, `ctrl+z`; `tui/editing.py`), `ctrl+s` to save and `esc` to close (asking first, with changes not saved); what Purr reads (`settings.toml`, the JSON permissions) is checked before it's saved, the reason shown under it if not
-- `w` open the latest "while you were away" recap
 
 ### Fast by default
 
@@ -517,7 +486,7 @@ Not built yet. The design:
 - Proactive prompts: when `action.pending` arrives, the voice agent can ask e.g. "I've reviewed the message bus PR, three findings. Want me to post them and request changes?"
 - Typing and talking should feel equivalent; voice is not a separate mode.
 - Risky actions (merge, posting comments) require clear confirmation by voice too.
-- "What did I miss?" reads the latest recap's headline, then goes through the items on request.
+- "What did I miss?" reads out the news: what happened to which PRs since you last looked.
 - It can answer the agent's permission prompts ("yes, let it run the tests").
 - Navigation works by voice too: "go to whisker", "open the message bus PR", "go back".
 
@@ -530,7 +499,7 @@ Not built yet. The design:
 5. Pending action execution (post comments / review verdict) gated on approval, and merging. (Done: approve / request changes / comment, thread replies; merging is yours, with `m` (see Merging). Tested against a fake GitHub; not yet run against a real PR.)
 6. Rest of the TUI: Claude Code-style PR session (transcript, prompt, permission prompts, zoom), alerts from other repos, quick switcher. (Done. Transcripts come from the SDK's session file plus live `session.message` events. Alerts survive restarts: `prs.seen_at` plus the activity log. Also: slash commands, writing while the agent works, local diffs from Purr's clone.)
 7. "Start from app" also assigns you on GitHub. (Done: `r` on a pool PR starts the review and assigns you.)
-8. While you were away: activity tracking, recap agent, recap panel. (Done. The TUI decides you're back: the first key after `away_after` (15 min) of nothing, counting time Purr was closed, since the last-active time is kept in `meta`. It opens the panel with the raw events, and asks the recap worker (`MakeRecap {since}`) for the summary: a tool-less Agent SDK query with structured output, about 5 s, falling back to a plain list if it fails. `w` reopens the latest.)
+8. While you were away: an agent-written recap when you came back after 15 minutes without a key, `w` to see it again. (Done, then removed: you mostly closed it to get on, and the news already says what happened.)
 9. Open a PR's session in Claude Code (`c`). (Done. `claude --resume` keeps the session ID; `--fork-session` is what would make a new one. It runs with `--setting-sources user`, GitHub writes disallowed, and a note that Purr's own tools aren't available there. Purr keeps running underneath, and reloads the transcript afterwards.)
 10. The lead: plans every review (quick or full, priority, focus) before it starts, never skips one, and every review says whether it found something. (Done; see The lead.)
 11. Knowing what's pending on you beyond Purr's own reviews: review requests (shown, not reviewed), replies to you on PRs you reviewed or took part in. (Done; see Triggers.)
@@ -540,7 +509,7 @@ Not built yet. The design:
 
 Files follow the XDG convention: what you edit is in the config dir (`PURR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/purr`, else `~/.config/purr`): `settings.toml`, your instructions (`review.md`, `code.md`, per repo under `repos/`), and the standing permissions you allowed per repo. What Purr manages is in the data dir (`~/.local/share/purr`): the database, the log, its clones and worktrees.
 
-**Settings** (`config.py`) come from, each over the one before: their defaults, `settings.toml`, the environment (`PURR_DATA_DIR`), and command-line flags (`purr --help`, Typer as Pipecat's CLI: `--data-dir`, `--auto-review/--no-auto-review`, `--max-reviews`, `--permission-mode`, `--sandbox/--no-sandbox`; also `--headless`, `-v`, `--version`, and `purr login`, which only logs in to Claude). `settings.toml` can set any of them (but not where it is itself): `data_dir`, `poll_interval` (60 s), `auto_review`, `auto_answer` (the comments on your PRs), `review_model` (Claude Code's default; the recap uses it too), `lead_model` and `quick_model` (Sonnet), `suggestion_model` (Haiku; empty: no suggestions), `review_budget_usd` (none), `away_after` (15 min), `permission_wait` (5 min), `max_reviews` (3), `up_next` (5; 0: none), `permission_mode` (`auto`), `sandbox`, `theme` (`solarized-dark`; one of Textual's). An empty value means none for those that can be none (`lead_model = ""`: Claude Code's default). It's read when Purr starts (a new `theme` applies at once, when you save it from `i` then `o`); a name it doesn't know or a value of the wrong type stops it with the file and the setting. `save_setting` changes one setting in the file, leaving the rest and its comments as they are (the theme picker keeps its choice with it).
+**Settings** (`config.py`) come from, each over the one before: their defaults, `settings.toml`, the environment (`PURR_DATA_DIR`), and command-line flags (`purr --help`, Typer as Pipecat's CLI: `--data-dir`, `--auto-review/--no-auto-review`, `--max-reviews`, `--permission-mode`, `--sandbox/--no-sandbox`; also `--headless`, `-v`, `--version`, and `purr login`, which only logs in to Claude). `settings.toml` can set any of them (but not where it is itself): `data_dir`, `poll_interval` (60 s), `auto_review`, `auto_answer` (the comments on your PRs), `review_model` (Claude Code's default), `lead_model` and `quick_model` (Sonnet), `suggestion_model` (Haiku; empty: no suggestions), `review_budget_usd` (none), `permission_wait` (5 min), `max_reviews` (3), `up_next` (5; 0: none), `permission_mode` (`auto`), `sandbox`, `theme` (`solarized-dark`; one of Textual's). An empty value means none for those that can be none (`lead_model = ""`: Claude Code's default). It's read when Purr starts (a new `theme` applies at once, when you save it from `i` then `o`); a name it doesn't know or a value of the wrong type stops it with the file and the setting. `save_setting` changes one setting in the file, leaving the rest and its comments as they are (the theme picker keeps its choice with it).
 
 Each setting's description is next to it in `config.py` (`_setting(..., about=...)`), and `i` then `o` makes the starter `settings.toml` from them, every setting commented out at its default, then opens it in Purr's editor, which checks it before it saves it, so a typo shows at once (and never reaches the file) rather than stopping the next start.
 
@@ -548,4 +517,4 @@ Each setting's description is next to it in `config.py` (`_setting(..., about=..
 
 - STT/LLM/TTS choices for the voice agent.
 
-Decided along the way: the review's output is `submit_review` and `propose_action` (see Review workers), with the prompt in `review/agent.py`; the agent writes the inline comments and thread replies itself, and comments GitHub won't place go into the review body; "away" is 15 minutes without a key (`away_after`).
+Decided along the way: the review's output is `submit_review` and `propose_action` (see Review workers), with the prompt in `review/agent.py`; the agent writes the inline comments and thread replies itself, and comments GitHub won't place go into the review body.

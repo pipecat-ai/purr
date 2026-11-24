@@ -39,7 +39,7 @@ def test_settings_from_the_file(dirs):
         dirs,
         """
         max_reviews = 5
-        away_after = 600
+        permission_wait = 600
         lead_model = ""          # Claude Code's default
         review_model = "claude-opus-5-5"
         review_budget_usd = 2
@@ -48,7 +48,7 @@ def test_settings_from_the_file(dirs):
     )
     config = Config.load(config_dir=dirs)
     assert config.theme == "nord"
-    assert config.max_reviews == 5 and config.away_after == 600
+    assert config.max_reviews == 5 and config.permission_wait == 600
     assert config.lead_model is None and config.review_model == "claude-opus-5-5"
     assert config.review_budget_usd == 2.0
 
