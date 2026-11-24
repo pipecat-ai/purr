@@ -298,6 +298,8 @@ class RepoView(PRKeys):
             fetched, error = (await self.purr_app.bus.request(request)).details, None
         except Exception as e:  # never let a background fetch take the UI down
             fetched, error = {}, str(e) or type(e).__name__
+        if not self.app.is_running:
+            return  # Purr quit meanwhile: the PR's pane is gone
         for pr in prs:
             state = self.purr_app.sessions.setdefault(str(pr.ref), SessionState())
             changed = self.purr_app.details.put(pr, fetched.get(str(pr.ref)))

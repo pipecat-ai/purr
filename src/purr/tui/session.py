@@ -739,8 +739,9 @@ class PRSession(Vertical):
 
     def _showing(self, pr: PR) -> bool:
         """Whether it's this PR in the pane still: the store's answers take a moment, and
-        moving on meanwhile (another PR, another repo) shows another, or none."""
-        return self.pr is not None and self.pr.ref == pr.ref
+        moving on meanwhile (another PR, another repo) shows another, or none. Quitting
+        meanwhile takes the pane's widgets away."""
+        return self.app.is_running and self.pr is not None and self.pr.ref == pr.ref
 
     def clear(self) -> None:
         """Show nothing, until the next PR is shown (another repo's is on its way)."""

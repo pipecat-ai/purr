@@ -56,12 +56,15 @@ dev = [
     "pytest>=9.0.0",
     "pytest-asyncio>=1.0.0",
     "pytest-timeout>=2.3",
+    "pytest-xdist>=3.6",
     "ruff>=0.12.11",
     "towncrier~=25.8.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The tests in parallel, a process per core (-n0 runs them one at a time, to debug one).
+addopts = "-n auto"
 # A test stuck for this long fails, with where it was stuck, rather than hanging CI.
 timeout = 120
 asyncio_mode = "auto"

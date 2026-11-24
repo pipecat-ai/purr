@@ -321,7 +321,8 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         log = app.main.repo.session.query_one("#transcript")
         for i in range(60):
             log.write(f"line {i}")
-        await pilot.pause(0.05)
+        # A RichLog adds what's written, and scrolls to its end, after a refresh.
+        await until(pilot, lambda: log.max_scroll_y > 0 and log.scroll_y == log.max_scroll_y)
         bottom = log.scroll_y
         await pilot.press("pageup")
         await until(pilot, lambda: log.scroll_y < bottom)
@@ -542,8 +543,11 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
 
         # Columns, and the PR someone else took in its own group, before the pool.
         assert pr_ids(app)[0] == "pipecat-ai/pipecat#2"
+        headings = ["#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED"]
+        await until(
+            pilot, lambda: option_texts(app)[:1] and option_texts(app)[0].split() == headings
+        )
         lines = option_texts(app)
-        assert lines[0].split() == ["#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED"]
         assert "OTHERS REVIEWING (1)" in "\n".join(lines)
         row = next(line for line in lines if "Message bus" in line)
         assert "#1" in row and "alice" in row
@@ -662,7 +666,8 @@ async def test_the_mouse_scrolls_the_list_and_the_diff(tmp_path):
         await until(pilot, lambda: len(view._rows) > 100)
         await wheel(pilot, view, times=10)
         top = view.scroll_offset.y
-        assert top > 0 and view.cursor >= top
+        assert top > 0
+        await until(pilot, lambda: view.cursor >= top)  # it follows, a moment later
         # A click puts the cursor on a line; shift+click selects up to another.
         await pilot.click("#diff", offset=(20, 3))
         clicked = view.cursor
@@ -681,7 +686,7 @@ async def test_o_opens_the_pr_on_github(tmp_path, opened):
     async with app.run_test(size=(140, 30)) as pilot:
         await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
-        assert {"Open", "GitHub"} <= footer(app)
+        await until(pilot, lambda: {"Open", "GitHub"} <= footer(app))
         await pilot.press("o")  # at home, the repo's page
         assert opened == ["https://github.com/pipecat-ai/pipecat"] and home(app)
         await pilot.press("enter")
@@ -1036,7 +1041,7 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
         # After a review, the header says where its worktree is; c opens its session there.
         await pilot.press("r")
         await until(pilot, lambda: "[a] approve" in decision(app))
-        assert header(app).endswith(f"\nWorktree {worktree}")  # just where, no key hints
+        await until(pilot, lambda: header(app).endswith(f"\nWorktree {worktree}"))  # no key hints
         await pilot.press("c")
         await until(pilot, lambda: len(ran) == 2)
         command, cwd, env, banner = ran[-1]
@@ -1195,6 +1200,8 @@ async def test_the_pr_pane_never_keeps_another_prs_transcript(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
         session = app.main.repo.session
+        # The list shows the PR it's on first: showing others by hand comes after.
+        await until(pilot, lambda: session.pr is not None and session._drawn is not None)
         one, two = (await app.purr.store.list_prs(repo="pipecat-ai/pipecat"))[::-1]
         app.details.put(one, PRDetails(body="All about the message bus"))
         app.details.put(two, PRDetails(body="All about the docs"))
@@ -1267,9 +1274,9 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         await until(pilot, lambda: len(pr_ids(app)) == 1)
         working = app.main.repo.session.query_one("#working")
 
-        def mark() -> str:  # the PR's row, as drawn: its first character
-            [row] = [t for t in option_texts(app) if "#1 " in t]
-            return row.strip()[0]
+        def mark() -> str:  # the PR's row, as drawn: its first character ("" until drawn)
+            rows = [t for t in option_texts(app) if "#1 " in t]
+            return rows[0].strip()[0] if rows else ""
 
         agent.gate = asyncio.Event()
         await pilot.press("r")
@@ -1337,7 +1344,7 @@ async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_pat
         assert "Zoom out" in footer(app) and "Stop" not in footer(app)
         await pilot.press("escape")
         assert prs.display and focused(app) == "prs" and working.display
-        assert "Home" in footer(app) and "Stop" not in footer(app)
+        await until(pilot, lambda: "Home" in footer(app) and "Stop" not in footer(app))
         # ...in the PR's pane, it stops it, and the first review is back, with what it
         # proposed.
         await pilot.press("tab")
@@ -1451,6 +1458,7 @@ async def test_the_highlighted_prs_number_shows(tmp_path):
         await until(pilot, lambda: len(pr_ids(app)) == 2)
         prs = app.main.repo.query_one("#prs")
         await until(pilot, lambda: prs.has_focus)
+        await until(pilot, lambda: prs.highlighted in prs._index_to_line)  # once it's drawn
         line = prs._index_to_line[prs.highlighted] - prs.scroll_offset.y
         number = next(s for s in prs.render_line(line) if s.text.startswith("#"))
         # The number's in the theme's primary, the cursor's color: on it, its text color.
