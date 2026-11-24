@@ -308,12 +308,8 @@ async def until(pilot, condition, timeout: float = 10) -> None:
 
 def make_app() -> tuple[PurrApp, FakeGitHub]:
     github = FakeGitHub()
-    github.repos = {REPO, "pipecat-ai/pipecat-flows"}
+    github.repos = {REPO}
     github.open[REPO] = PRS
-    github.open["pipecat-ai/pipecat-flows"] = [
-        remote(311, repo="pipecat-ai/pipecat-flows", title="Typed node functions",
-               author="judy", created_at=ago(days=1)),
-    ]  # fmt: skip
     github.assigned = [pr for pr in PRS if "me" in pr.assignees]
     github.requested = [pr for pr in PRS if "me" in pr.requested]
     ref = PRRef(REPO, FIX)
@@ -341,11 +337,10 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
 
 async def story(app: PurrApp, record: Recorder) -> None:
     pilot = record.pilot
-    for repo in (REPO, "pipecat-ai/pipecat-flows"):
-        await app.bus.request(WatchRepo(repo=repo))
+    await app.bus.request(WatchRepo(repo=REPO))
     while not await app.purr.store.pending_actions(PRRef(REPO, FIX)):
         await pilot.pause(0.05)  # #7012's review: done, and waiting on you
-    await until(pilot, lambda: len(app.repo_names) == 2)
+    await until(pilot, lambda: len(app.repo_names) == 1)
     await record.shot(2.2)  # home: your repos, and what needs you
 
     await pilot.press("1")
