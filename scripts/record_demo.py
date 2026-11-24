@@ -5,7 +5,7 @@ tests' fakes, and a scripted agent here), and Purr's config and data go in a
 temporary directory. Each step is a screenshot (Textual's SVG), rendered to PNG
 with headless Chrome and put together with ImageMagick.
 
-    uv run python scripts/record_demo.py [docs/purr.gif]
+    uv run python scripts/record_demo.py [purr.gif]
 
 Needs ``google-chrome`` (or ``chromium``) and ``magick`` on your PATH.
 """
@@ -46,8 +46,8 @@ from tests.fakes import (  # noqa: E402
     remote,
 )
 
-SIZE = (140, 36)  # the terminal: columns, rows
-WIDTH = 1400  # the GIF's, in pixels
+SIZE = (160, 45)  # the terminal: columns, rows
+WIDTH = 1600  # the GIF's, in pixels, at most
 REPO = "pipecat-ai/pipecat"
 NOW = datetime.now(UTC)
 
@@ -80,11 +80,13 @@ running to completion, and the LLM is told so (`FunctionCallCancelFrame`).
 
 Fixes #6981."""
 
-DIFF = """\
-diff --git a/src/pipecat/services/llm_service.py b/src/pipecat/services/llm_service.py
---- a/src/pipecat/services/llm_service.py
-+++ b/src/pipecat/services/llm_service.py
-@@ -398,21 +398,30 @@ class LLMService(AIService):
+LLM = "src/pipecat/services/llm_service.py"
+
+DIFF = f"""\
+diff --git a/{LLM} b/{LLM}
+--- a/{LLM}
++++ b/{LLM}
+@@ -398,5 +398,15 @@ class LLMService(AIService):
      async def _handle_interruptions(self, frame: InterruptionFrame):
 -        for runner in self._function_call_runners:
 -            await runner.wait()
@@ -92,7 +94,7 @@ diff --git a/src/pipecat/services/llm_service.py b/src/pipecat/services/llm_serv
 +            if runner.cancel_on_interruption:
 +                await self._cancel_function_call(runner)
          await super()._handle_interruptions(frame)
-
+ 
 +    async def _cancel_function_call(self, runner: FunctionCallRunner):
 +        runner.task.cancel()
 +        try:
@@ -102,6 +104,7 @@ diff --git a/src/pipecat/services/llm_service.py b/src/pipecat/services/llm_serv
 +        await self.push_frame(FunctionCallCancelFrame(runner.function_name, runner.tool_call_id))
 +        self._function_call_runners.discard(runner)
 +
+@@ -411,4 +421,5 @@ class LLMService(AIService):
      async def _run_function_call(self, runner: FunctionCallRunner):
          result = await runner.handler(runner.params)
 -        await self._push_result(runner, result)
@@ -111,16 +114,45 @@ diff --git a/src/pipecat/services/llm_service.py b/src/pipecat/services/llm_serv
 diff --git a/tests/test_llm_service.py b/tests/test_llm_service.py
 --- a/tests/test_llm_service.py
 +++ b/tests/test_llm_service.py
-@@ -210,3 +210,15 @@ async def test_function_call_result():
-     assert result.result == {"temperature": 21}
+@@ -208,3 +208,10 @@ async def test_function_call_result():
+     service = make_service(get_weather)
+     result = await service.run_function_call("get_weather", {{"city": "Barcelona"}})
+     assert result.result == {{"temperature": 21}}
 +
 +
 +async def test_interruption_cancels_function_call():
 +    service = make_service(slow_weather)
-+    await service.run_function_call("get_weather", {"city": "Barcelona"})
++    await service.run_function_call("get_weather", {{"city": "Barcelona"}})
 +    await service.interrupt()
 +    assert service.pushed(FunctionCallCancelFrame)
 """
+
+# What the diff leaves out between its two hunks (tab shows it): lines 413 to 420 of the
+# file as it is in the PR. The rest of the file is blank; the demo doesn't show it.
+BETWEEN = """\
+    async def _push_result(self, runner: FunctionCallRunner, result: Any):
+        frame = FunctionCallResultFrame(
+            function_name=runner.function_name,
+            tool_call_id=runner.tool_call_id,
+            result=result,
+        )
+        await self.push_frame(frame)
+"""
+
+
+def _source() -> str:
+    """The file as it is in the PR: the diff's new lines, and what's between its hunks."""
+    lines = [""] * 612
+    new = 0
+    for line in DIFF.split("diff --git")[1].splitlines():
+        if line.startswith("@@"):
+            new = int(line.split("+")[1].split(",")[0])
+        elif new and line[:1] in (" ", "+", ""):
+            lines[new - 1] = line[1:]
+            new += 1
+    lines[412 : 412 + 8] = [*BETWEEN.splitlines(), ""]
+    return "\n".join(lines) + "\n"
+
 
 DETAILS = PRDetails(
     body=DESCRIPTION,
@@ -130,16 +162,14 @@ DETAILS = PRDetails(
     deletions=3,
     changed_files=2,
     files=(
-        FileChange("src/pipecat/services/llm_service.py", 15, 3),
-        FileChange("tests/test_llm_service.py", 6, 0),
+        FileChange(LLM, 14, 3),
+        FileChange("tests/test_llm_service.py", 7, 0),
     ),
     checks="SUCCESS",
 )
 
 
 # -- The agent, scripted --------------------------------------------------------------
-
-LLM = "src/pipecat/services/llm_service.py"
 
 REVIEW = [
     {"kind": "thinking", "text": "**Reading the PR and the issue it fixes.**"},
@@ -162,7 +192,7 @@ REVIEW = [
 
 FINDINGS = [
     Finding(Severity.ISSUE, "A result pushed during an interruption still reaches the context",
-            LLM, 415),
+            LLM, 423),
     Finding(Severity.SUGGESTION, "No test for an interruption between the result and its push",
             "tests/test_llm_service.py", 216),
 ]  # fmt: skip
@@ -170,7 +200,7 @@ FINDINGS = [
 PROPOSAL = {
     "body": "Nice fix. One ordering still leaks a cancelled call's result into the context.",
     "comments": [
-        {"path": LLM, "line": 415,
+        {"path": LLM, "line": 423,
          "body": "If the interruption lands here, the result is stored but the call was "
                  "cancelled. Store it after `_push_result`, or drop it on cancel?"},
         {"path": "tests/test_llm_service.py", "line": 216,
@@ -290,6 +320,8 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
     github.details[ref] = DETAILS
     github.diffs[ref] = DIFF
     data = Path(os.environ["PURR_DATA_DIR"])
+    repos = FakeRepos(data)
+    repos.files = {(ref, LLM): _source()}
     config = Config(
         data_dir=data, config_dir=Path(os.environ["PURR_CONFIG_DIR"]), poll_interval=3600
     )
@@ -297,7 +329,7 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
         config,
         github=github,
         agent=DemoAgent(),
-        repos=FakeRepos(data),
+        repos=repos,
         writer=FakeWriter(github),
         recap_agent=FakeRecapAgent(),
         lead=FakeLead(),
@@ -328,8 +360,14 @@ async def story(app: PurrApp, record: Recorder) -> None:
     repo = app.main.repo
     view = repo.query_one(DiffView)
     await until(pilot, lambda: repo.diff_shown and len(view._rows) > 2)
+    await record.shot(2.0)
+    for _ in range(3):  # n: to the next change (the file, its hunks), to the second hunk
+        await pilot.press("n")
+        await record.shot(0.7)
+    await pilot.press("tab")  # the lines between the hunks
+    await until(pilot, lambda: any(row.line and row.line.new == 413 for row in view._rows))
     await record.shot(2.5)
-    await move_to(record, view, new=415)  # the line the agent's comment is about
+    await move_to(record, view, new=423)  # the line the agent's comment is about
     await pilot.press("shift+down")  # select it and the next: shift+↑/↓
     await record.shot(1.0)
     await pilot.press("enter")  # ask about them
@@ -342,7 +380,7 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await record.shot(3.5)  # the agent answers in the PR's conversation, next to the code
 
     await pilot.press("shift+tab")  # back to the diff, to comment on a line
-    await move_to(record, view, new=404)
+    await move_to(record, view, new=400)
     await pilot.press("c")
     await until(pilot, lambda: isinstance(app.screen, CommentScreen))
     await record.type("Why not keep waiting on calls marked uninterruptible?")
@@ -370,8 +408,9 @@ async def move_to(record: Recorder, view: DiffView, *, new: int) -> None:
 
 
 def _transcript(app: PurrApp) -> str:
+    """What the PR's conversation shows, its lines joined (wherever they wrap)."""
     log = app.main.repo.session.query_one("#transcript")
-    return "\n".join(strip.text for strip in log.lines)
+    return " ".join(" ".join(strip.text for strip in log.lines).split())
 
 
 async def record(folder: Path) -> list[tuple[Path, float]]:
@@ -401,15 +440,15 @@ def png(svg: Path) -> Path:
 
 
 def gif(frames: list[tuple[Path, float]], out: Path) -> None:
-    command = ["magick"]
+    command = ["magick", "+dither"]  # a terminal's flat colors: no dots between them
     for svg, seconds in frames:
         command += ["-delay", str(round(seconds * 100)), str(png(svg))]
-    command += ["-resize", f"{WIDTH}x", "-layers", "Optimize", "-loop", "0", str(out)]
+    command += ["-resize", f"{WIDTH}x>", "-layers", "Optimize", "-loop", "0", str(out)]
     subprocess.run(command, check=True)
 
 
 def main() -> None:
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "purr.gif"
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "purr.gif"
     folder = HOME / "frames"
     folder.mkdir()
     logger.remove()  # Purr's log: not on the terminal
