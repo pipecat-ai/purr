@@ -262,6 +262,10 @@ MIGRATIONS: list[str] = [
     ALTER TABLE draft_comments ADD COLUMN start_line INTEGER;
     ALTER TABLE draft_comments ADD COLUMN start_side TEXT;
     """,
+    # PRs you opened: what you're working on.
+    """
+    ALTER TABLE prs ADD COLUMN authored INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -320,6 +324,7 @@ def _pr(row: aiosqlite.Row) -> PR:
         assigned_to_me=bool(row["assigned_to_me"]),
         requested_from_me=bool(row["requested_from_me"]),
         involved=bool(row["involved"]),
+        authored=bool(row["authored"]),
         updated_at=row["updated_at"],
         created_at=row["created_at"],
         base=row["base"],
@@ -356,8 +361,8 @@ def _activity(row: aiosqlite.Row) -> Activity:
 _UPSERT_PR = """
     INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
                      updated_at, created_at, assignees, base, author_association,
-                     requested_from_me, involved)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     requested_from_me, involved, authored)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET
         title = excluded.title,
         author = excluded.author,
@@ -371,7 +376,8 @@ _UPSERT_PR = """
         base = excluded.base,
         author_association = excluded.author_association,
         requested_from_me = excluded.requested_from_me,
-        involved = MAX(prs.involved, excluded.involved)  -- once you've taken part, you have
+        involved = MAX(prs.involved, excluded.involved),  -- once you've taken part, you have
+        authored = excluded.authored
 """
 
 
@@ -392,6 +398,7 @@ def _upsert_params(pr: PR) -> tuple:
         pr.author_association,
         int(pr.requested_from_me),
         int(pr.involved),
+        int(pr.authored),
     )
 
 
@@ -638,7 +645,7 @@ class Store:
 
     async def repo_summaries(self) -> list[RepoSummary]:
         """The repo list: watched repos plus any other repo with an open PR Purr tracks
-        (assigned to you, or reviewed), alphabetically, with per-state counts."""
+        (yours, assigned to you, or reviewed), alphabetically, with per-state counts."""
         rows = await self._fetchall(
             """
             WITH names (name, watched) AS (
@@ -648,15 +655,17 @@ class Store:
                 -- commented on once).
                 SELECT DISTINCT repo, 0 FROM prs
                 WHERE gh_state = 'open' AND repo NOT IN (SELECT name FROM repos)
-                  AND (assigned_to_me OR requested_from_me OR state != 'not_reviewed')
+                  AND (authored OR assigned_to_me OR requested_from_me
+                       OR state != 'not_reviewed')
             )
             SELECT
                 names.name,
                 names.watched,
+                COALESCE(SUM(prs.authored), 0) AS yours,
                 COALESCE(SUM(prs.state = 'needs_you'), 0) AS needs_you,
                 COALESCE(SUM(prs.state = 'reviewing'), 0) AS reviewing,
                 COALESCE(
-                    SUM(prs.state = 'not_reviewed'
+                    SUM(prs.state = 'not_reviewed' AND NOT prs.authored
                         AND (prs.assigned_to_me OR prs.requested_from_me
                              OR prs.assignees = '[]')), 0
                 ) AS not_reviewed,
@@ -671,6 +680,7 @@ class Store:
             RepoSummary(
                 name=row["name"],
                 watched=bool(row["watched"]),
+                yours=row["yours"],
                 needs_you=row["needs_you"],
                 reviewing=row["reviewing"],
                 not_reviewed=row["not_reviewed"],
@@ -682,8 +692,8 @@ class Store:
     async def remove_repo(self, name: str) -> bool:
         """Stop watching a repo and drop its pool.
 
-        PRs assigned to you, asking for your review, that you've taken part in, or that
-        Purr has started reviewing, are kept.
+        PRs of yours, assigned to you, asking for your review, that you've taken part in,
+        or that Purr has started reviewing, are kept.
         Returns whether the repo was being watched.
         """
         cursor = await self._db.execute("DELETE FROM repos WHERE name = ?", (name,))
@@ -693,6 +703,7 @@ class Store:
             DELETE FROM prs
             WHERE repo = ? COLLATE NOCASE AND state = ?
               AND assigned_to_me = 0 AND requested_from_me = 0 AND involved = 0
+              AND authored = 0
             """,
             (name, PRState.NOT_REVIEWED),
         )

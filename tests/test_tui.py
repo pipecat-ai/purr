@@ -1180,7 +1180,7 @@ async def test_home_says_what_watching_means(tmp_path):
         headings = [row for row in rows if "WATCHED (" in row]
         assert headings[0].startswith("● WATCHED (1)")
         assert headings[1].startswith("○ NOT WATCHED (1)")
-        assert "only the PRs assigned to you" in headings[1]
+        assert "only the PRs that concern you" in headings[1]
         app.main.repos.select_repo("daily-co/daily-x")
 
         # + on it: ready to watch.
@@ -1363,6 +1363,28 @@ async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_pat
         assert focused(app) == "prompt" and not working.display
         await pilot.press("escape")
         assert focused(app) == "transcript"
+
+
+async def test_your_own_prs_have_a_group_and_a_column(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Someone's fix")]
+    github.mine = [
+        remote(5, title="My fix", author="me"),
+        remote(9, repo="daily-co/daily-x", title="My other fix", author="me"),
+    ]
+    async with app.run_test(size=(140, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        # Home: a repo you don't watch is listed for yours, and each says how many.
+        await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
+        rows = option_texts_of(app.main.repos)
+        assert any("pipecat-ai/pipecat" in row and row.split()[2] == "1" for row in rows)
+
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        text = "\n".join(option_texts(app))
+        assert text.index("YOUR PRS (1)") < text.index("My fix") < text.index("NOT REVIEWED (1)")
+        app.main.repo.select("pipecat-ai/pipecat#5", repo="pipecat-ai/pipecat")
+        await until(pilot, lambda: header(app).count("Your PR · r to review it yourself"))
 
 
 async def test_the_latest_done_prs_come_before_the_pool(tmp_path):

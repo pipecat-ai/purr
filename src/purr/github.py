@@ -46,6 +46,8 @@ COMMENTED_QUERY = (
 REVIEWED_QUERY = (
     "is:pr is:open archived:false draft:false -author:@me reviewed-by:@me sort:created-desc"
 )
+# Your own open PRs, drafts too, in any repo: what you're working on.
+MINE_QUERY = "is:pr is:open archived:false author:@me sort:created-desc"
 # Every PR in a repo touched since a time, whatever its state: used between full
 # syncs. Being assigned, closed or drafted updates a PR too.
 UPDATED_QUERY = "is:pr archived:false updated:>={since} sort:updated-desc repo:{repo}"
@@ -55,6 +57,7 @@ _ANY_REPO_SEARCHES = {
     "requested": REQUESTED_QUERY,
     "commented": COMMENTED_QUERY,
     "reviewed": REVIEWED_QUERY,
+    "mine": MINE_QUERY,
 }
 
 _PR_FIELDS = """
@@ -137,6 +140,7 @@ class RemotePR:
             assignees=self.assignees,
             assigned_to_me=me.lower() in {a.lower() for a in self.assignees},
             requested_from_me=me.lower() in {r.lower() for r in self.requested},
+            authored=self.author.lower() == me.lower(),
         )
 
 
@@ -150,13 +154,14 @@ class Snapshot:
         assigned: Every open PR assigned to you, in any repo.
         requested: Every open PR asking for your review by name, in any repo.
         involved: Every open PR by others you've commented on or reviewed, in any repo.
+        mine: Every open PR of yours, drafts too, in any repo.
         updates: Incrementally synced repos: every PR touched since the last
             sync, whatever its state. Absence means "unchanged".
         viewer: Your GitHub login.
 
     Only complete results are included: a repo whose search failed or came back
     partial is missing from ``open``/``updates``, and ``assigned`` is None if
-    that search did (``requested`` and ``involved`` likewise). Absence from an
+    that search did (``requested``, ``involved`` and ``mine`` likewise). Absence from an
     incomplete result says nothing about a PR.
     """
 
@@ -166,6 +171,7 @@ class Snapshot:
     viewer: str | None = None
     requested: list[RemotePR] | None = field(default_factory=list)
     involved: list[RemotePR] | None = field(default_factory=list)
+    mine: list[RemotePR] | None = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -370,9 +376,9 @@ class GitHub:
         *,
         on_page: OnPage | None = None,
     ) -> Snapshot:
-        """Fetch watched repos, and the PRs assigned to you, asking for your review or that
-        you've taken part in, in as few requests as possible (one per page of results, all
-        searches batched together).
+        """Fetch watched repos, and the PRs assigned to you, asking for your review, that
+        you've taken part in or that you opened, in as few requests as possible (one per
+        page of results, all searches batched together).
 
         Args:
             full: Repos to fetch every listed PR of.
@@ -404,6 +410,7 @@ class GitHub:
             viewer=viewer,
             requested=results.get("requested"),
             involved=_involved(results),
+            mine=results.get("mine"),
         )
 
     async def _search_all(

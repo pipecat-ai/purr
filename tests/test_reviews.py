@@ -202,6 +202,15 @@ async def test_already_assigned_prs_are_reviewed_once_synced(make):
     assert len(s.agent.runs) == 1
 
 
+async def test_your_own_prs_are_not_reviewed_on_their_own(make):
+    s = await make()
+    # You opened it and assigned yourself, as authors often do.
+    await s.store.upsert_pr(make_pr(assigned_to_me=True, authored=True))
+    await s.client.send_bus_message(Synced(source="github"))
+    await asyncio.sleep(0.2)
+    assert s.agent.runs == []
+
+
 async def test_no_auto_review_when_turned_off(make):
     async def seed(store, agent):
         await store.upsert_pr(make_pr(assigned_to_me=True))

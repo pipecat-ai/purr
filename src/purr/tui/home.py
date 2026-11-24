@@ -19,12 +19,12 @@ from purr.tui.lists import GROUP_GAP, GroupedList, blank, separated, titled_line
 from purr.tui.theme import palette
 from purr.tui.views import PurrView
 
-_REPO_COLUMNS = ("", "REPO", "NEEDS YOU", "REVIEWING", "NOT REVIEWED", "LAST ACTIVITY")
+_REPO_COLUMNS = ("", "REPO", "YOURS", "NEEDS YOU", "REVIEWING", "NOT REVIEWED", "LAST ACTIVITY")
 
 
 def _repo_row(*cells: Text | str, header: bool = False) -> Table:
     """A row of the repo list: number, name, then counts and when, in columns."""
-    widths = [2, None, 10, 10, 13, 14]
+    widths = [2, None, 6, 10, 10, 13, 14]
     grid = Table.grid(expand=True, padding=(0, 1))
     for width in widths:
         if width is None:
@@ -64,7 +64,8 @@ class ReposView(PurrView):
     """Home: the repos you watch, then those listed only because PRs there are yours.
 
     Watching a repo (``+``) shows all its open PRs; the others show only the PRs
-    assigned to you, which you can review all the same. Alphabetical within
+    that concern you: yours, and those assigned to you, which you can review all
+    the same. Alphabetical within
     each group; ``1``-``9`` follow the order on screen.
     """
 
@@ -126,7 +127,7 @@ class ReposView(PurrView):
         number = 0
         for summaries, heading, note, style in [
             (watched, "● WATCHED", "all their open PRs", "bold cyan"),
-            (yours, "○ NOT WATCHED", "only the PRs assigned to you · + watches one", "bold"),
+            (yours, "○ NOT WATCHED", "only the PRs that concern you · + watches one", "bold"),
         ]:
             if not summaries:
                 continue
@@ -152,6 +153,7 @@ class ReposView(PurrView):
         return [
             str(i) if i <= 9 else "",
             name,
+            _count(summary.yours),
             needs,
             _count(summary.reviewing),
             _count(summary.not_reviewed),
@@ -207,7 +209,7 @@ class ReposView(PurrView):
         self.app.push_screen(
             ConfirmScreen(
                 f"Stop watching [b]{repo}[/b]?",
-                "Its pool goes away. PRs assigned to you there stay.",
+                "Its pool goes away. Your PRs there, and those assigned to you, stay.",
             ),
             confirmed,
         )

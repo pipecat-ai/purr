@@ -358,7 +358,11 @@ def _review_status(
 
 
 def _not_reviewed(pr: PR) -> Text:
-    """Nobody's review yet, or only others': and how to start yours."""
+    """Nobody's review yet, or only others': and how to start yours. Yours, it says so."""
+    if pr.authored:
+        return Text.assemble(
+            ("◆ Your PR", "bold blue"), (" · r to review it yourself · d diff", "dim")
+        )
     text = Text()
     text.append("◌ Not reviewed by you" if pr.others_on_it else "○ Not reviewed", style="bold")
     if pr.requested_from_me:

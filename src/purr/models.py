@@ -138,6 +138,7 @@ class PR:
     assigned_to_me: bool = False
     requested_from_me: bool = False  # your review is requested (by name, not as a team)
     involved: bool = False  # you've commented on it or reviewed it on GitHub
+    authored: bool = False  # you opened it
     state: PRState = PRState.NOT_REVIEWED
     gh_state: GHState = GHState.OPEN
     model: str | None = None  # you chose it for the PR's conversation (/model)
@@ -152,8 +153,8 @@ class PR:
 
     @property
     def in_pool(self) -> bool:
-        """Nobody is assigned: free for anyone to review."""
-        return not self.assignees and not self.assigned_to_me
+        """Someone else's, and nobody is assigned: free for anyone to review."""
+        return not self.authored and not self.assignees and not self.assigned_to_me
 
     @property
     def others_on_it(self) -> bool:
@@ -254,6 +255,7 @@ class RepoSummary:
 
     name: str
     watched: bool
+    yours: int = 0  # PRs you opened
     needs_you: int = 0
     reviewing: int = 0
     not_reviewed: int = 0

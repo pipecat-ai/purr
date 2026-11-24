@@ -27,13 +27,16 @@ if TYPE_CHECKING:
 
 OTHERS = "others"
 REQUESTED = "requested"
+YOURS = "yours"
 # Done comes before the pool of unreviewed PRs (hundreds, in a big repo), so
 # the ones you finished lately are at hand: the latest few, search finds the rest.
-# Before both, what's under way: PRs asking for your review (someone's waiting on
-# you), then those others are reviewing.
+# Before both, what's under way: your own PRs (when someone comments on one, it
+# needs you), PRs asking for your review (someone's waiting on you), then those
+# others are reviewing.
 GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
+    (YOURS, "◆", "YOUR PRS", "bold blue"),
     (REQUESTED, "◇", "REVIEW REQUESTED", "bold magenta"),
     (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
     (PRState.DONE, "✓", "DONE", "bold green"),
@@ -159,8 +162,11 @@ class PRList(GroupedList):
 
 
 def group(pr: PR) -> str:
-    """Where a PR goes in the list: its review state; or, not reviewed, "requested" if it
-    asks for your review, "others" if someone else took it."""
+    """Where a PR goes in the list: its review state; or "yours" if you opened it and
+    nothing's happening; or, not reviewed, "requested" if it asks for your review,
+    "others" if someone else took it."""
+    if pr.authored and pr.state in (PRState.NOT_REVIEWED, PRState.DONE):
+        return YOURS
     if pr.state == PRState.NOT_REVIEWED and pr.requested_from_me and not pr.assigned_to_me:
         return REQUESTED
     if pr.state == PRState.NOT_REVIEWED and pr.others_on_it:

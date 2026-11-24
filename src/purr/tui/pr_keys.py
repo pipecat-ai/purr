@@ -137,9 +137,10 @@ class PRKeys(PurrView):
             self.notify(str(e), severity="warning")
 
     async def _take(self, prs: list[PR]) -> None:
-        """Taking PRs from the pool: assign yourself, so teammates see they're taken."""
+        """Taking PRs from the pool: assign yourself, so teammates see they're taken (yours
+        are already yours)."""
         for pr in prs:
-            if pr.assigned_to_me:
+            if pr.assigned_to_me or pr.authored:
                 continue
             try:
                 await self.purr_app.bus.request(AssignMe(pr=pr.ref))

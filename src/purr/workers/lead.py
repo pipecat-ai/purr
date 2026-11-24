@@ -40,8 +40,14 @@ from purr.store import Store
 
 
 def _due_review(pr: PR) -> bool:
-    """Whether Purr reviews the PR without being asked: open, yours, never reviewed."""
-    return pr.state == PRState.NOT_REVIEWED and pr.assigned_to_me and pr.gh_state == GHState.OPEN
+    """Whether Purr reviews the PR without being asked: open, assigned to you (and someone
+    else's: authors often assign themselves), never reviewed."""
+    return (
+        pr.state == PRState.NOT_REVIEWED
+        and pr.assigned_to_me
+        and not pr.authored
+        and pr.gh_state == GHState.OPEN
+    )
 
 
 def _at_depth(plans: dict[PRRef, ReviewPlan], depth: Depth) -> dict[PRRef, ReviewPlan]:
@@ -125,7 +131,7 @@ class LeadWorker(BaseWorker):
             return
         if isinstance(message, Synced):
             unreviewed = await self._store.list_prs(state=PRState.NOT_REVIEWED, open_only=True)
-            for ref in (pr.ref for pr in unreviewed if pr.assigned_to_me):
+            for ref in (pr.ref for pr in unreviewed if _due_review(pr)):
                 self._pending.setdefault(ref, "review")
             self._wake.set()
         elif isinstance(message, PRChanged) and message.change == PRChange.ASSIGNED:

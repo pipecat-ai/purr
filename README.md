@@ -20,9 +20,9 @@ Purr was first built to help review the many pull requests sent to
 - **It reviews what's assigned to you** as it comes in, a few at a time. A quick planning
   step decides how deep: small changes get a quick look, risky ones a full review.
 - **It knows what's waiting on you.** PRs are grouped: *Needs you* (a review to post, a
-  question from the agent, someone replying to you on GitHub), *Reviewing*, *Review
-  requested*, *Others reviewing*, *Done*, *Not reviewed*. News from other repos shows at the
-  top.
+  question from the agent, someone replying to you on GitHub), *Reviewing*, *Your PRs*,
+  *Review requested*, *Others reviewing*, *Done*, *Not reviewed*. News from other repos shows
+  at the top.
 - **Every review is a conversation.** You can keep talking to the agent about the PR ("is that
   race real?", "drop the nit"), and Purr suggests what to ask next.
 - **You can comment on lines of the diff, and on the PR.** Yours go to GitHub as you save
