@@ -379,8 +379,7 @@ Three levels, each one keypress apart: **repos** (home) → **a repo** (its PRs 
 │    REPO                       NEEDS YOU   REVIEWING   NOT REVIEWED   LAST ACTIVITY    │
 │  1   daily-co/daily-x             -           1            -          15 min ago      │
 │  2 ▸ pipecat-ai/pipecat           2           1            3          2 min ago       │
-│  3   pipecat-ai/pipecat-flows     -           -            4          3 h ago         │
-│  4   pipecat-ai/whisker           1 ●         -            1          just now        │
+│  3   pipecat-ai/whisker           1 ●         -            1          just now        │
 │                                                                                       │
 │  ● new since you last looked                                                          │
 │                                                                                       │
