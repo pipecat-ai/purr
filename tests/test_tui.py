@@ -1417,6 +1417,15 @@ async def test_up_next_in_the_list_the_pr_and_at_home(tmp_path):
         app.main.repo.select("pipecat-ai/pipecat#2", repo="pipecat-ai/pipecat")
         await until(pilot, lambda: "➜ Up next: Why #2" in header(app))
 
+        # s: not for you. Only up next says so; the cursor goes on to the next PR.
+        await until(pilot, lambda: "Skip" in footer(app))
+        await pilot.press("s")
+        await until(pilot, lambda: "UP NEXT" not in "\n".join(option_texts(app)))
+        assert app.main.repo.selected_pr().number == 1
+        await until(pilot, lambda: "Skip" not in footer(app))
+        skipped = await app.purr.store.skipped("pipecat-ai/pipecat")
+        assert [pr.number for pr in skipped] == [2]
+
 
 async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
     from purr.models import PRRef, PRState
@@ -1681,7 +1690,8 @@ async def test_esc_zooms_out_first(tmp_path):
 
         # The PR's pane, zoomed from the list: esc comes back to the list, then goes home.
         await pilot.press("z")
-        assert repo.zoomed and "Zoom out" in footer(app)
+        assert repo.zoomed
+        await until(pilot, lambda: "Zoom out" in footer(app))  # drawn a moment later
         await pilot.press("escape")
         assert not repo.zoomed and focused(app) == "prs" and in_repo(app)
         # The diff, zoomed: esc zooms out, then closes it.

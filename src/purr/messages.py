@@ -425,6 +425,14 @@ class AnswerComments(Request[Answering]):
 
 
 @dataclass(kw_only=True)
+class SkipUpNext(Request[Done]):
+    """Not for you: the PR leaves what's up next for good, and the lead's told (``s``)."""
+
+    worker: ClassVar[str] = UP_NEXT_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class MessageSent:
     """What writing did, besides going to the agent (see ReviewWorker.send_followup)."""
 

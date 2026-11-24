@@ -120,3 +120,33 @@ async def test_up_next_is_the_leads_pick_from_the_pool(tmp_path):
     await store.upsert_pr(remote(pick.pr.number, assignees=("alice",)).to_pr("me"))
     assert await store.up_next(repo) == []
     await store.close()
+
+
+async def test_skipping_and_taking_teach_the_lead(tmp_path):
+    from purr.models import PRRef
+    from purr.store import Store
+    from purr.workers import UpNextWorker
+    from tests.fakes import FakeGitHub, FakePicker, FakeRepos, remote
+
+    repo = "pipecat-ai/pipecat"
+    store = await Store.open(":memory:")
+    await store.add_repo(repo)
+    for number in (1, 2, 3):
+        await store.upsert_pr(remote(number, title=f"Fix {number}").to_pr("me"))
+    repos, picker = FakeRepos(tmp_path), FakePicker()
+    repos.stats = {PRRef(repo, n): [FileChange("x.py", n, 0)] for n in (1, 2, 3)}
+    worker = UpNextWorker(
+        store=store, github=FakeGitHub(), repos=repos, picker=picker, count=2, ask_every=0
+    )
+    await worker.pick(repo)
+    assert [u.pr.number for u in await store.up_next(repo)] == [1, 2]
+
+    # You took #2 (reviewed it), and #1 isn't for you.
+    await store.start_review(PRRef(repo, 2))
+    await store.skip_up_next(PRRef(repo, 1))
+    assert [u.pr.number for u in await store.up_next(repo)] == [2]
+    await worker.pick(repo)
+    told = picker.notes[-1]
+    assert "- #1 " not in told.split("The user")[0]  # never offered again
+    assert "lately took:\n- #2 “Fix 2”" in told and "weren't for them:\n- #1 “Fix 1”" in told
+    await store.close()

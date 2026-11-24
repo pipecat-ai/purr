@@ -14,7 +14,8 @@ from textual.widget import Widget
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
-from purr.messages import FetchDetails, GetDiff
+from purr.jobs import PurrError
+from purr.messages import FetchDetails, GetDiff, SkipUpNext
 from purr.models import PR, PRState, UpNext
 from purr.tui.diffview import DiffPane
 from purr.tui.keys import REPO_KEYS
@@ -351,7 +352,29 @@ class RepoView(PRKeys):
             return bool(self._search) and not self.diff_shown
         if action == "search":  # while typing, / is a slash
             return not self.session.query_one("#prompt").has_focus
+        if action == "skip":
+            return self.on_up_next()
         return True
+
+    def on_up_next(self) -> bool:
+        """Whether the selected PR is up next (s skips it)."""
+        pr = self.selected_pr()
+        return bool(pr) and self._group(pr) == UP_NEXT
+
+    @work(group="keys")
+    async def action_skip(self) -> None:
+        """Not for you (s): out of Up next for good, the cursor on the next PR; the lead's
+        told, and picks another."""
+        if not (pr := self.selected_pr()) or not self.on_up_next():
+            return
+        listed = list(self._prs)
+        after = listed[listed.index(str(pr.ref)) + 1 :]
+        self._up_next.pop(str(pr.ref), None)
+        self._list(at=next((key for key in after if key in self._prs), None))
+        try:
+            await self.purr_app.bus.request(SkipUpNext(pr=pr.ref))
+        except PurrError as e:
+            self.notify(str(e), severity="warning")
 
     def action_open(self) -> None:
         """The PR on GitHub, in your browser (o): the selected one, or the one shown."""

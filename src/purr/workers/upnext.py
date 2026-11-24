@@ -10,7 +10,8 @@ from pipecat.workers.base_worker import BaseWorker
 
 from purr.git import GitRepos
 from purr.github import GitHub
-from purr.messages import UP_NEXT_WORKER, ClonesSynced, PRListUpdated
+from purr.jobs import Done, handles
+from purr.messages import UP_NEXT_WORKER, ClonesSynced, PRListUpdated, SkipUpNext
 from purr.models import PR, FileChange, PRRef, UpNext
 from purr.review.instructions import ReviewInstructions
 from purr.store import Store
@@ -39,6 +40,9 @@ class UpNextWorker(BaseWorker):
     promising go to the lead, which chooses ``count`` of them and says why. It asks
     again only when that shortlist changed, and not more often than ``ask_every``;
     if the lead can't say, the top of the shortlist is up next.
+
+    ``SkipUpNext {pr}`` (``s``): a PR that isn't for you leaves for good, and the
+    lead's asked again at once, told about it, as about the PRs you took lately.
 
     Args:
         name: Bus name.
@@ -95,6 +99,14 @@ class UpNextWorker(BaseWorker):
         if isinstance(message, ClonesSynced):
             self._wake.set()
 
+    @handles(SkipUpNext)
+    async def skip(self, request: SkipUpNext) -> Done:
+        await self._store.skip_up_next(request.pr)
+        self._asked.pop(request.pr.repo, None)  # one fewer: the lead fills its place
+        self._wake.set()
+        await self.send_bus_message(PRListUpdated(source=self.name))
+        return Done()
+
     async def _loop(self) -> None:
         while True:
             await self._wake.wait()
@@ -128,7 +140,9 @@ class UpNextWorker(BaseWorker):
     async def _shortlist(self, repo: str) -> list[Signals]:
         """The repo's pool, the most worth looking at first; PRs the clone can't size yet
         are left out."""
-        prs = candidates(await self._store.list_prs(repo=repo, open_only=True))
+        skipped = {pr.number for pr in await self._store.skipped(repo, limit=1000)}
+        listed = await self._store.list_prs(repo=repo, open_only=True)
+        prs = [pr for pr in candidates(listed) if pr.number not in skipped]
         self._forget(repo, {(pr.ref, pr.head_sha) for pr in prs})
         known, now = await self._known_of(repo), datetime.now(UTC)
         sized = [(pr, await self._changes_of(pr)) for pr in prs]
@@ -136,11 +150,15 @@ class UpNextWorker(BaseWorker):
 
     async def _choose(self, repo: str, short: list[Signals]) -> list[UpNext]:
         """The lead's choice from the shortlist; its top, if the lead can't say."""
-        instructions = self._instructions.for_repo(repo) if self._instructions else ""
+        told = notes(
+            repo,
+            short,
+            instructions=self._instructions.for_repo(repo) if self._instructions else "",
+            taken=await self._store.taken(repo),
+            skipped=await self._store.skipped(repo),
+        )
         try:
-            output = await self._picker.pick(
-                notes(repo, short, instructions=instructions), self._count
-            )
+            output = await self._picker.pick(told, self._count)
         except Exception as e:
             logger.warning(f"The lead couldn't say what's up next in {repo}: {e}")
             return fallback(short, self._count)

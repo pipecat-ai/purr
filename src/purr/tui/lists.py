@@ -127,7 +127,7 @@ class PRList(GroupedList):
     BINDINGS = [
         KEYS,
         *pane_keys(
-            ["search", "review", "mark", "approve", "dismiss", "merge", "diff", "zoom"]
+            ["search", "review", "skip", "mark", "approve", "dismiss", "merge", "diff", "zoom"]
             + ["shell", "open_claude"]
         ),
         Binding("tab", "repo('toggle_group')", "Fold/open"),  # first, where it applies
@@ -147,6 +147,8 @@ class PRList(GroupedList):
             return cast("PurrApp", self.app).main.repo.on_heading()
         if parameters == ("switch_pane",):
             return not cast("PurrApp", self.app).main.repo.on_heading()
+        if parameters == ("skip",):
+            return cast("PurrApp", self.app).main.repo.on_up_next()
         return True
 
     def redraw_option(self, option_id: str, prompt: Table) -> None:

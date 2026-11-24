@@ -280,6 +280,19 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (repo, number)
     );
     """,
+    # The PRs you said weren't for you when they were up next (s): never up next
+    # again, and the lead's told, so it learns what you skip. Kept with their title
+    # and author once they've closed.
+    """
+    CREATE TABLE up_next_skipped (
+        repo       TEXT NOT NULL COLLATE NOCASE,
+        number     INTEGER NOT NULL,
+        title      TEXT NOT NULL,
+        author     TEXT NOT NULL,
+        skipped_at TEXT NOT NULL,
+        PRIMARY KEY (repo, number)
+    );
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -751,6 +764,40 @@ class Store:
             (repo,),
         )
         return [UpNext(PRRef(r["repo"], r["number"]), r["why"], r["rank"], r["by"]) for r in rows]
+
+    async def skip_up_next(self, ref: PRRef) -> None:
+        """Not for you: out of what's up next, for good."""
+        await self._db.execute(
+            """
+            INSERT OR REPLACE INTO up_next_skipped (repo, number, title, author, skipped_at)
+            SELECT repo, number, title, author, ? FROM prs WHERE repo = ? AND number = ?
+            """,
+            (_now(), ref.repo, ref.number),
+        )
+        await self._db.execute(
+            "DELETE FROM up_next WHERE repo = ? AND number = ?", (ref.repo, ref.number)
+        )
+        await self._db.commit()
+
+    async def skipped(self, repo: str, *, limit: int = 10) -> list[PR]:
+        """The PRs you said weren't for you in ``repo``, latest first (as they were then)."""
+        rows = await self._fetchall(
+            "SELECT * FROM up_next_skipped WHERE repo = ? ORDER BY skipped_at DESC LIMIT ?",
+            (repo, limit),
+        )
+        return [PR(r["repo"], r["number"], r["title"], r["author"], "", "", "") for r in rows]
+
+    async def taken(self, repo: str, *, limit: int = 10) -> list[PR]:
+        """Others' PRs in ``repo`` you had reviewed lately, latest first."""
+        rows = await self._fetchall(
+            """
+            SELECT prs.* FROM prs JOIN reviews ON reviews.pr_id = prs.id
+            WHERE prs.repo = ? AND NOT prs.authored
+            GROUP BY prs.id ORDER BY MAX(reviews.started_at) DESC LIMIT ?
+            """,
+            (repo, limit),
+        )
+        return [_pr(row) for row in rows]
 
     async def mark_synced(self, names: Iterable[str], *, at: str | None = None) -> None:
         """Record a successful sync of these repos, as of ``at`` (default: now)."""

@@ -155,6 +155,7 @@ The pool can be hundreds of PRs. Rather than you choosing, the lead suggests a f
 
 - **What it goes on** (`purr/upnext.py`), worked out without asking anyone: each pool PR's size, from Purr's clone (`GitRepos.numstat`: `git diff --numstat`, the blobs the sync already brought); whether it's in folders you've worked in, from your latest 50 merged PRs and 50 you reviewed in the repo, with their files (`GitHub.history`, one request per repo every 6 hours); whether you've reviewed its author's PRs; and how long it's waited. Small and familiar count most (`score`). The best 15 are the shortlist, each with its reasons in words (`small (12 lines)`, `in services/deepgram, where you've been in 8 PRs`).
 - **The lead chooses** from the shortlist: one tool-less structured call on the lead's model (`lead_model`), with your review style, choosing `up_next` of them (5) and saying why in a line each. If it can't (offline, a bad answer), the top of the shortlist is up next, with its reasons.
+- **`s` skips one** that isn't for you (the key shows only on Up next PRs): it leaves Up next for good (`SkipUpNext {pr}` on the upnext worker; the `up_next_skipped` table, which keeps its title and author), the cursor goes on to the next PR, and the lead is asked again at once to fill its place. **It learns**: each time, the lead is told what you skipped lately and the PRs you took (others' PRs you had reviewed there, latest first), next to your review style, and chooses accordingly.
 - **When**: after the clones sync (`git.synced`, which the git worker sends after each sync), for each watched repo, asking the lead again only when the shortlist changed, and not more than every 10 minutes per repo. A PR that's taken (assigned), reviewed or closed leaves Up next at once. Only what changed is drawn again. It's kept in the `up_next` table, replaced as a whole each time.
 
 ## Review workers
@@ -313,6 +314,7 @@ Jobs:
 - `PlanReviews {prs, depth}` (lead worker): plan and start reviews you asked for (TUI `r`; later, voice); answers once they've started, with why any didn't.
 - `StartReview {pr, plan}` (reviews worker, sent by the lead; without a plan, a full review)
 - `Rereview {pr, plan}` (reviews worker, sent by the lead on new commits)
+- `SkipUpNext {pr}` (upnext worker): the PR isn't for you; it leaves Up next for good (`s`).
 - `AnswerComments {pr}` (reviews worker, sent by the lead): have the agent read what others said on a PR of yours and propose what to change and answer (see Your PRs).
 - `SendMessage {pr, text}` (reviews worker): say something in a PR's conversation. Its reply says what that did besides: answered a permission request (a no, with directions), set proposals aside, or went to the agent at work.
 - `AnswerPermission {request_id, allow, remember}` (reviews worker): answers an agent's permission request; `remember` (`repo` or `all`) also keeps its rule as a standing permission.
@@ -360,6 +362,7 @@ Events (`PurrEvent`) are `BusDataMessage` subclasses in `src/purr/messages.py`, 
 - `pending_actions`: id, pr, kind (comment/request_changes/approve; the schema also allows merge, which nothing proposes), description, payload, status (pending/approved/dismissed/executed/failed), created_at, resolved_at, posted_head (the PR's head when it was posted)
 - `review_skills`: repo, skill ('' for Purr's own review), chosen_by (`purr` or `you`), chosen_at
 - `up_next`: repo, number, rank, why, by (`lead`, or `purr` when the lead couldn't say), picked_at. What's up next in each repo (see Up next).
+- `up_next_skipped`: repo, number, title, author, skipped_at. The PRs you said weren't for you (`s`).
 - `prompts`: at, repo, number, text. What you asked PR agents, for the prompt's history (`↑`/`↓`, `ctrl+r`).
 - `activity`: at, pr (optional), kind, data. Every recorded Purr event; feeds the recaps and each PR's timeline.
 - `recaps`: since, until, headline, items, created_at
@@ -487,6 +490,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `page up` / `page down` scroll a page, in either pane (the transcript while typing too); reading the PR's pane, `ctrl+v` / `alt+v` (meta+v) too, as in Emacs (typing, `ctrl+v` pastes)
 - `space` mark/unmark PR; `esc` (or `ctrl+g`) unmarks them all, before it does anything else (the footer says `esc Unmark` meanwhile)
 - `r` start review on marked PRs (or the selected one), assigning you; on one already reviewed, it asks first
+- `s` on an Up next PR: not for you (see Up next)
 - `d` the diff view, to read it line by line and comment (`D`: the whole diff in your pager)
 - `a` / `x` answer the decision box: approve or dismiss a pending action, allow or deny a permission request (`A`: always allow); `x` also says replies to you need no answer
 - `m` merge a PR you approved: once to see where it stands, again to merge (see Merging)
