@@ -321,7 +321,8 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         log = app.main.repo.session.query_one("#transcript")
         for i in range(60):
             log.write(f"line {i}")
-        await pilot.pause(0.05)
+        # A RichLog adds what's written, and scrolls to its end, after a refresh.
+        await until(pilot, lambda: log.max_scroll_y > 0 and log.scroll_y == log.max_scroll_y)
         bottom = log.scroll_y
         await pilot.press("pageup")
         await until(pilot, lambda: log.scroll_y < bottom)
@@ -542,8 +543,11 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
 
         # Columns, and the PR someone else took in its own group, before the pool.
         assert pr_ids(app)[0] == "pipecat-ai/pipecat#2"
+        headings = ["#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED"]
+        await until(
+            pilot, lambda: option_texts(app)[:1] and option_texts(app)[0].split() == headings
+        )
         lines = option_texts(app)
-        assert lines[0].split() == ["#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED"]
         assert "OTHERS REVIEWING (1)" in "\n".join(lines)
         row = next(line for line in lines if "Message bus" in line)
         assert "#1" in row and "alice" in row
@@ -1195,6 +1199,8 @@ async def test_the_pr_pane_never_keeps_another_prs_transcript(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
         session = app.main.repo.session
+        # The list shows the PR it's on first: showing others by hand comes after.
+        await until(pilot, lambda: session.pr is not None and session._drawn is not None)
         one, two = (await app.purr.store.list_prs(repo="pipecat-ai/pipecat"))[::-1]
         app.details.put(one, PRDetails(body="All about the message bus"))
         app.details.put(two, PRDetails(body="All about the docs"))
@@ -1267,9 +1273,9 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         await until(pilot, lambda: len(pr_ids(app)) == 1)
         working = app.main.repo.session.query_one("#working")
 
-        def mark() -> str:  # the PR's row, as drawn: its first character
-            [row] = [t for t in option_texts(app) if "#1 " in t]
-            return row.strip()[0]
+        def mark() -> str:  # the PR's row, as drawn: its first character ("" until drawn)
+            rows = [t for t in option_texts(app) if "#1 " in t]
+            return rows[0].strip()[0] if rows else ""
 
         agent.gate = asyncio.Event()
         await pilot.press("r")
@@ -1451,6 +1457,7 @@ async def test_the_highlighted_prs_number_shows(tmp_path):
         await until(pilot, lambda: len(pr_ids(app)) == 2)
         prs = app.main.repo.query_one("#prs")
         await until(pilot, lambda: prs.has_focus)
+        await until(pilot, lambda: prs.highlighted in prs._index_to_line)  # once it's drawn
         line = prs._index_to_line[prs.highlighted] - prs.scroll_offset.y
         number = next(s for s in prs.render_line(line) if s.text.startswith("#"))
         # The number's in the theme's primary, the cursor's color: on it, its text color.
