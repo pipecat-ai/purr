@@ -914,10 +914,10 @@ class ReviewWorker(BaseWorker):
                 "on top of them."
             )
         try:
-            commits = await self._repos.unpushed(ref, pr.head_sha)
+            unpushed = await self._repos.unpushed(ref, pr.head_sha, pr.base or "")
         except GitError as e:
             raise Refused(str(e)) from e
-        if not commits:
+        if not (commits := unpushed.commits):
             raise Refused("There's nothing to push: commit your changes here first.")
         tip = commits[0][0]
         what = tip[:7] if len(commits) == 1 else f"{len(commits)} commits, up to {tip[:7]},"
@@ -930,7 +930,12 @@ class ReviewWorker(BaseWorker):
             "branch": head.branch,
             "commits": [{"sha": sha, "subject": subject} for sha, subject in commits],
         }
-        return f"Push {what} to {where}", payload
+        if not unpushed.replaces:
+            return f"Push {what} to {where}", payload
+        # Rewritten (a rebase, say): the push replaces the branch's commits.
+        n = payload["replaces"] = unpushed.replaces
+        replaced = f"{n} commit{'s' if n != 1 else ''}"
+        return f"Force-push {what} to {where}, replacing its {replaced}", payload
 
     async def _pr_head(self, ref: PRRef) -> PRHead:
         """Where the PR's commits live, if you can push there. Raises Refused if not."""

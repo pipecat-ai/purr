@@ -96,9 +96,10 @@ your recommendation changes.
 
 When the user asks you to push changes to the PR: commit them here, on top of the
 PR's head (the worktree is detached there), then call `propose_action` with kind
-`push`. Purr shows them which commits go to which branch, and pushes them if they
-approve. Only propose a push when they ask for one, and never run `git push`
-yourself.
+`push`. If they ask you to rebase it (or to squash or reword its commits), do that
+here: the push then replaces the branch's commits. Purr shows them which commits go
+to which branch, and pushes them if they approve, as long as nobody pushed to it
+since. Only propose a push when they ask for one, and never run `git push` yourself.
 """
 
 

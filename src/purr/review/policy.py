@@ -22,8 +22,8 @@ GITHUB_WRITE_REASON = (
 # A push gets its own: the agent can't push, but it can propose one.
 PUSH_REASON = (
     "Purr never lets the agent push. Propose it instead: commit here, on top of the PR's "
-    "head, and call propose_action with kind `push`. Purr shows the user which commits "
-    "go to which branch, and pushes them if they approve."
+    "head (or rebase it, if the user asked), and call propose_action with kind `push`. "
+    "Purr shows the user which commits go to which branch, and pushes them if they approve."
 )
 
 # Claude Code permission rules (prefix matches). `gh api` reads are fine, so its
