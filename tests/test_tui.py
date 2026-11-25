@@ -352,10 +352,15 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("pageup")
         await until(pilot, lambda: log.scroll_y < bottom)
         assert focused(app) == "prompt"
-        # Reading the pane, ctrl+v and alt+v (meta+v) page down and up, as in Emacs.
+        # Reading the pane, ctrl+v and alt+v (meta+v) page down and up, as in Emacs. The
+        # footer changes with the focus, and the pane's height with it: its end is measured
+        # once the pane's keys are laid out.
         log.focus()
-        await pilot.press("ctrl+v")
-        await until(pilot, lambda: log.scroll_y == bottom)
+        await until(pilot, lambda: "Thinking" in footer(app))
+        await pilot.pause()
+        log.scroll_end(animate=False)
+        await until(pilot, lambda: log.scroll_y == log.max_scroll_y)
+        bottom = log.scroll_y
         await pilot.press("alt+v")
         await until(pilot, lambda: log.scroll_y < bottom)
         await pilot.press("ctrl+v")
