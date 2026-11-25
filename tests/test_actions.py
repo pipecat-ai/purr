@@ -12,6 +12,7 @@ from purr.git import GitError
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, request
 from purr.messages import (
     ApproveAction,
+    ApprovePR,
     AssignMe,
     CheckMerge,
     DeleteGitHubComment,
@@ -311,6 +312,27 @@ async def test_only_a_verdict_makes_the_pr_done(setup):
     pr = await store.get_pr(REF)
     await store.upsert_pr(replace(pr, head_sha="def"))
     assert await store.resting_state(REF) == PRState.NEEDS_YOU
+
+
+async def test_approving_with_nothing_proposed(setup):
+    store, writer, client, pending = setup
+    review = await store.start_review(REF)
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    with pytest.raises(Busy, match="decide that first"):
+        await request(client, ApprovePR(pr=REF), timeout=5)
+    await request(client, DismissAction(action_id=pending.id), timeout=5)
+
+    posted = await request(client, ApprovePR(pr=REF), timeout=5)
+    assert posted.url.endswith("#review-1")
+    assert writer.reviews[-1]["event"] == "APPROVE" and writer.reviews[-1]["body"] == "LGTM"
+    assert writer.reviews[-1]["commit_id"] == "abc"
+    assert await store.approved_head(REF) == "abc"  # m can merge it
+    assert (await store.get_pr(REF)).state == PRState.DONE
+
+    pr = await store.get_pr(REF)
+    await store.upsert_pr(replace(pr, authored=True))
+    with pytest.raises(Invalid, match="your own PR"):
+        await request(client, ApprovePR(pr=REF), timeout=5)
 
 
 async def test_assigning_yourself(setup):

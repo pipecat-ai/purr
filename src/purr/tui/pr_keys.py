@@ -13,6 +13,7 @@ from purr.messages import (
     REVIEW_WORKER,
     AnswerPermission,
     ApproveAction,
+    ApprovePR,
     AssignMe,
     CheckMerge,
     DismissAction,
@@ -173,14 +174,18 @@ class PRKeys(PurrView):
         for warning in posted.warnings:
             self.notify(warning, severity="warning")
 
-    async def _to_post(self, pr: PR) -> tuple[ApproveAction | PostComments, str] | None:
+    async def _to_post(self, pr: PR) -> tuple[ApproveAction | PostComments | ApprovePR, str] | None:
         """What a does, and what it says once done: the agent's proposal (a review, with your
-        comments, or a push), or your comments on their own."""
+        comments, or a push), your comments on their own, or, waiting for your verdict alone,
+        approving the PR."""
         store = self.purr_app.purr.store
         if actions := await store.pending_actions(pr.ref):
             done = "Pushed" if actions[0].kind == ActionKind.PUSH else "Posted"
             return ApproveAction(action_id=actions[0].id), done
-        return (PostComments(pr=pr.ref), "Posted") if await store.draft_comments(pr.ref) else None
+        if await store.draft_comments(pr.ref):
+            return PostComments(pr=pr.ref), "Posted"
+        state = self.purr_app.sessions.get(str(pr.ref))
+        return (ApprovePR(pr=pr.ref), "Approved") if state and state.verdict_due else None
 
     @work(group="keys")
     async def action_dismiss(self) -> None:

@@ -131,6 +131,7 @@ class SessionState:
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
     proposal: ActionKind | None = None  # what the agent proposes (the oldest), as last read
+    verdict_due: bool = False  # it waits for your verdict alone: a approves it
     quote: Quote | None = None  # the lines of the diff you're asking about, if any
     suggestion: str = ""  # what you might ask next (purr.suggest)
     suggested_at: int | None = None  # how far the transcript was when it was asked for
@@ -146,7 +147,9 @@ class SessionState:
             return "Allow once"
         if self.proposal:
             return A_DOES[self.proposal]
-        return "Post comments" if self.mine else ""
+        if self.mine:
+            return "Post comments"
+        return "Approve PR" if self.verdict_due else ""
 
     @property
     def working(self) -> bool:
@@ -537,6 +540,25 @@ def _replies_question(pr: PR, state: SessionState, actions: list[PendingAction])
     return render_replies(pr.replies) if pr.replies else None
 
 
+def _verdict_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+    """Reviewed, and nothing's proposed or said to you: it waits for your verdict alone."""
+    if not state.verdict_due or state.mine:
+        return None
+    return Text.assemble(
+        ("No verdict yet.", "bold"),
+        ("\n[a] approve PR", "bold"),
+        ("   or ask the agent to request changes", "dim"),
+    )
+
+
+def _verdict_due(pr: PR, review: Review | None, actions: list[PendingAction]) -> bool:
+    """Someone else's PR in Needs you, reviewed, with nothing proposed or said to you: it
+    waits for your verdict alone."""
+    reviewed = review is not None and review.status == ReviewStatus.FINISHED
+    alone = not actions and not pr.replies
+    return pr.state == PRState.NEEDS_YOU and not pr.authored and reviewed and alone
+
+
 def _merge_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
     """You pressed m: where it stands for merging, for your final decision."""
     return render_merge(pr, state.merge) if state.merge else None
@@ -561,6 +583,7 @@ _QUESTIONS: list[Callable[[PR, SessionState, list[PendingAction]], Text | None]]
     _proposal_question,
     _comments_question,
     _replies_question,
+    _verdict_question,
     _merge_hint,
 ]
 
@@ -913,6 +936,7 @@ class PRSession(Vertical):
         state = self.state()
         state.approved, state.mine = approved, mine
         state.proposal = actions[0].kind if actions else None
+        state.verdict_due = _verdict_due(pr, review, actions)
         if state.a_does() != self._a_does:  # the footer says what a does now
             self._a_does = state.a_does()
             self.refresh_bindings()
