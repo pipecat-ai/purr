@@ -197,6 +197,12 @@ def decision(app: PurrApp) -> str:
     return str(box.render()) if box.display else ""
 
 
+def working(app: PurrApp) -> str:
+    """The spinner's line in the PR pane, if it's showing."""
+    line = app.main.repo.session.query_one("#working")
+    return str(line.render()) if line.display else ""
+
+
 async def test_reviewing_from_the_keyboard(tmp_path):
     github = FakeGitHub()
     agent, writer = FakeAgent(), FakeWriter()
@@ -1238,6 +1244,9 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
     line = render_working(since=100.0, now=162.5, frame=3, background=2).plain
     assert line.endswith("… (1m 2s · 2 in the background · esc to stop)")
     assert any(verb in line for verb in VERBS)
+    # Doing what you asked for: what it is, and no stopping it.
+    line = render_working(since=100.0, now=102.5, frame=3, background=2, doing="Pushing").plain
+    assert line == f"{FRAMES[3]} Pushing… (2s)"
 
     app, github = make_app(tmp_path)
     agent = app.purr.agent
@@ -1678,16 +1687,28 @@ async def test_merging_with_m_after_approving(tmp_path):
         await until(pilot, lambda: "You approved it." in decision(app))
 
         # m: where it stands. The docs build failed and alice hasn't approved: your call.
+        # GitHub takes a moment: meanwhile, it says what it's doing.
+        github.merge_gate = asyncio.Event()
         await pilot.press("m")
+        await until(pilot, lambda: "Looking at its checks and reviews…" in working(app))
+        assert not decision(app)
+        github.merge_gate.set()
         await until(pilot, lambda: "Squash and merge #7 into main?" in decision(app))
+        assert not working(app)
         shown = decision(app)
         assert "✓ 1 check passed" in shown
         assert "⚠ docs/readthedocs failed" in shown and "⚠ alice hasn't approved" in shown
         assert "[m] merge anyway" in shown
 
-        # m again: merged, at the commit you approved.
+        # m again: merging (it looks again first), then merged, at the commit you approved.
+        github.merge_gate = asyncio.Event()
         await pilot.press("m")
+        await until(pilot, lambda: "Merging…" in working(app))
+        await pilot.press("m")  # it's under way: m again does nothing
+        github.merge_gate.set()
         await until(pilot, lambda: app.purr._writer.merges == [(ref, "squash", "abc")])
+        await until(pilot, lambda: not working(app))
+        assert len(app.purr._writer.merges) == 1
 
 
 async def test_a_merge_it_cant_do_says_so_and_x_closes_it(tmp_path):
@@ -2313,6 +2334,50 @@ async def test_editing_settings_in_purr(tmp_path):
         assert "# more" not in path.read_text()
         await pilot.press("escape")
         await until(pilot, lambda: isinstance(app.screen, MainScreen))
+
+
+async def test_a_shows_the_push_under_way_at_once(tmp_path):
+    """A push takes a few seconds: from the key press, the PR pane says it's pushing, in
+    the decision box's place, and its mark in the list spins. a does nothing meanwhile."""
+    from purr.tui.working import FRAMES
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    repos = app.purr._repos
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        store = app.purr.store
+        await store.set_pr_state(ref, PRState.NEEDS_YOU)
+        payload = {"commit": "f00", "repo": "eric7h/pipecat", "branch": "fix", "onto": "abc",
+                   "commits": [{"sha": "f00", "subject": "Fix the nit"}]}  # fmt: skip
+        await store.add_pending_action(
+            ref, kind=ActionKind.PUSH, description="Push f00 to eric7h:fix", payload=payload
+        )
+        await app.main.repo.session.refresh_status()
+        await until(pilot, lambda: "[a] push" in decision(app))
+
+        def mark() -> str:  # the PR's row, as drawn: its first character
+            rows = [t for t in option_texts(app) if "#7 " in t]
+            return rows[0].strip()[0] if rows else ""
+
+        repos.push_gate = asyncio.Event()
+        await pilot.press("a")
+        await until(pilot, lambda: "Pushing…" in working(app))
+        assert "esc to stop" not in working(app)
+        assert not decision(app) and "Push" not in footer(app)
+        await until(pilot, lambda: mark() in FRAMES)
+        await pilot.press("a")  # it's under way: a again does nothing
+
+        repos.push_gate.set()
+        await until(pilot, lambda: getattr(repos, "pushed", []))
+        await until(pilot, lambda: not working(app) and mark() not in FRAMES)
+        assert len(repos.pushed) == 1
+        assert any("Pushed" in n.message for n in app._notifications)
+        assert not any(n.severity == "error" for n in app._notifications)
 
 
 async def test_a_approves_a_pr_waiting_for_your_verdict_alone(tmp_path):

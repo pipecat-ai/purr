@@ -135,6 +135,8 @@ class SessionState:
     quote: Quote | None = None  # the lines of the diff you're asking about, if any
     suggestion: str = ""  # what you might ask next (purr.suggest)
     suggested_at: int | None = None  # how far the transcript was when it was asked for
+    doing: str = ""  # what you asked for that's under way (``Pushing``), till it's done
+    doing_since: float = 0.0  # since when (monotonic)
 
     def suggested(self) -> str:
         """The suggestion, if it's still for where the conversation is."""
@@ -145,6 +147,8 @@ class SessionState:
         do what it proposes, or post your comments."""
         if self.ask:
             return "Allow once"
+        if self.doing:  # it's being done
+            return ""
         if self.proposal:
             return A_DOES[self.proposal]
         if self.mine:
@@ -462,7 +466,10 @@ def _plan_note(plan: ReviewPlan) -> str:
 
 
 def _decision(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
-    """What waits on you, above the prompt: the first of the questions that has something."""
+    """What waits on you, above the prompt: the first of the questions that has something.
+    While what you asked for is under way, the spinner says so, and only the agent asks."""
+    if state.doing:
+        return _permission_question(pr, state, actions)
     asked = (question(pr, state, actions) for question in _QUESTIONS)
     return next((text for text in asked if text is not None), None)
 
@@ -938,9 +945,7 @@ class PRSession(Vertical):
         state.approved, state.mine = approved, mine
         state.proposal = actions[0].kind if actions else None
         state.verdict_due = _verdict_due(pr, review, actions)
-        if state.a_does() != self._a_does:  # the footer says what a does now
-            self._a_does = state.a_does()
-            self.refresh_bindings()
+        self._footer(state)
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details, up_next)
@@ -952,13 +957,33 @@ class PRSession(Vertical):
             box.update(decision)
         box.display = decision is not None
 
+    def show_doing(self) -> None:
+        """What you asked for on the PR shown got going, or is done: the spinner says so at
+        once, in place of the decision box (bar the agent's question), and a does nothing
+        meanwhile. Done, refresh_status says what's next."""
+        if not self.pr:
+            return
+        state = self.state()
+        self._show_working(state)
+        self._footer(state)
+        if state.doing and not state.ask:
+            self.query_one("#pr-decision").display = False
+
+    def _footer(self, state: SessionState) -> None:
+        """The footer says what a does now."""
+        if state.a_does() != self._a_does:
+            self._a_does = state.a_does()
+            self.refresh_bindings()
+
     def _show_working(self, state: SessionState) -> None:
         working = self.query_one(Working)
-        if not state.working:
+        if state.doing:
+            working.start(state.doing_since, doing=state.doing)
+        elif state.working:
+            assert state.since is not None
+            working.start(state.since, state.background)
+        else:
             working.stop()
-            return
-        assert state.since is not None
-        working.start(state.since, state.background)
 
     @staticmethod
     def _header(

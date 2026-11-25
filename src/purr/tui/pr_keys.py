@@ -4,6 +4,9 @@ post or dismiss what's proposed, answer the agent, merge, and open it outside Pu
 import asyncio
 import os
 import shutil
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from textual import work
 
@@ -61,6 +64,9 @@ def _shell() -> str:
 
 MERGE_RECHECK = 10.0  # seconds between asking GitHub again while checks run
 
+# What the spinner says while a does what's proposed ("Posting" for the rest).
+_DOING = {ActionKind.PUSH: "Pushing", ActionKind.APPROVE: "Approving", ActionKind.MERGE: "Merging"}
+
 
 def _checks_running(merge: MergeReadiness | None) -> bool:
     return bool(merge) and any(c.state == CheckState.RUNNING for c in merge.check.checks)
@@ -78,9 +84,27 @@ class PRKeys(PurrView):
     def zoom_in_on_pr(self) -> None:
         raise NotImplementedError
 
+    def working_changed(self) -> None:
+        raise NotImplementedError
+
     @property
     def session(self) -> PRSession:
         return self.query_one(PRSession)
+
+    @asynccontextmanager
+    async def _doing(self, pr: PR, what: str) -> AsyncIterator[None]:
+        """What you asked for (``Pushing``) moves at once, in the decision box's place and
+        as the PR's mark in the list, till it's done: git and GitHub take a few seconds."""
+        state = self.session.state(pr)
+        state.doing, state.doing_since = what, time.monotonic()
+        self.session.show_doing()
+        self.working_changed()
+        try:
+            yield
+        finally:
+            state.doing = ""
+            self.working_changed()
+            await self.session.refresh_status()
 
     # -- Reviewing -----------------------------------------------------------------
 
@@ -162,30 +186,35 @@ class PRKeys(PurrView):
             await self._answer(state, True)
             return
         pr = self.selected_pr()
-        if not pr or not (to_do := await self._to_post(pr)):
+        if not pr or self.session.state(pr).doing or not (to_do := await self._to_post(pr)):
             return
-        job, done = to_do
-        try:
-            posted = await self.purr_app.bus.request(job)
-        except PurrError as e:
-            self.notify(str(e), severity="error")
-            return
+        job, doing, done = to_do
+        async with self._doing(pr, doing):
+            try:
+                posted = await self.purr_app.bus.request(job)
+            except PurrError as e:
+                self.notify(str(e), severity="error")
+                return
         self.notify(f"{done}: {posted.url}" if posted.url else done)
         for warning in posted.warnings:
             self.notify(warning, severity="warning")
 
-    async def _to_post(self, pr: PR) -> tuple[ApproveAction | PostComments | ApprovePR, str] | None:
-        """What a does, and what it says once done: the agent's proposal (a review, with your
-        comments, or a push), your comments on their own, or, waiting for your verdict alone,
-        approving the PR."""
+    async def _to_post(
+        self, pr: PR
+    ) -> tuple[ApproveAction | PostComments | ApprovePR, str, str] | None:
+        """What a does, what the spinner says meanwhile, and what it says once done: the
+        agent's proposal (a review, with your comments, or a push), your comments on their
+        own, or, waiting for your verdict alone, approving the PR."""
         store = self.purr_app.purr.store
         if actions := await store.pending_actions(pr.ref):
-            done = "Pushed" if actions[0].kind == ActionKind.PUSH else "Posted"
-            return ApproveAction(action_id=actions[0].id), done
+            kind = actions[0].kind
+            done = "Pushed" if kind == ActionKind.PUSH else "Posted"
+            return ApproveAction(action_id=actions[0].id), _DOING.get(kind, "Posting"), done
         if await store.draft_comments(pr.ref):
-            return PostComments(pr=pr.ref), "Posted"
+            return PostComments(pr=pr.ref), "Posting", "Posted"
         state = self.purr_app.sessions.get(str(pr.ref))
-        return (ApprovePR(pr=pr.ref), "Approved") if state and state.verdict_due else None
+        verdict = state and state.verdict_due
+        return (ApprovePR(pr=pr.ref), "Approving", "Approved") if verdict else None
 
     @work(group="keys")
     async def action_dismiss(self) -> None:
@@ -193,7 +222,7 @@ class PRKeys(PurrView):
             await self._answer(state, False)
             return
         pr = self.selected_pr()
-        if pr is None:
+        if pr is None or self.session.state(pr).doing:  # it's being done: too late
             return
         if (merging := self.purr_app.sessions.get(str(pr.ref))) and merging.merge:
             merging.merge = None  # the merge box goes: m asks again
@@ -248,22 +277,23 @@ class PRKeys(PurrView):
     async def action_merge(self) -> None:
         """m: where the PR stands for merging; m again, with nothing blocking it: merge."""
         pr = self.selected_pr()
-        if pr is None:
+        if pr is None or (state := self.session.state(pr)).doing:
             return
-        state = self.session.state(pr)
-        try:
-            if state.merge is None or state.merge.blockers:
-                before = state.merge
-                state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
-                if before and state.merge.blockers == before.blockers:
-                    self.notify(f"Still can't merge: {before.blockers[0]}", severity="warning")
-            else:
-                await self._merge(pr, state)
-        except PurrError as e:
-            state.merge = None
-            self.notify(str(e), severity="warning")
-        await self.session.refresh_status()
+        merging = state.merge is not None and not state.merge.blockers
+        async with self._doing(pr, "Merging" if merging else "Looking at its checks and reviews"):
+            try:
+                await (self._merge(pr, state) if merging else self._check_merge(pr, state))
+            except PurrError as e:
+                state.merge = None
+                self.notify(str(e), severity="warning")
         self._follow_checks(pr, state)
+
+    async def _check_merge(self, pr: PR, state: SessionState) -> None:
+        """Where it stands for merging, fresh from GitHub: if nothing changed, it says so."""
+        before = state.merge
+        state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
+        if before and state.merge.blockers == before.blockers:
+            self.notify(f"Still can't merge: {before.blockers[0]}", severity="warning")
 
     @work(exclusive=True, group="merge-checks")
     async def _follow_checks(self, pr: PR, state: SessionState) -> None:

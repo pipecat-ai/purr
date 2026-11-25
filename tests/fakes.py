@@ -100,6 +100,9 @@ class FakeGitHub:
         return getattr(self, "heads", {}).get(ref)
 
     async def merge_check(self, ref):
+        """From ``merge_checks``; set ``merge_gate`` to hold it until it's set."""
+        if gate := getattr(self, "merge_gate", None):
+            await gate.wait()
         return self.merge_checks.get(ref)
 
     async def standing(self, refs):
@@ -154,7 +157,10 @@ class FakeRepos:
         return list(getattr(self, "commits_made", []))
 
     async def push(self, ref, commit, *, repo, branch, onto):
-        """Records ``(ref, commit, repo, branch, onto)`` in ``pushed``; ``push_error`` raises."""
+        """Records ``(ref, commit, repo, branch, onto)`` in ``pushed``; ``push_error`` raises.
+        Set ``push_gate`` to hold it until it's set."""
+        if gate := getattr(self, "push_gate", None):
+            await gate.wait()
         if isinstance(error := getattr(self, "push_error", None), Exception):
             raise error
         self.pushed = [*getattr(self, "pushed", []), (ref, commit, repo, branch, onto)]
