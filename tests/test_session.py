@@ -86,6 +86,8 @@ def test_prs_asking_for_your_review_have_their_own_group():
 def test_a_says_what_it_does():
     state = SessionState()
     assert state.a_does() == ""  # nothing for it to do
+    state.verdict_due = True  # nothing proposed: it waits for your verdict alone
+    assert state.a_does() == "Approve PR"
     state.mine = [DraftComment(1, "bus.py", 3, "RIGHT", "Why?", "abc")]
     assert state.a_does() == "Post comments"
     said = {

@@ -2241,3 +2241,35 @@ async def test_editing_settings_in_purr(tmp_path):
         assert "# more" not in path.read_text()
         await pilot.press("escape")
         await until(pilot, lambda: isinstance(app.screen, MainScreen))
+
+
+async def test_a_approves_a_pr_waiting_for_your_verdict_alone(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    writer = app.purr._writer  # the FakeWriter make_app gave it
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        await pilot.press("r")
+        await until(pilot, lambda: "[a] request changes" in decision(app))
+
+        # x dismisses what's proposed: no verdict yet, so it still needs you, and a
+        # approves it, as the footer and the decision box say.
+        await pilot.press("x")
+        await until(pilot, lambda: "No verdict yet" in decision(app))
+        assert "[a] approve PR" in decision(app)
+        await until(pilot, lambda: "Approve PR" in footer(app))
+        await pilot.press("a")
+        await until(pilot, lambda: writer.reviews)
+        assert writer.reviews[-1]["event"] == "APPROVE"
+        store = app.purr.store
+        ref = PRRef("pipecat-ai/pipecat", 1)
+        await until_async(lambda: _state_is(store, ref, PRState.DONE))
+        await until(pilot, lambda: "You approved it." in decision(app))  # m merges it
+        assert "Approve PR" not in footer(app)
+
+
+async def _state_is(store, ref, state) -> bool:
+    return (await store.get_pr(ref)).state == state

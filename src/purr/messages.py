@@ -239,6 +239,14 @@ class ApproveAction(Request[Posted]):
 
 
 @dataclass(kw_only=True)
+class ApprovePR(Request[Posted]):
+    """Approve the PR as you, with nothing proposed: it waits for your verdict alone."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+
+
+@dataclass(kw_only=True)
 class DismissAction(Request[Done]):
     worker: ClassVar[str] = GITHUB_WORKER
     action_id: str

@@ -19,6 +19,7 @@ from purr.messages import (
     GITHUB_WORKER,
     ActionResolved,
     ApproveAction,
+    ApprovePR,
     AssignMe,
     CheckMerge,
     CommentsChanged,
@@ -381,7 +382,10 @@ class GitHubWorker(BaseWorker):
 
     @handles(ApproveAction)
     async def approve_action(self, request: ApproveAction) -> Posted:
-        action_id = request.action_id
+        return await self._approve(request.action_id)
+
+    async def _approve(self, action_id: str) -> Posted:
+        """Carry out a pending action you approved: post it, or push it."""
         # Claiming it first means approving twice (keys and voice at once) posts once.
         action = await self._store.transition_action(
             action_id, expected=ActionStatus.PENDING, new=ActionStatus.APPROVED
@@ -392,6 +396,22 @@ class GitHubWorker(BaseWorker):
         posted = await carry_out(action)
         await self._resolved(action.pr, action_id, approved=True)
         return posted
+
+    @handles(ApprovePR)
+    async def approve_pr(self, request: ApprovePR) -> Posted:
+        """Your verdict with nothing proposed: an approval, posted as an approved proposal
+        is (LGTM, at the PR's head), so the PR is done and can be merged."""
+        pr = await self._store.get_pr(request.pr)
+        if pr is None:
+            raise NotFound(f"Purr doesn't know {request.pr}")
+        if pr.authored:
+            raise Invalid("GitHub doesn't let you approve your own PR")
+        if await self._store.pending_actions(pr.ref):
+            raise Busy("Something's proposed on it: decide that first")
+        action = await self._store.add_pending_action(
+            pr.ref, kind=ActionKind.APPROVE, description="Approve"
+        )
+        return await self._approve(action.id)
 
     async def _post(self, action: PendingAction) -> Posted:
         """Post an approved review, with your inline comments, as you."""
