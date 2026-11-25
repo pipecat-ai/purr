@@ -3,7 +3,7 @@
 import asyncio
 import time
 import uuid
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
 
@@ -237,11 +237,12 @@ class ReviewWorker(BaseWorker):
         for pr in await self._store.list_prs(state=PRState.REVIEWING):
             review = await self._store.latest_review(pr.ref)
             if review is None or review.status != ReviewStatus.RUNNING:
-                pending = await self._store.waits_on_you(pr.ref)
-                await self._store.set_pr_state(
-                    pr.ref, PRState.NEEDS_YOU if pending or review is None else PRState.DONE
-                )
+                await self._store.set_pr_state(pr.ref, await self._store.resting_state(pr.ref))
                 settled = True
+        # Done with no verdict, by the rule before: it needs one.
+        for ref in await self._store.done_without_verdict():
+            await self._store.set_pr_state(ref, await self._store.resting_state(ref))
+            settled = True
         if settled:
             await self.send_bus_message(PRListUpdated(source=self.name))
         for review in await self._store.interrupted_reviews():
@@ -502,10 +503,6 @@ class ReviewWorker(BaseWorker):
         if not proposals:
             return pr, []
         await self._dismiss_pending(pr.ref)
-        # Nothing left to decide, as with x (unless there are replies to answer).
-        if pr.state == PRState.NEEDS_YOU and not await self._store.waits_on_you(pr.ref):
-            await self._store.set_pr_state(pr.ref, PRState.DONE)
-            pr = replace(pr, state=PRState.DONE)
         return pr, [proposal.description for proposal in proposals]
 
     async def _send_after(self, ref: PRRef, text: str) -> None:
@@ -715,7 +712,8 @@ class ReviewWorker(BaseWorker):
 
     async def _finished(self, run: _Run, result: AgentResult) -> None:
         """Record a run that went well. A review, or a follow-up that submitted one, is
-        finished; then the PR needs you, or a follow-up's goes back to how it was."""
+        finished; then the PR needs you, or a follow-up's rests (see Store.resting_state):
+        done only if you'd given your verdict on it as it is."""
         await self._store.finish_run(run.id, result=_metrics(result))
         if run.submitted or not run.followup:
             summary = run.submitted.get("summary") or result.text or "No summary."
@@ -731,11 +729,11 @@ class ReviewWorker(BaseWorker):
                     findings=[asdict(f) for f in findings],
                 )
             )
-        await self._settle(run.ref, run.pr.state if run.followup else PRState.NEEDS_YOU)
+        await self._settle(run.ref, None if run.followup else PRState.NEEDS_YOU)
 
     async def _failed(self, run: _Run, error: Exception, result: AgentResult | None) -> None:
         """Record a run that failed. A follow-up's failure is said in the PR's session, and
-        the PR goes back to how it was; a review fails, and the PR needs you."""
+        the PR rests; a review fails, and the PR needs you."""
         entry = {"kind": "error", "text": str(error)}
         await self._store.add_message(run.id, run.ref, entry)
         await self._store.finish_run(
@@ -745,7 +743,7 @@ class ReviewWorker(BaseWorker):
             await self.send_bus_message(
                 SessionMessage(source=self.name, pr=str(run.ref), message=entry)
             )
-            await self._settle(run.ref, run.pr.state)
+            await self._settle(run.ref)
             return
         await self._store.fail_review(run.review.id, error=str(error))
         await self.send_bus_message(
@@ -755,7 +753,7 @@ class ReviewWorker(BaseWorker):
 
     async def _stopped_by_you(self, run: _Run) -> None:
         """Record a run you stopped (see :meth:`stop_agent`), and settle the PR: a follow-up's
-        as it was, a review's back to how it was before it."""
+        rests, a review's back to how it was before it."""
         entry = {"kind": "stopped"}
         await self._store.add_message(run.id, run.ref, entry, author="you")
         await self._store.finish_run(run.id, error=STOPPED)
@@ -763,9 +761,8 @@ class ReviewWorker(BaseWorker):
             SessionMessage(source=self.name, pr=str(run.ref), message=entry)
         )
         dropped = False
-        if run.followup:
-            state = run.pr.state
-        else:
+        state = None  # a follow-up's: where it rests
+        if not run.followup:
             dropped = await self._stop_review(run)
             # Resumed on starting Purr, it was "reviewing" before: as never reviewed.
             reviewing = run.pr.state == PRState.REVIEWING
@@ -820,10 +817,13 @@ class ReviewWorker(BaseWorker):
             return self._quick_model
         return None
 
-    async def _settle(self, ref: PRRef, state: PRState) -> None:
-        """Set the PR's state after a run: anything waiting on you means it needs you."""
+    async def _settle(self, ref: PRRef, state: PRState | None = None) -> None:
+        """Set the PR's state after a run (None: where it rests, see Store.resting_state):
+        anything waiting on you means it needs you."""
         await self._progress(ref, "")  # nothing's happening any more
-        if await self._store.waits_on_you(ref):
+        if state is None:
+            state = await self._store.resting_state(ref)
+        elif await self._store.waits_on_you(ref):
             state = PRState.NEEDS_YOU
         await self._store.set_pr_state(ref, state)
         await self.send_bus_message(PRListUpdated(source=self.name))

@@ -9,7 +9,7 @@ from textual.widgets import Input, OptionList
 from purr.app import Purr
 from purr.config import Config
 from purr.messages import DismissAction, WatchRepo
-from purr.models import PRDetails, PRRef, PRState
+from purr.models import ActionKind, PRDetails, PRRef, PRState
 from purr.store import Store
 from purr.tui import PurrApp
 from purr.tui.dialogs import AddRepoScreen, ConfirmScreen
@@ -24,6 +24,7 @@ from tests.fakes import (
     FakeRepos,
     FakeSuggester,
     FakeWriter,
+    give_verdict,
     remote,
 )
 
@@ -1568,8 +1569,9 @@ async def test_requests_for_your_review_and_replies_to_you(tmp_path):
         await until(pilot, lambda: len(pr_ids(app)) == 3)
         store = app.purr.store
         answered = PRRef("pipecat-ai/pipecat", 3)
-        review = await store.start_review(answered)  # reviewed, then answered on GitHub
+        review = await store.start_review(answered)  # changes asked, then answered
         await store.finish_review(review.id, summary="Fine", findings=[])
+        await give_verdict(store, answered, ActionKind.REQUEST_CHANGES)
         await store.set_pr_state(answered, PRState.NEEDS_YOU)  # as a poll leaves it
         await store.set_replies(
             answered,

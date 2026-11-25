@@ -22,7 +22,7 @@ from purr.messages import (
 from purr.models import PRChange, PRRef, PRState, Reply
 from purr.store import Store
 from purr.workers import ActivityWorker, GitHubWorker
-from tests.fakes import FakeGitHub, remote
+from tests.fakes import FakeGitHub, give_verdict, remote
 
 
 class Client(BaseWorker):
@@ -144,8 +144,9 @@ async def test_replies_to_you_need_you_until_answered(setup):
     github.assigned = [remote(1, assignees=("me",))]
     await worker.poll()
     assert (await client.next_event(PRChanged)).change == PRChange.ASSIGNED
-    review = await store.start_review(ref)  # reviewed, nothing left to decide
+    review = await store.start_review(ref)  # reviewed and approved: done
     await store.finish_review(review.id, summary="Fine", findings=[])
+    await give_verdict(store, ref)
     await store.set_pr_state(ref, PRState.DONE)
 
     # Someone answers you: it changed on GitHub, so its conversation is read.

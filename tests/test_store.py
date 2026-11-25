@@ -156,6 +156,43 @@ async def test_pending_action_can_only_be_resolved_once(store):
     assert await store.pending_actions() == []
 
 
+async def test_where_a_pr_rests(store):
+    """Needs you until your verdict on it as it is; your own PR, until nothing waits."""
+    pr = await store.upsert_pr(make_pr(1))
+    ref = pr.ref
+    assert await store.resting_state(ref) == PRState.NOT_REVIEWED
+    review = await store.start_review(ref)
+    await store.fail_review(review.id, error="boom")
+    assert await store.resting_state(ref) == PRState.NEEDS_YOU
+    review = await store.start_review(ref)
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    assert await store.resting_state(ref) == PRState.NEEDS_YOU  # reviewed, no verdict
+
+    async def posted(kind: ActionKind, head: str = "abc123") -> None:
+        action = await store.add_pending_action(ref, kind=kind, description=kind.value)
+        await store.transition_action(
+            action.id, expected=ActionStatus.PENDING, new=ActionStatus.EXECUTED, posted_head=head
+        )
+
+    await posted(ActionKind.COMMENT)
+    assert await store.resting_state(ref) == PRState.NEEDS_YOU
+    await posted(ActionKind.REQUEST_CHANGES, head="older")  # on an earlier commit
+    assert await store.resting_state(ref) == PRState.NEEDS_YOU
+    await posted(ActionKind.REQUEST_CHANGES)
+    assert await store.decided(ref)
+    assert await store.resting_state(ref) == PRState.DONE
+    await posted(ActionKind.COMMENT)  # said something more: the verdict stands
+    assert await store.resting_state(ref) == PRState.DONE
+    await store.set_replies(ref, [Reply("alice", "Done?", "2026-11-21T10:00:00Z")])
+    assert await store.resting_state(ref) == PRState.NEEDS_YOU
+
+    mine = await store.upsert_pr(make_pr(2, authored=True))  # no verdict on your own
+    assert await store.resting_state(mine.ref) == PRState.NOT_REVIEWED
+    review = await store.start_review(mine.ref)
+    await store.finish_review(review.id, summary="Answered", findings=[])
+    assert await store.resting_state(mine.ref) == PRState.DONE
+
+
 async def test_migrating_a_v1_database_keeps_prs(tmp_path):
     path = tmp_path / "purr.db"
 

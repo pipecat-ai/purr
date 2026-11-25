@@ -606,6 +606,52 @@ class Store:
         pr = await self.get_pr(ref)
         return bool(pr and pr.replies) or bool(await self.pending_actions(ref))
 
+    async def decided(self, ref: PRRef) -> bool:
+        """Whether you gave your verdict on the PR as it is, through Purr: approved it or
+        requested changes, at its head."""
+        verdicts = [kind for kind in ActionKind if kind.verdict]
+        kinds = ", ".join("?" * len(verdicts))
+        row = await self._fetchone(
+            f"{self._ACTION_SELECT} WHERE prs.repo = ? AND prs.number = ?"
+            f" AND pending_actions.status = ? AND pending_actions.kind IN ({kinds})"
+            " AND pending_actions.posted_head = prs.head_sha LIMIT 1",
+            (ref.repo, ref.number, ActionStatus.EXECUTED, *verdicts),
+        )
+        return row is not None
+
+    async def done_without_verdict(self) -> list[PRRef]:
+        """Open PRs of others that are done with no verdict of yours ever posted through Purr:
+        done by the rule before (nothing left to decide), when they need one."""
+        verdicts = [kind for kind in ActionKind if kind.verdict]
+        kinds = ", ".join("?" * len(verdicts))
+        rows = await self._fetchall(
+            f"""
+            SELECT repo, number FROM prs
+            WHERE gh_state = ? AND state = ? AND NOT authored AND NOT EXISTS (
+                SELECT 1 FROM pending_actions
+                WHERE pr_id = prs.id AND status = ? AND kind IN ({kinds})
+            )
+            """,
+            (GHState.OPEN, PRState.DONE, ActionStatus.EXECUTED, *verdicts),
+        )
+        return [PRRef(row["repo"], row["number"]) for row in rows]
+
+    async def resting_state(self, ref: PRRef) -> PRState:
+        """Where the PR goes once no agent is at it. It needs you while something waits on
+        you (a proposal, replies), its review failed, or until you give your verdict on it as
+        it is (approve it or request changes: a comment isn't one); then it's done. Your own
+        PR has no verdict: it's done once nothing waits on you. Not reviewed here: not
+        reviewed."""
+        review = await self.latest_review(ref)
+        if await self.waits_on_you(ref) or (review and review.status == ReviewStatus.FAILED):
+            return PRState.NEEDS_YOU
+        if await self.decided(ref):
+            return PRState.DONE
+        if review is None:
+            return PRState.NOT_REVIEWED
+        pr = await self.get_pr(ref)
+        return PRState.DONE if pr and pr.authored else PRState.NEEDS_YOU
+
     async def running(self, ref: PRRef) -> bool:
         """An agent run on the PR is queued or under way."""
         row = await self._fetchone(
