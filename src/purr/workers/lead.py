@@ -18,6 +18,7 @@ from purr.messages import (
     Planned,
     PlanReviews,
     PRChanged,
+    PRListUpdated,
     Rereview,
     ReviewProgress,
     StartReview,
@@ -244,6 +245,7 @@ class LeadWorker(BaseWorker):
         for pr in prs:
             what = "re-review" if pr.ref in rereviews else "review"
             await self._progress(pr.ref, f"Planning the {what}")
+        fresh = await self._under_way(prs)
         plans = await self.plan(prs, requested=requested, rereviews=rereviews)
         if depth:
             plans = _at_depth(plans, depth)
@@ -254,9 +256,29 @@ class LeadWorker(BaseWorker):
             if error := await start(pr.ref, plans[pr.ref]):
                 errors[str(pr.ref)] = error
                 await self._progress(pr.ref, "")  # nothing's happening after all
+                if pr.ref in fresh:
+                    await self._not_under_way(pr.ref)
                 continue
             started.append(pr.ref)
         return started, errors
+
+    async def _under_way(self, prs: list[PR]) -> set[PRRef]:
+        """The PRs never reviewed are being reviewed from the moment their review is planned:
+        they show as reviewing straight away (not first as not reviewed, once you're assigned
+        them). Returns those."""
+        fresh = {pr.ref for pr in prs if pr.state == PRState.NOT_REVIEWED}
+        for ref in fresh:
+            await self._store.set_pr_state(ref, PRState.REVIEWING)
+        if fresh:
+            await self.send_bus_message(PRListUpdated(source=self.name))
+        return fresh
+
+    async def _not_under_way(self, ref: PRRef) -> None:
+        """A review that didn't start after all: not reviewed, as before (needing you, if
+        something came to wait on you meanwhile)."""
+        waits = await self._store.waits_on_you(ref)
+        await self._store.set_pr_state(ref, PRState.NEEDS_YOU if waits else PRState.NOT_REVIEWED)
+        await self.send_bus_message(PRListUpdated(source=self.name))
 
     async def _rereviewable(self, pr: PR) -> bool:
         """Whether a re-review would look at anything: the review the review worker continues."""

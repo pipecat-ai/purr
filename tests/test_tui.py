@@ -229,7 +229,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: "Approve" in decision(app) or "request changes" in decision(app))
         assert agent.runs[0]["pr"].number in (1, 2)
         reviewed = agent.runs[0]["pr"]
-        assert writer.assigned == [reviewed]
+        await until(pilot, lambda: writer.assigned == [reviewed])
         assert "Bash(gh pr diff)" in transcript(app)
         # a says what it'll do: here, and in the footer.
         assert "[a] request changes" in decision(app)
@@ -1338,6 +1338,35 @@ async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_pat
         assert focused(app) == "prompt" and not working.display
         await pilot.press("escape")
         assert focused(app) == "transcript"
+
+
+async def test_r_moves_the_pr_to_reviewing_at_once(tmp_path):
+    """While the lead plans its review, a PR from the pool is reviewing already: never in
+    "not reviewed" first, where being assigned it would put it. You're assigned once its
+    review starts."""
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    lead, writer = app.purr._lead, app.purr._writer
+    async with app.run_test(size=(140, 30)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+
+        def listed(heading: str) -> bool:
+            return any(heading in row for row in option_texts_of(app.main.repo))
+
+        assert listed("NOT REVIEWED (1)")
+        lead.gate = asyncio.Event()
+        await pilot.press("r")
+        await until(pilot, lambda: lead.notes)
+        await until(pilot, lambda: listed("REVIEWING (1)"))
+        assert not listed("NOT REVIEWED") and writer.assigned == []
+
+        lead.gate.set()
+        await until(pilot, lambda: writer.assigned == [PRRef("pipecat-ai/pipecat", 1)])
+        await until(pilot, lambda: "review: found 1 issue" in header(app))
+        assert not listed("NOT REVIEWED")
 
 
 async def test_your_own_prs_have_a_group_and_a_column(tmp_path):

@@ -102,18 +102,18 @@ class PRKeys(PurrView):
             return
         if self.session.pr and [pr.ref for pr in targets] == [self.session.pr.ref]:
             self.zoom_in_on_pr()  # to follow it; z or esc comes back
-        await self._take(targets)
         plural = "s" if len(targets) != 1 else ""
         self.notify(f"Planning {len(targets)} review{plural}")
-        # The lead plans them together (a few seconds), then they start.
+        # The lead plans them together (a few seconds), then they start. Meanwhile they
+        # show as reviewing; you're assigned the ones that started.
         try:
-            request = PlanReviews(prs=[pr.ref for pr in targets])
-            errors = (await self.purr_app.bus.request(request)).errors
+            planned = await self.purr_app.bus.request(PlanReviews(prs=[pr.ref for pr in targets]))
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
-        for error in errors.values():
+        for error in planned.errors.values():
             self.notify(error, severity="warning")
+        await self._take([pr for pr in targets if pr.ref in planned.started])
 
     async def _reviewed(self, pr: PR) -> bool:
         """Whether the PR's latest review finished: r starts it over."""

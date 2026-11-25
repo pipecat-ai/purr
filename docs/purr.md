@@ -96,7 +96,7 @@ Two things keep this cheap:
 | State | Meaning |
 |---|---|
 | **Not reviewed** | The pool: open PRs in watched repos that nobody is reviewing (no assignee). Also PRs assigned to you that haven't been reviewed yet (with auto-review off). |
-| **Reviewing** | A review session is running. |
+| **Reviewing** | A review session is running, or the lead is planning a first review. |
 | **Needs you** | Reviewed, and waiting on you: a proposal to decide, a question from the agent, or your verdict. Or someone answered you on GitHub since your last word there (see Replies). |
 | **Done** | You gave your verdict, and nothing else is pending. |
 
@@ -109,7 +109,7 @@ Done means you gave your verdict: you approved the PR or requested changes, at i
 Two ways in, same result:
 
 1. **From GitHub**: assign yourself to a PR on the web, in any repo (watched or not). The poller (every ~60 s, through `gh`) notices, and the lead plans its review and starts it (with `auto_review`, on by default). Polling, not webhooks, because the app runs locally.
-2. **From the app**: select a PR to read its description, files and CI first, then press `r` (or mark several and press `r`). The app dispatches review jobs **and assigns you on GitHub**, so teammates see you've taken it. On a PR someone else has, `r` asks first and adds you next to them.
+2. **From the app**: select a PR to read its description, files and CI first, then press `r` (or mark several and press `r`). The app dispatches review jobs **and assigns you on GitHub**, so teammates see you've taken it. On a PR someone else has, `r` asks first and adds you next to them. The PR is *Reviewing* from the moment the lead starts planning its review, and you're assigned once the review starts. Assigning you first would put the PR in *Not reviewed* for those seconds (it's yours, with no review yet), so the list would jump there and back. If the review doesn't start (`esc` while it's planned, say), the PR goes back to *Not reviewed*.
 
 Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs explicitly assigned to you (avoids burning tokens on PRs others handle). How deep each review goes, what it focuses on and what goes first is up to the lead (see The lead); both ways in go through it.
 
