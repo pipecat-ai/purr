@@ -24,6 +24,7 @@ import shutil
 import tarfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
@@ -35,11 +36,27 @@ class GitError(Exception):
     """A git command failed."""
 
 
+@dataclass(frozen=True)
+class Unpushed:
+    """What pushing a PR's worktree would send to its branch.
+
+    Attributes:
+        commits: ``(sha, subject)``, newest first: the commits made on top of the PR's
+            head or, rewritten (a rebase, say), all the branch's commits as they'd be.
+        replaces: Rewritten, how many of the branch's commits they replace; 0 on top.
+    """
+
+    commits: list[tuple[str, str]]
+    replaces: int = 0
+
+
 # The repo's default branch, as of the last checkout or sync.
 BASE_REF = "refs/purr/base"
 PR_REFS = "refs/purr/pull"  # refs/purr/pull/<number>: each open PR's head
 BASE_REFS = "refs/purr/heads"  # refs/purr/heads/<branch>: the branches PRs merge into
 _BASE_REFSPEC = f"+HEAD:{BASE_REF}"
+# In each worktree, its own: the PR's head Purr last put it on (or found it built on).
+_PUT_ON = "refs/worktree/purr/head"
 # Fail fast on a missing object instead of fetching it on its own (blobless clones).
 _NO_LAZY_FETCH = {"GIT_NO_LAZY_FETCH": "1"}
 # What git leaves in a worktree's git dir while something's halfway, and what aborts it
@@ -183,32 +200,43 @@ class GitRepos:
     async def _move_worktree(self, path: Path, ref: PRRef, head_sha: str) -> None:
         """Move the PR's existing worktree to ``head_sha``.
 
-        Already there, or on commits made there on top of it (not pushed yet):
-        leave it as it is, with whatever you (or the agent) changed in it, a merge
-        stopped on a conflict included. Moving on: a rebase, merge, cherry-pick or
-        revert left halfway is undone (it may have been all that was in the way, as
-        a rebase is), and the changes are stashed, not lost (commits made there stay
-        in the worktree's reflog).
+        The PR's head is where Purr put the worktree last, or what's checked out is it
+        or on top of it: leave the worktree as it is, with whatever you (or the agent)
+        did there: changes, commits, a rebase not pushed yet, a rebase or a merge
+        stopped on a conflict. The PR moved on: what git left halfway is undone (it may
+        have been all that was in the way), and the changes are stashed, not lost
+        (commits made there stay in the worktree's reflog).
         """
         current = (await self._git(path, "rev-parse", "HEAD")).strip()
-        if current == head_sha or await self._builds_on(path, head_sha):
+        put_on = await self._put_on(path)
+        if head_sha in (current, put_on) or await self._builds_on(path, head_sha):
+            if put_on != head_sha:
+                await self._git(path, "update-ref", _PUT_ON, head_sha)
             return
-        if await self._undo_unfinished(path):
+        if abort := await self._unfinished(path):
+            await self._git(path, *abort)  # back to where it began: maybe the head
             return await self._move_worktree(path, ref, head_sha)
         if await self.has_changes(path):
             message = f"purr: changes in {ref} at {current[:7]}, before {head_sha[:7]}"
             await self._stash(path, message)
         await self._git(path, "checkout", "--quiet", "--detach", "--force", head_sha)
+        await self._git(path, "update-ref", _PUT_ON, head_sha)
 
-    async def _undo_unfinished(self, path: Path) -> bool:
-        """Abort what git left halfway in a worktree (stopped on a conflict, or cut short):
-        back to where it began. Whether there was something to undo."""
+    async def _put_on(self, path: Path) -> str | None:
+        """The PR's head Purr last put the worktree on (None in one from before it kept it)."""
+        try:
+            return (await self._git(path, "rev-parse", "--verify", "--quiet", _PUT_ON)).strip()
+        except GitError:
+            return None
+
+    async def _unfinished(self, path: Path) -> tuple[str, ...] | None:
+        """What git left halfway in a worktree (stopped on a conflict, or cut short), as
+        the command that aborts it, if anything."""
         git_dir = Path((await self._git(path, "rev-parse", "--absolute-git-dir")).strip())
-        for left, command in _UNFINISHED:
+        for left, abort in _UNFINISHED:
             if (git_dir / left).exists():
-                await self._git(path, *command)
-                return True
-        return False
+                return abort
+        return None
 
     async def _stash(self, path: Path, message: str) -> None:
         """Stash a worktree's uncommitted changes, untracked files included."""
@@ -233,6 +261,7 @@ class GitRepos:
         await self._git(clone, "worktree", "prune")
         path.parent.mkdir(parents=True, exist_ok=True)
         await self._git(clone, "worktree", "add", "--quiet", "--detach", str(path), head_sha)
+        await self._git(path, "update-ref", _PUT_ON, head_sha)
 
     async def _synced(self, clone: Path, ref: PRRef, head_sha: str) -> bool:
         """Whether the clone has the PR at ``head_sha`` and a recent default branch."""
@@ -317,28 +346,55 @@ class GitRepos:
 
     # -- Pushing what was committed in a worktree ---------------------------------------
 
-    async def unpushed(self, ref: PRRef, onto: str) -> list[tuple[str, str]]:
-        """The commits made in the PR's worktree on top of ``onto`` (the PR's head), newest
-        first: ``(sha, subject)``. A merge (of main, say) is one: what it brings is on its
-        other side's branch already. Raises GitError if there's no worktree, it has
-        uncommitted changes, or what's checked out doesn't build on ``onto``."""
+    async def unpushed(self, ref: PRRef, onto: str, base: str = "") -> Unpushed:
+        """What pushing the PR's worktree would send to its branch, at ``onto`` (the PR's
+        head) now: the commits made there on top of it or, rewritten (a rebase, say), the
+        branch as it'd be, from where it leaves ``base`` (the branch it merges into; "" for
+        the default one), fetched first, as a rebase is likely onto its latest. A merge (of
+        main, say) is one commit: what it brings is main's already. Raises GitError if
+        there's no worktree, it has uncommitted changes, or a rebase is halfway."""
         path = self.worktree_path(ref)
         if not (path / ".git").exists():
             raise GitError("There's no worktree to push from.")
+        if abort := await self._unfinished(path):
+            raise GitError(
+                f"A {abort[0]} is halfway in the worktree: finish it, or abort it "
+                f"(git {' '.join(abort)}), first."
+            )
         if await self.has_changes(path):
             raise GitError("The worktree has uncommitted changes: commit them first.")
-        if not await self._builds_on(path, onto):
-            raise GitError(
-                f"What's checked out doesn't build on the PR's head ({onto[:7]}): only new "
-                "commits on top of it can be pushed."
-            )
-        log = await self._git(path, "log", "--first-parent", "--format=%H %s", f"{onto}..HEAD")
+        if await self._builds_on(path, onto):
+            return Unpushed(await self._log(path, onto, "HEAD"))
+        since = await self._fetch_base(ref.repo, base)
+        replaced = await self._log(path, since, onto)
+        return Unpushed(await self._log(path, since, "HEAD"), replaces=len(replaced))
+
+    async def _log(self, path: Path, since: str, until: str) -> list[tuple[str, str]]:
+        """The commits from ``since`` to ``until``, newest first: ``(sha, subject)``. A merge
+        is one (``--first-parent``)."""
+        log = await self._git(path, "log", "--first-parent", "--format=%H %s", f"{since}..{until}")
         commits = (line.partition(" ") for line in log.splitlines())
         return [(sha, subject) for sha, _, subject in commits]
 
+    async def _fetch_base(self, repo: str, base: str) -> str:
+        """The branch a PR merges into (``base``, or the default one), fetched now: its ref.
+        If that fails, the one fetched last."""
+        ref = f"{BASE_REFS}/{base}" if base else BASE_REF
+        spec = f"+refs/heads/{base}:{ref}" if base else _BASE_REFSPEC
+        clone = self.clone_path(repo)
+        async with self._lock(repo):
+            try:
+                await self._git(clone, "fetch", "--quiet", "--no-tags", "origin", spec)
+            except GitError as e:
+                if not await self._has_ref(clone, ref):
+                    raise
+                logger.warning(f"Couldn't fetch {repo}'s {base or 'default branch'}: {e}")
+        return ref
+
     async def push(self, ref: PRRef, commit: str, *, repo: str, branch: str, onto: str) -> None:
         """Push ``commit`` to ``branch`` in ``repo`` (the PR's head), only while that branch
-        is still at ``onto`` (a lease: nobody pushed since). Raises GitError if refused."""
+        is still at ``onto`` (a lease: nobody pushed since). On top of it, or in its place
+        (a rebase): the lease lets git replace the branch. Raises GitError if refused."""
         clone = self.clone_path(ref.repo)
         async with self._lock(ref.repo):
             origin = (await self._git(clone, "remote", "get-url", "origin")).strip()

@@ -40,8 +40,9 @@ PROPOSE_ACTION_SCHEMA = {
             "enum": ["request_changes", "approve", "comment", "push"],
             "description": (
                 "The GitHub review to submit if the user approves. Or `push`, only when "
-                "the user asks for one: the commits you made here go to the PR's branch "
-                "(Purr describes it; the other fields don't apply)."
+                "the user asks for one: the commits you made here go to the PR's branch, "
+                "or replace its commits if you rebased it (Purr describes it; the other "
+                "fields don't apply)."
             ),
         },
         "description": {

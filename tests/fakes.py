@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+from purr.git import Unpushed
 from purr.github import RemotePR, Snapshot, Standing
 from purr.models import ActionKind, ActionStatus, Verdict
 
@@ -150,11 +151,12 @@ class FakeRepos:
     async def new_commits(self, pr, since):
         return getattr(self, "commits", None)
 
-    async def unpushed(self, ref, onto):
-        """From ``commits_made``: [(sha, subject)], newest first; ``unpushed_error`` raises."""
+    async def unpushed(self, ref, onto, base=""):
+        """From ``commits_made``: [(sha, subject)], newest first, replacing ``replaces`` of
+        the branch's (a rebase); ``unpushed_error`` raises."""
         if isinstance(error := getattr(self, "unpushed_error", None), Exception):
             raise error
-        return list(getattr(self, "commits_made", []))
+        return Unpushed(list(getattr(self, "commits_made", [])), getattr(self, "replaces", 0))
 
     async def push(self, ref, commit, *, repo, branch, onto):
         """Records ``(ref, commit, repo, branch, onto)`` in ``pushed``; ``push_error`` raises.

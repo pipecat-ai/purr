@@ -1152,6 +1152,13 @@ async def test_the_agent_proposes_pushing_its_commits(make):
 
     s.repos.commits_made.insert(0, ("f00d" * 10, "And a test"))
     assert await proposed() == "Push 2 commits, up to f00df00, to eric7h:fix/units"
+    # Rewritten (a rebase): the push replaces the branch's commits, and says so.
+    s.repos.replaces = 1
+    assert await proposed() == (
+        "Force-push 2 commits, up to f00df00, to eric7h:fix/units, replacing its 1 commit"
+    )
+    assert (await s.store.pending_actions(REF))[0].payload["replaces"] == 1
+    s.repos.replaces = 0
     s.repos.unpushed_error = GitError("The worktree has uncommitted changes: commit them first.")
     assert "uncommitted" in await proposed()
     s.repos.unpushed_error, s.repos.commits_made = None, []

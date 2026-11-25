@@ -86,7 +86,8 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 
 When you ask the agent to change something and push it, it commits in the PR's worktree and
 proposes the push: `a` pushes it to the PR's branch (a contributor's fork too, if they allow
-edits by maintainers).
+edits by maintainers). If you ask it to rebase the PR, `a` force-pushes it, as long as nobody
+pushed to it since.
 
 When the agent asks before doing something risky, `a` allows it, `A` always, `x` says no (or
 write what to do instead). When someone replies to you on GitHub, the PR is back in

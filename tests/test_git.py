@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from purr.git import GitError, GitRepos, push_url
+from purr.git import GitError, GitRepos, Unpushed, push_url
 from purr.models import PR, PRRef
 
 
@@ -334,8 +334,9 @@ def stopped_on_a_conflict(path: Path, *args: str) -> None:
 
 
 async def test_a_worktree_left_halfway_through_a_rebase_or_a_merge(tmp_path, upstream):
-    """The agent stopped while a rebase or a merge was stopped on a conflict: the next turn
-    still gets a worktree (it once failed with "could not write index", turn after turn)."""
+    """The agent stopped while a rebase or a merge was stopped on a conflict: it's there to
+    finish while the PR's head stays, and undone once it moves on (it once failed with
+    "could not write index", turn after turn)."""
     # main changes the line the PR changes: rebasing the PR on it, or merging it, conflicts.
     (upstream / "a.txt").write_text("main\n")
     git(upstream, "commit", "-qam", "main")
@@ -344,19 +345,26 @@ async def test_a_worktree_left_halfway_through_a_rebase_or_a_merge(tmp_path, ups
     head = git(upstream, "rev-parse", "refs/pull/7/head")
     path = await repos.checkout(ref, head)
 
-    # A rebase halfway isn't on top of the PR's head: it's undone, back to the head.
+    # A rebase halfway, on the same head: left for the agent to finish.
     stopped_on_a_conflict(path, "rebase", "refs/purr/base")
+    await repos.checkout(ref, head)
+    assert "UU a.txt" in git(path, "status", "--porcelain")
+    with pytest.raises(GitError, match="A rebase is halfway"):
+        await repos.unpushed(ref, head)
+
+    # In a worktree from before Purr kept which head it put it on, a rebase halfway isn't
+    # on top of the head: it's undone, back to the head.
+    git(path, "update-ref", "-d", "refs/worktree/purr/head")
     await repos.checkout(ref, head)
     assert git(path, "rev-parse", "HEAD") == head and git(path, "status", "--porcelain") == ""
     assert (path / "a.txt").read_text() == "two\n"
 
-    # A merge halfway is on top of it: it's left for the agent to finish (a merge commit
-    # can be pushed).
+    # A merge halfway, on the same head: left too.
     stopped_on_a_conflict(path, "merge", "--no-edit", "refs/purr/base")
     await repos.checkout(ref, head)
     assert "UU a.txt" in git(path, "status", "--porcelain")
 
-    # Unless the PR has new commits: then it's undone too, and the worktree moves on.
+    # The PR has new commits: it's undone, and the worktree moves on.
     git(upstream, "checkout", "-q", "feature")
     (upstream / "b.txt").write_text("new\n")
     git(upstream, "add", "b.txt")
@@ -368,6 +376,39 @@ async def test_a_worktree_left_halfway_through_a_rebase_or_a_merge(tmp_path, ups
     assert git(path, "rev-parse", "HEAD") == new_head and git(path, "status", "--porcelain") == ""
 
 
+async def test_pushing_a_rebased_pr(tmp_path, upstream):
+    """Rebased onto main's latest, the PR's branch is replaced, its commits as they are now:
+    only while nobody pushed to it since. The worktree keeps the rebase meanwhile."""
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    ref = PRRef("a/b", 7)
+    head = git(upstream, "rev-parse", "feature")
+    path = await repos.checkout(ref, head)
+    # main moves on after the turn began, when Purr fetched it last: the agent fetches it,
+    # and rebases on it.
+    (upstream / "main.txt").write_text("main\n")
+    git(upstream, "add", "main.txt")
+    git(upstream, "commit", "-qm", "main moved")
+    me = ("-c", "user.name=T", "-c", "user.email=t@example.com")
+    git(path, "fetch", "-q", str(upstream), "main")
+    git(path, *me, "rebase", "-q", "FETCH_HEAD")
+    rebased = git(path, "rev-parse", "HEAD")
+    assert rebased != head
+
+    # What's pushed: the PR's commit as it is now (not main's), in place of the one it had.
+    assert await repos.unpushed(ref, head) == Unpushed([(rebased, "two")], replaces=1)
+    # The next turn, on the same head, keeps the rebase.
+    await repos.checkout(ref, head)
+    assert git(path, "rev-parse", "HEAD") == rebased
+
+    # Someone pushed to the branch since: the lease refuses.
+    git(upstream, "update-ref", "refs/heads/feature", "main")
+    with pytest.raises(GitError):
+        await repos.push(ref, rebased, repo="a/b", branch="feature", onto=head)
+    git(upstream, "update-ref", "refs/heads/feature", head)
+    await repos.push(ref, rebased, repo="a/b", branch="feature", onto=head)
+    assert git(upstream, "rev-parse", "feature") == rebased
+
+
 async def test_pushing_the_commits_made_in_a_worktree(tmp_path, upstream):
     # A blobless clone, as gh makes them (over file://, for the filter to apply).
     git(upstream, "config", "uploadpack.allowFilter", "true")
@@ -377,23 +418,22 @@ async def test_pushing_the_commits_made_in_a_worktree(tmp_path, upstream):
     ref = PRRef("a/b", 7)
     head = git(upstream, "rev-parse", "feature")
     path = await repos.checkout(ref, head)
-    assert await repos.unpushed(ref, head) == []
+    assert await repos.unpushed(ref, head) == Unpushed([])
 
     (path / "a.txt").write_text("fixed\n")
     with pytest.raises(GitError, match="uncommitted"):
         await repos.unpushed(ref, head)
     git(path, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "Fix it")
     fix = git(path, "rev-parse", "HEAD")
-    assert await repos.unpushed(ref, head) == [(fix, "Fix it")]
+    assert await repos.unpushed(ref, head) == Unpushed([(fix, "Fix it")])
     # The next turn (asking it to push) checks out the same head: the commit stays.
     await repos.checkout(ref, head)
     assert git(path, "rev-parse", "HEAD") == fix
 
-    # Not on top of the PR's head: nothing to push from there.
+    # On main, not the PR: nothing of the PR's to push, in place of its commit.
     main = git(upstream, "rev-parse", "main")
     git(path, "checkout", "-q", "--detach", main)
-    with pytest.raises(GitError, match="doesn't build on"):
-        await repos.unpushed(ref, head)
+    assert await repos.unpushed(ref, head) == Unpushed([], replaces=1)
     git(path, "checkout", "-q", "--detach", fix)
 
     # Someone pushed to the branch since: the lease refuses.
@@ -421,7 +461,7 @@ async def test_merging_main_into_a_pr_is_one_commit_to_push(tmp_path, upstream):
     git(path, *me, "commit", "-qam", "Fix it")
     git(path, *me, "merge", "-q", "--no-edit", "-m", "Merge main", "refs/purr/base")
     merge, fix = git(path, "rev-parse", "HEAD", "HEAD^1").split()
-    assert await repos.unpushed(ref, head) == [(merge, "Merge main"), (fix, "Fix it")]
+    assert await repos.unpushed(ref, head) == Unpushed([(merge, "Merge main"), (fix, "Fix it")])
     await repos.push(ref, merge, repo="a/b", branch="feature", onto=head)
     assert git(upstream, "rev-parse", "feature") == merge
 
