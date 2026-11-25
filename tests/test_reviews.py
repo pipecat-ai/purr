@@ -460,6 +460,24 @@ async def test_esc_while_the_lead_plans_keeps_the_review_from_starting(make):
     await eventually(lambda: s.client.of(ReviewFinished))
 
 
+async def test_a_first_review_is_under_way_while_the_lead_plans_it(make):
+    """Reviewing from the moment its review is planned, so it never shows as not reviewed
+    in between (once you're assigned it, say); not reviewed again if it doesn't start."""
+    s = await make(auto_review=False)
+    await s.store.upsert_pr(make_pr())
+    s.lead.gate = asyncio.Event()
+    planning = asyncio.create_task(s.client.request(PlanReviews(prs=[REF])))
+    await eventually(lambda: s.lead.notes)
+    assert await s.state() == PRState.REVIEWING
+
+    await s.client.request(StopAgent(pr=REF))  # esc
+    s.lead.gate.set()
+    planned = await planning
+    assert "stopped" in planned.errors[str(REF)]
+    assert await s.state() == PRState.NOT_REVIEWED
+    assert s.agent.runs == []
+
+
 async def test_the_agent_waits_for_permission(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
