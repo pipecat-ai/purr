@@ -234,6 +234,10 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         # a says what it'll do: here, and in the footer.
         assert "[a] request changes" in decision(app)
         await until(pilot, lambda: "Request changes" in footer(app))
+        # In the list, it needs you (⚠), and its note says what for.
+        needs = "⚠", "Request changes?"
+        rows = lambda: option_texts_of(app.main.repo)  # noqa: E731 (zoomed: not drawn)
+        await until(pilot, lambda: any(all(n in t for n in needs) for t in rows()))
         # What it found, and how deep it went (the plan shows only while it's under way).
         await until(pilot, lambda: "review: found 1 issue" in header(app))
         assert "Full review: found 1 issue" in header(app) and "Planned" not in header(app)
