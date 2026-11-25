@@ -102,7 +102,7 @@ Two things keep this cheap:
 
 Done means you gave your verdict through Purr: you approved the PR or requested changes, at its current head (or merged it, and it's gone). Nothing else counts. A posted comment, a dismissed proposal or a follow-up that ends without proposing anything leaves the PR in Needs you, since you haven't said where it stands. A verdict is of the commit it was given at: after new commits, the re-review brings the PR back to Needs you, and you give it again. Your own PRs get no verdict (GitHub doesn't let you approve them): one is done once nothing waits on you. The rule is `Store.resting_state`, which both the review and GitHub workers settle a PR with once nothing's under way on it. PRs left done without a verdict by the rule before (nothing left to decide was enough) need you again once Purr starts.
 
-"Needs you" is pinned to the top of the list. **Done** comes before the pool of unreviewed PRs (hundreds, in a big repo), so what you finished lately is at hand: the latest 5, by when they got there (`prs.state_at`, which moves only when the state does), with `/` finding the others; an older one you go to (an alert, `ctrl+p`, a search) shows too while it's selected. PRs someone else is assigned to aren't a state of their own: they're grouped as **Others reviewing**, before Done, with who has them, so you can see what's under way and taken. PRs asking for your review by name (see Triggers) aren't a state either: not reviewed yet, they're grouped as **Review requested**, after Reviewing, apart from the pool.
+"Needs you" is pinned to the top of the list. **Done** comes after what's yours or asked of you (Your PRs, Up next, Review requested) and before what others are reviewing and the pool of unreviewed PRs (hundreds, in a big repo), so what you finished lately is at hand: the latest 5, by when they got there (`prs.state_at`, which moves only when the state does), with `/` finding the others; an older one you go to (an alert, `ctrl+p`, a search) shows too while it's selected. PRs someone else is assigned to aren't a state of their own: they're grouped as **Others reviewing**, after Done, with who has them, so you can see what's under way and taken. PRs asking for your review by name (see Triggers) aren't a state either: not reviewed yet, they're grouped as **Review requested**, after Reviewing, apart from the pool.
 
 ## Triggers
 
@@ -412,12 +412,12 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 │ ✓ DONE (1)                                             │ 3 files changed  d full diff                     │
 │ ✓ #2833   Frame cleanup       you        erin       6d │ src/pipecat/bus/bus.py                +380 −12   │
 │                                                        │ …                                                │
-│ ○ NOT REVIEWED (2)                                     │ ⏺ Clean refactor, tests pass. Concerns:          │
-│ ○ #2861   Docs typo                      carol      2h │   1. Race in bus.subscribe() on shutdown         │
-│ ○ #2855   Evals report                   dave       5h │                                                  │
-│                                                        │ ┌──────────────────────────────────────────────┐ │
-│ ◌ OTHERS REVIEWING (1)                                 │ │ Post 3 comments and request changes?          │ │
-│ ◌ #2790   Krisp filter        grace      frank      2w │ │ [a] approve   [x] dismiss                     │ │
+│ ◌ OTHERS REVIEWING (1)                                 │ ⏺ Clean refactor, tests pass. Concerns:          │
+│ ◌ #2790   Krisp filter        grace      frank      2w │   1. Race in bus.subscribe() on shutdown         │
+│                                                        │                                                  │
+│ ○ NOT REVIEWED (2)                                     │ ┌──────────────────────────────────────────────┐ │
+│ ○ #2861   Docs typo                      carol      2h │ │ Post 3 comments and request changes?          │ │
+│ ○ #2855   Evals report                   dave       5h │ │ [a] approve   [x] dismiss                     │ │
 │                                                        │ └──────────────────────────────────────────────┘ │
 │                                                        │ > is the race reachable from user code?          │
 ├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤
@@ -426,7 +426,7 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 ```
 
 - **Header**: where you are (`Purr › 2 pipecat-ai/pipecat`) and the latest alert from other repos.
-- **Left pane**: the repo's PRs grouped (Needs you, Reviewing, Your PRs, Up next, Review requested, Others reviewing, Done, Not reviewed), newest first within each group (Done: latest done first). Columns: number (in its own color), title (bright, as under the cursor; bold when there's news), who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`), a space off the right edge. A thin dim line goes between PRs; each group's heading is its name and count followed by a double line in its color to the edge (`▾ ⚠ NEEDS YOU (1) ════`), two blank lines after the group before it. The cursor stops on headings, as on the files in the diff: `tab` (or `enter`, or a click) on one folds its group to that line (`▸`) and opens it again, for as long as Purr runs. While searching, every match shows, folded or not; going to a PR in a folded group (an alert, `ctrl+p`) opens it. Home's two groups (watched, not watched) have the same headings, without folding (`tui/lists.py`).
+- **Left pane**: the repo's PRs grouped (Needs you, Reviewing, Your PRs, Up next, Review requested, Done, Others reviewing, Not reviewed), newest first within each group (Done: latest done first). Columns: number (in its own color), title (bright, as under the cursor; bold when there's news), who's assigned (`you`, a login, `+1` for more), author, and how long ago it was opened (`2h`, `3d`, `5mo`), a space off the right edge. A thin dim line goes between PRs; each group's heading is its name and count followed by a double line in its color to the edge (`▾ ⚠ NEEDS YOU (1) ════`), two blank lines after the group before it. The cursor stops on headings, as on the files in the diff: `tab` (or `enter`, or a click) on one folds its group to that line (`▸`) and opens it again, for as long as Purr runs. While searching, every match shows, folded or not; going to a PR in a folded group (an alert, `ctrl+p`) opens it. Home's two groups (watched, not watched) have the same headings, without folding (`tui/lists.py`).
 - **Right pane**: the selected PR, top to bottom:
   - **Header**, which stays put: its title, then `by alice · opened 3d ago · main ← fix-bus · +22 −4 · ✓ checks pass · labels`, then where its review stands.
   - **What scrolls**: the PR's description, then where it changes things, then the session with the agent (Claude Code style, see PR session). A PR nobody has reviewed yet opens at its description, so you can decide whether to take it; a reviewed one opens at the end of the conversation.

@@ -29,20 +29,20 @@ OTHERS = "others"
 REQUESTED = "requested"
 YOURS = "yours"
 UP_NEXT = "upnext"
-# Done comes before the pool of unreviewed PRs (hundreds, in a big repo), so
-# the ones you finished lately are at hand: the latest few, search finds the rest.
-# Before both, what's under way: your own PRs (when someone comments on one, it
-# needs you), what's up next (the pool's PRs worth looking at next, best first),
-# PRs asking for your review (someone's waiting on you), then those others are
-# reviewing.
+# What's yours first: what needs you, what's under way, your own PRs (when someone
+# comments on one, it needs you), what's up next (the pool's PRs worth looking at
+# next, best first), PRs asking for your review (someone's waiting on you), and
+# what you finished lately (the latest few; search finds the rest). Then what
+# others are reviewing, and last the pool of unreviewed PRs (hundreds, in a big
+# repo).
 GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
     (YOURS, "◆", "YOUR PRS", "bold blue"),
     (UP_NEXT, "➜", "UP NEXT", "bold green"),
     (REQUESTED, "◇", "REVIEW REQUESTED", "bold magenta"),
-    (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
     (PRState.DONE, "✓", "DONE", "bold green"),
+    (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
     (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
 ]
 DONE_SHOWN = 5
