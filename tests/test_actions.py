@@ -8,6 +8,7 @@ from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
 from purr.actions import ActionError, execute
+from purr.git import GitError
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, request
 from purr.messages import (
     ApproveAction,
@@ -42,7 +43,7 @@ from purr.models import (
 )
 from purr.store import Store
 from purr.workers import GitHubWorker
-from tests.fakes import FakeGitHub, FakeWriter
+from tests.fakes import FakeGitHub, FakeRepos, FakeWriter
 
 REF = PRRef("pipecat-ai/pipecat", 2841)
 COMMENTS = [{"path": "bus.py", "line": 42, "body": "Race here"}]
@@ -426,3 +427,51 @@ async def test_a_merge_github_refuses_says_why(approved):
     with pytest.raises(Failed, match="Required status check"):
         await request(client, MergePR(pr=REF, seen=[]), timeout=5)
     assert (await store.get_pr(REF)).gh_state == GHState.OPEN
+
+
+async def test_approving_a_push(tmp_path):
+    async with Store.connect(":memory:") as store:
+        await store.upsert_pr(
+            PR(repo=REF.repo, number=REF.number, title="Fix units", author="eric7h", url="u",
+               head_sha="abc", updated_at="2026-11-20T10:00:00Z")
+        )  # fmt: skip
+        review = await store.start_review(REF)
+        await store.finish_review(review.id, summary="Fine", findings=[])
+        await store.set_pr_state(REF, PRState.NEEDS_YOU)
+        payload = {
+            "commit": "e0b9581",
+            "onto": "abc",
+            "repo": "eric7h/pipecat",
+            "branch": "fix/units",
+            "commits": [{"sha": "e0b9581", "subject": "Fix"}],
+        }
+        push = await store.add_pending_action(
+            REF, kind=ActionKind.PUSH, description="Push e0b9581 to eric7h:fix/units",
+            payload=payload,
+        )  # fmt: skip
+        repos, writer = FakeRepos(tmp_path), FakeWriter()
+        worker = GitHubWorker(
+            store=store, github=FakeGitHub(), writer=writer, repos=repos, interval=3600
+        )
+        client = BaseWorker("client")
+        runner = WorkerRunner(handle_sigint=False)
+        await runner.add_workers(worker, client)
+        task = asyncio.create_task(runner.run(auto_end=False))
+        try:
+            # Refused (someone pushed since): back to pending, to try again or dismiss.
+            repos.push_error = GitError("stale info")
+            with pytest.raises(Failed, match="Couldn't push: stale info"):
+                await request(client, ApproveAction(action_id=push.id), timeout=5)
+            assert (await store.get_pending_action(push.id)).status == ActionStatus.PENDING
+
+            repos.push_error = None
+            posted = await request(client, ApproveAction(action_id=push.id), timeout=5)
+            assert repos.pushed == [(REF, "e0b9581", "eric7h/pipecat", "fix/units", "abc")]
+            assert posted.url.endswith("/pull/2841/commits/e0b9581")
+            assert writer.reviews == []  # nothing posted
+            assert (await store.get_pending_action(push.id)).status == ActionStatus.EXECUTED
+            # A push is no verdict: it still needs you.
+            assert (await store.get_pr(REF)).state == PRState.NEEDS_YOU
+        finally:
+            await runner.end()
+            await asyncio.wait_for(task, 5)

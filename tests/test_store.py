@@ -210,6 +210,31 @@ async def test_migrating_a_v1_database_keeps_prs(tmp_path):
         assert pr is not None and pr.gh_state == GHState.OPEN
 
 
+async def test_actions_survive_the_migration_that_allows_pushes(tmp_path):
+    path = tmp_path / "purr.db"
+    before = len(MIGRATIONS) - 1  # the one before pushes
+    async with aiosqlite.connect(path) as db:
+        script = "\n".join(MIGRATIONS[:before])
+        await db.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {before};\nCOMMIT;")
+        await db.execute(
+            "INSERT INTO prs (repo, number, title, author, url, head_sha, updated_at)"
+            " VALUES ('a/b', 1, 't', 'x', 'u', 's', '2026-11-20T10:00:00Z')"
+        )
+        await db.execute(
+            "INSERT INTO pending_actions"
+            " (id, pr_id, kind, description, payload, status, created_at, resolved_at, posted_head)"
+            " VALUES ('x1', 1, 'approve', 'Approve', '{}', 'executed', 't', 't', 's')"
+        )
+        await db.commit()
+
+    async with Store.connect(path) as store:
+        assert await store.schema_version() == len(MIGRATIONS)
+        ref = PRRef("a/b", 1)
+        assert await store.approved_head(ref) == "s"
+        push = await store.add_pending_action(ref, kind=ActionKind.PUSH, description="Push")
+        assert [a.kind for a in await store.pending_actions(ref)] == [push.kind]
+
+
 async def test_repos_are_listed_alphabetically_ignoring_case(store):
     for name in ["pipecat-ai/whisker", "daily-co/daily-x", "Pipecat-ai/pipecat"]:
         await store.add_repo(name)

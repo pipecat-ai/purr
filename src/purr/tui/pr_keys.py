@@ -24,7 +24,7 @@ from purr.messages import (
     PostComments,
     StopAgent,
 )
-from purr.models import PR, CheckState, PRRef, ReviewStatus
+from purr.models import PR, ActionKind, CheckState, PRRef, ReviewStatus
 from purr.review.agent import claude_code_command
 from purr.tui.dialogs import AlwaysScreen, ConfirmScreen, NoticeScreen
 from purr.tui.session import PRSession, SessionState
@@ -161,23 +161,26 @@ class PRKeys(PurrView):
             await self._answer(state, True)
             return
         pr = self.selected_pr()
-        if not pr or not (job := await self._to_post(pr)):
+        if not pr or not (to_do := await self._to_post(pr)):
             return
+        job, done = to_do
         try:
             posted = await self.purr_app.bus.request(job)
         except PurrError as e:
             self.notify(str(e), severity="error")
             return
-        self.notify(f"Posted: {posted.url}" if posted.url else "Posted")
+        self.notify(f"{done}: {posted.url}" if posted.url else done)
         for warning in posted.warnings:
             self.notify(warning, severity="warning")
 
-    async def _to_post(self, pr: PR) -> ApproveAction | PostComments | None:
-        """What a: the agent's proposal (with your comments), or your comments on their own."""
+    async def _to_post(self, pr: PR) -> tuple[ApproveAction | PostComments, str] | None:
+        """What a does, and what it says once done: the agent's proposal (a review, with your
+        comments, or a push), or your comments on their own."""
         store = self.purr_app.purr.store
         if actions := await store.pending_actions(pr.ref):
-            return ApproveAction(action_id=actions[0].id)
-        return PostComments(pr=pr.ref) if await store.draft_comments(pr.ref) else None
+            done = "Pushed" if actions[0].kind == ActionKind.PUSH else "Posted"
+            return ApproveAction(action_id=actions[0].id), done
+        return (PostComments(pr=pr.ref), "Posted") if await store.draft_comments(pr.ref) else None
 
     @work(group="keys")
     async def action_dismiss(self) -> None:

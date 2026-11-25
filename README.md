@@ -79,6 +79,10 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
 5. **Decide**: `a` posts the agent's review, `x` dismisses it (in the diff, `x` drops one of
    its comments). Once you've approved, `m` merges.
 
+When you ask the agent to change something and push it, it commits in the PR's worktree and
+proposes the push: `a` pushes it to the PR's branch (a contributor's fork too, if they allow
+edits by maintainers).
+
 When the agent asks before doing something risky, `a` allows it, `A` always, `x` says no (or
 write what to do instead). When someone replies to you on GitHub, the PR is back in
 *Needs you*: answer, or `x` if it needs no reply. When someone comments on one of your own PRs,

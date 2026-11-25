@@ -10,7 +10,7 @@ from pathlib import Path
 from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
-from purr.git import GitRepos
+from purr.git import GitError, GitRepos
 from purr.github import GitHub, GitHubError
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, PurrError, handles
 from purr.messages import (
@@ -54,6 +54,7 @@ from purr.models import (
     Finding,
     GHState,
     PendingAction,
+    PRHead,
     Priority,
     PRRef,
     PRState,
@@ -65,6 +66,7 @@ from purr.review.agent import (
     RESUME_PROMPT,
     AgentResult,
     PermissionAnswer,
+    Refused,
     ReviewAgent,
     ReviewCallbacks,
     answer_prompt,
@@ -885,7 +887,10 @@ class ReviewWorker(BaseWorker):
     async def _on_propose(
         self, ref: PRRef, kind: ActionKind, description: str, payload: dict
     ) -> str:
-        """Keep what the agent proposes posting, for you to approve; returns its action ID."""
+        """Keep what the agent proposes posting (or pushing), for you to approve; returns its
+        action ID. Raises Refused if it can't be done."""
+        if kind == ActionKind.PUSH:
+            description, payload = await self._push_proposal(ref)
         await self._dismiss_pending(ref)  # a new recommendation replaces the old one
         action = await self._store.add_pending_action(
             ref, kind=kind, description=description, payload=payload
@@ -896,6 +901,55 @@ class ReviewWorker(BaseWorker):
             )
         )
         return action.id
+
+    async def _push_proposal(self, ref: PRRef) -> tuple[str, dict]:
+        """What pushing the commits made in the PR's worktree would do: which, to which
+        branch, on top of the head Purr knows. Raises Refused, saying why, if it can't be."""
+        pr = await self._store.get_pr(ref)
+        head = await self._pr_head(ref)
+        if pr is None or head.sha != pr.head_sha:
+            raise Refused(
+                f"The PR has new commits on GitHub (its head is {head.sha[:7]}): Purr only "
+                "pushes on top of the head it knows. Wait for Purr to see them, then commit "
+                "on top of them."
+            )
+        try:
+            commits = await self._repos.unpushed(ref, pr.head_sha)
+        except GitError as e:
+            raise Refused(str(e)) from e
+        if not commits:
+            raise Refused("There's nothing to push: commit your changes here first.")
+        tip = commits[0][0]
+        what = tip[:7] if len(commits) == 1 else f"{len(commits)} commits, up to {tip[:7]},"
+        assert head.repo is not None
+        where = f"{head.repo.partition('/')[0]}:{head.branch}"
+        payload = {
+            "commit": tip,
+            "onto": pr.head_sha,
+            "repo": head.repo,
+            "branch": head.branch,
+            "commits": [{"sha": sha, "subject": subject} for sha, subject in commits],
+        }
+        return f"Push {what} to {where}", payload
+
+    async def _pr_head(self, ref: PRRef) -> PRHead:
+        """Where the PR's commits live, if you can push there. Raises Refused if not."""
+        if self._github is None:
+            raise Refused("Purr can't read the PR's branch from GitHub here.")
+        try:
+            head = await self._github.pr_head(ref)
+        except GitHubError as e:
+            raise Refused(f"Couldn't read the PR's branch from GitHub: {e}") from e
+        if head is None or head.repo is None:
+            raise Refused("The PR's branch is gone (its fork was deleted?): nowhere to push.")
+        if head.repo.lower() != ref.repo.lower() and not head.maintainer_can_modify:
+            owner = head.repo.partition("/")[0].lower()
+            if owner != (await self._github.viewer_login()).lower():
+                raise Refused(
+                    "The author doesn't allow edits by maintainers, so their branch can't be "
+                    "pushed to. Suggest the change in a comment instead."
+                )
+        return head
 
     async def _on_ask(
         self, run: _Run, tool: str, tool_input: dict, reason: str, rules: list[str] = ()

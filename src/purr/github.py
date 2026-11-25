@@ -25,6 +25,7 @@ from purr.models import (
     PastPR,
     PRComment,
     PRDetails,
+    PRHead,
     PRRef,
     Reply,
 )
@@ -514,6 +515,19 @@ class GitHub:
         """Where the PR stands for merging, now; None if GitHub doesn't show it."""
         found = await self._pull_requests([ref], _merge_fields(ref.number))
         return _merge_check(found[ref]) if ref in found else None
+
+    async def pr_head(self, ref: PRRef) -> PRHead | None:
+        """Where the PR's commits live, now; None if GitHub doesn't show it."""
+        fields = "headRefName headRefOid maintainerCanModify headRepository { nameWithOwner }"
+        found = (await self._pull_requests([ref], fields)).get(ref)
+        if found is None:
+            return None
+        return PRHead(
+            repo=(found.get("headRepository") or {}).get("nameWithOwner"),
+            branch=found["headRefName"],
+            sha=found["headRefOid"],
+            maintainer_can_modify=bool(found.get("maintainerCanModify")),
+        )
 
     async def replies(self, refs: Iterable[PRRef]) -> dict[PRRef, list[Reply]]:
         """What others said to you on these PRs since your last word (see :func:`replies_to`).

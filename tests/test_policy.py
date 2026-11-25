@@ -2,7 +2,7 @@
 
 import pytest
 
-from purr.review.policy import GITHUB_DENY_RULES, github_write
+from purr.review.policy import GITHUB_DENY_RULES, GITHUB_WRITE_REASON, github_write
 
 
 @pytest.mark.parametrize(
@@ -42,6 +42,12 @@ def test_github_writes_and_your_token_are_refused(command):
 )
 def test_everything_else_is_up_to_claude_code(command):
     assert github_write("Bash", {"command": command}) is None
+
+
+def test_a_push_is_refused_saying_how_to_propose_one():
+    command = "git push --force-with-lease https://github.com/eric7h/pipecat.git e0b9581:fix"
+    assert "propose_action with kind `push`" in github_write("Bash", {"command": command})
+    assert github_write("Bash", {"command": "gh pr merge 12"}) == GITHUB_WRITE_REASON
 
 
 def test_tools():

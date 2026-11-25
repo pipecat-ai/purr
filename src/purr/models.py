@@ -61,6 +61,7 @@ class ActionKind(StrEnum):
     REQUEST_CHANGES = "request_changes"
     APPROVE = "approve"
     MERGE = "merge"
+    PUSH = "push"  # the commits it made in the PR's worktree, to the PR's branch
 
     @property
     def verdict(self) -> bool:
@@ -165,6 +166,16 @@ class PR:
     def others_on_it(self) -> bool:
         """Someone else is assigned and you aren't."""
         return bool(self.assignees) and not self.assigned_to_me
+
+
+@dataclass(frozen=True)
+class PRHead:
+    """Where a PR's commits live: its branch, in its repo (a fork, often)."""
+
+    repo: str | None  # owner/name; None once that repo is gone (a deleted fork)
+    branch: str
+    sha: str
+    maintainer_can_modify: bool = False  # the author lets the base repo's maintainers push
 
 
 @dataclass(frozen=True)

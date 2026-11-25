@@ -82,6 +82,18 @@ def gh_clone(repo: str, dest: Path) -> list[str]:
     return ["gh", "repo", "clone", repo, str(dest), "--", "--bare", "--filter=blob:none"]
 
 
+def push_url(origin: str, base: str, head: str) -> str:
+    """Where to push to ``head`` (owner/name: a PR's fork, often) from the clone of ``base``
+    whose remote is ``origin``: the same host and protocol (https or ssh), ``head``'s repo."""
+    if head.lower() == base.lower():
+        return origin
+    repo = re.compile(rf"(?<=[/:]){re.escape(base)}(?=(?:\.git)?/?$)", re.IGNORECASE)
+    url, found = repo.subn(head, origin)
+    if not found:
+        raise GitError(f"Can't tell how to reach {head} from {origin}")
+    return url
+
+
 def _pr_refspec(number: int) -> str:
     """Fetches a PR's head into the clone's ref for it."""
     return f"+refs/pull/{number}/head:{PR_REFS}/{number}"
@@ -152,11 +164,13 @@ class GitRepos:
     async def _move_worktree(self, path: Path, ref: PRRef, head_sha: str) -> None:
         """Move the PR's existing worktree to ``head_sha``.
 
-        Already there: leave it as it is, with whatever you (or the agent)
-        changed in it. Moving on: those changes are stashed, not lost.
+        Already there, or on commits made there on top of it (not pushed yet):
+        leave it as it is, with whatever you (or the agent) changed in it. Moving
+        on: those changes are stashed, not lost (commits made there stay in the
+        worktree's reflog).
         """
         current = (await self._git(path, "rev-parse", "HEAD")).strip()
-        if current == head_sha:
+        if current == head_sha or await self._builds_on(path, head_sha):
             return
         if await self.has_changes(path):
             message = f"purr: changes in {ref} at {current[:7]}, before {head_sha[:7]}"
@@ -204,6 +218,14 @@ class GitRepos:
             if path.is_dir() and path.name.isdigit():
                 found.append(PRRef(f"{path.parent.parent.name}/{path.parent.name}", int(path.name)))
         return found
+
+    async def _builds_on(self, path: Path, sha: str) -> bool:
+        """Whether what's checked out in the worktree has ``sha`` in its history."""
+        try:
+            await self._git(path, "merge-base", "--is-ancestor", sha, "HEAD")
+        except GitError:
+            return False
+        return True
 
     async def has_changes(self, path: Path) -> bool:
         """Whether a worktree has uncommitted changes (ignored files don't count)."""
@@ -259,6 +281,41 @@ class GitRepos:
             clone.parent.mkdir(parents=True, exist_ok=True)
             await self._run(*self._clone_command(repo, clone))
         return clone
+
+    # -- Pushing what was committed in a worktree ---------------------------------------
+
+    async def unpushed(self, ref: PRRef, onto: str) -> list[tuple[str, str]]:
+        """The commits made in the PR's worktree on top of ``onto`` (the PR's head), newest
+        first: ``(sha, subject)``. Raises GitError if there's no worktree, it has
+        uncommitted changes, or what's checked out doesn't build on ``onto``."""
+        path = self.worktree_path(ref)
+        if not (path / ".git").exists():
+            raise GitError("There's no worktree to push from.")
+        if await self.has_changes(path):
+            raise GitError("The worktree has uncommitted changes: commit them first.")
+        if not await self._builds_on(path, onto):
+            raise GitError(
+                f"What's checked out doesn't build on the PR's head ({onto[:7]}): only new "
+                "commits on top of it can be pushed."
+            )
+        log = await self._git(path, "log", "--format=%H %s", f"{onto}..HEAD")
+        commits = (line.partition(" ") for line in log.splitlines())
+        return [(sha, subject) for sha, _, subject in commits]
+
+    async def push(self, ref: PRRef, commit: str, *, repo: str, branch: str, onto: str) -> None:
+        """Push ``commit`` to ``branch`` in ``repo`` (the PR's head), only while that branch
+        is still at ``onto`` (a lease: nobody pushed since). Raises GitError if refused."""
+        clone = self.clone_path(ref.repo)
+        async with self._lock(ref.repo):
+            origin = (await self._git(clone, "remote", "get-url", "origin")).strip()
+            await self._git(
+                clone,
+                "push",
+                "--quiet",
+                f"--force-with-lease=refs/heads/{branch}:{onto}",
+                push_url(origin, ref.repo, repo),
+                f"{commit}:refs/heads/{branch}",
+            )
 
     # -- Open PRs, for their diffs ------------------------------------------------------
 

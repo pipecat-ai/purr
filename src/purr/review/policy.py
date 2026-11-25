@@ -19,6 +19,12 @@ GITHUB_WRITE_REASON = (
     "Purr never lets the agent change anything on GitHub. Propose it with the "
     "propose_action tool instead; the user approves or dismisses it."
 )
+# A push gets its own: the agent can't push, but it can propose one.
+PUSH_REASON = (
+    "Purr never lets the agent push. Propose it instead: commit here, on top of the PR's "
+    "head, and call propose_action with kind `push`. Purr shows the user which commits "
+    "go to which branch, and pushes them if they approve."
+)
 
 # Claude Code permission rules (prefix matches). `gh api` reads are fine, so its
 # writes are left to github_write, which sees the method and fields.
@@ -37,11 +43,10 @@ GITHUB_DENY_RULES = [
     "Read(~/.config/gh/**)",
 ]
 
-# Spotted anywhere in a command, even inside quotes or nested shells.
+# Spotted anywhere in a command, even inside quotes or nested shells. git, then
+# only options (and their values), then push: `git -C x push`, not `git log --grep push`.
+_GIT_PUSH = re.compile(r"\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*push\b")
 _GITHUB_WRITES = [
-    # git, then only options (and their values), then push:
-    # `git -C x push`, but not `git log --grep push`.
-    re.compile(r"\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*push\b"),
     re.compile(
         r"\bgh\s+(?:pr|issue)\s+"
         r"(?:review|comment|merge|close|reopen|edit|create|ready|lock|unlock|delete|transfer|pin|unpin)\b"
@@ -63,6 +68,8 @@ def github_write(tool: str, tool_input: dict) -> str | None:
     """Why the call would change GitHub or read your GitHub token, if it would."""
     if tool == "Bash":
         command = str(tool_input.get("command", ""))
+        if _GIT_PUSH.search(command):
+            return PUSH_REASON
         if any(pattern.search(command) for pattern in _GITHUB_WRITES):
             return GITHUB_WRITE_REASON
     path = str(tool_input.get("file_path") or tool_input.get("path") or "")

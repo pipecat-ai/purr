@@ -90,6 +90,10 @@ class FakeGitHub:
             raise GitHubError("Not Found (HTTP 404)")
         return self.files[(repo, path)]
 
+    async def pr_head(self, ref):
+        """From ``heads``: PRRef -> PRHead (None: GitHub doesn't show it)."""
+        return getattr(self, "heads", {}).get(ref)
+
     async def merge_check(self, ref):
         return self.merge_checks.get(ref)
 
@@ -135,6 +139,18 @@ class FakeRepos:
     async def new_commits(self, pr, since):
         return getattr(self, "commits", None)
 
+    async def unpushed(self, ref, onto):
+        """From ``commits_made``: [(sha, subject)], newest first; ``unpushed_error`` raises."""
+        if isinstance(error := getattr(self, "unpushed_error", None), Exception):
+            raise error
+        return list(getattr(self, "commits_made", []))
+
+    async def push(self, ref, commit, *, repo, branch, onto):
+        """Records ``(ref, commit, repo, branch, onto)`` in ``pushed``; ``push_error`` raises."""
+        if isinstance(error := getattr(self, "push_error", None), Exception):
+            raise error
+        self.pushed = [*getattr(self, "pushed", []), (ref, commit, repo, branch, onto)]
+
     async def plugin(self, repo):
         if isinstance(error := getattr(self, "plugin_error", None), Exception):
             raise error
@@ -161,9 +177,11 @@ class FakeRepos:
 class FakeAgent:
     """Stands in for purr.review.agent.ClaudeReviewAgent with a scripted review.
 
-    Each run reads the diff, submits one finding and proposes requesting changes.
-    Set ``gate`` to hold runs until it's set, ``fail_with`` to make them raise,
-    ``ask`` to ask permission for something first (answers go to ``answers``).
+    Each run reads the diff, submits one finding and proposes requesting changes
+    (or ``proposes``: ``(kind, description, payload)``; what's refused goes to
+    ``refused``). Set ``gate`` to hold runs until it's set, ``fail_with`` to make
+    them raise, ``ask`` to ask permission for something first (answers go to
+    ``answers``).
     """
 
     def __init__(self):
@@ -180,6 +198,8 @@ class FakeAgent:
         self.remembered: list[str | None] = []
         self.entries: dict[str, list[dict]] = {}
         self.findings: dict = {}  # PRRef -> what its review finds (default: one race)
+        self.proposes: tuple | None = None  # (kind, description, payload)
+        self.refused: list[str] = []  # why proposals were refused
 
     def session_exists(self, session_id, worktree):
         return session_id in self.sessions
@@ -204,7 +224,7 @@ class FakeAgent:
         inbox=None,
     ):
         from purr.models import ActionKind, Finding, Severity
-        from purr.review.agent import AgentResult
+        from purr.review.agent import AgentResult, Refused
 
         self.runs.append(
             {
@@ -242,11 +262,15 @@ class FakeAgent:
         await callbacks.on_submit(
             "Clean refactor, one race." if findings else "Looks good.", findings
         )
-        await callbacks.on_propose(
+        proposal = self.proposes or (
             ActionKind.REQUEST_CHANGES,
             "Post 1 comment and request changes",
             {"body": "", "comments": [{"path": "bus.py", "line": 42, "body": "Race here"}]},
         )
+        try:
+            await callbacks.on_propose(*proposal)
+        except Refused as e:
+            self.refused.append(str(e))
         return AgentResult(
             text="Done.",
             cost_usd=0.25,
