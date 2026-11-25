@@ -272,6 +272,15 @@ class DemoSuggester(FakeSuggester):
         return self.LINES[min(len(self.notes), len(self.LINES)) - 1]
 
 
+class DemoWriter(FakeWriter):
+    """Posts as the tests' writer does, taking a moment as GitHub does: long enough to see
+    Purr say it's posting."""
+
+    async def submit_review(self, ref, **kwargs):
+        await asyncio.sleep(1.5)
+        return await super().submit_review(ref, **kwargs)
+
+
 class DemoPicker:
     """The lead, choosing what's up next as it might: UP_NEXT."""
 
@@ -381,7 +390,7 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
         github=github,
         agent=DemoAgent(),
         repos=repos,
-        writer=FakeWriter(github),
+        writer=DemoWriter(github),
         lead=FakeLead(),
         suggester=DemoSuggester(),
         picker=DemoPicker(),
@@ -425,7 +434,7 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await until(pilot, lambda: getattr(session.pr, "number", None) == FIX)
     await until(pilot, lambda: "Request changes?" in str(decision.render()))
 
-    await pilot.press("d")  # the diff, in the list's place, next to the conversation
+    await pilot.press("d")  # the diff, zoomed: all of it, to read
     repo = app.main.repo
     view = repo.query_one(DiffView)
     await until(pilot, lambda: repo.diff_shown and len(view._rows) > 2)
@@ -439,7 +448,7 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await move_to(record, view, new=423)  # the line the agent's comment is about
     await pilot.press("shift+down")  # select it and the next: shift+↑/↓
     await record.shot(1.0)
-    await pilot.press("enter")  # ask about them
+    await pilot.press("enter")  # ask about them: the conversation, next to the diff
     prompt = session.query_one("#prompt")
     await until(pilot, lambda: prompt.text.startswith("About llm_service.py"))
     await record.shot(1.5)
@@ -463,7 +472,10 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await until(pilot, lambda: "Request changes?" in str(decision.render()))
     await record.shot(2.5)  # the agent's review: posting it is your call
     await pilot.press("a")
-    await until(pilot, lambda: bool(app.purr._writer.reviews) and not decision.display)
+    working = session.query_one("#working")
+    await until(pilot, lambda: "Posting…" in str(working.render()))
+    await record.shot(1.2)  # from the key press, it says what it's doing
+    await until(pilot, lambda: bool(app.purr._writer.reviews) and not working.display)
     await pilot.pause(0.6)
     await record.shot(4.0)  # posted, as you, and the PR is done
 

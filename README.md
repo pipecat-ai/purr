@@ -79,7 +79,9 @@ set `ANTHROPIC_API_KEY`). To look around without starting any reviews, run
    edits it there and `x` deletes it (after asking); `r` on anyone's replies, quoting it.
    `d` closes the diff, back to the list and the conversation.
 5. **Decide**: `a` posts the agent's review, `x` dismisses it (in the diff, `x` drops one of
-   its comments). Once you've approved, `m` merges.
+   its comments). Once you've approved, `m` merges. From the moment you press the key, the
+   line above the prompt says what Purr is doing (`Posting…`, `Pushing…`, `Merging…`) until
+   it's done.
 
 When you ask the agent to change something and push it, it commits in the PR's worktree and
 proposes the push: `a` pushes it to the PR's branch (a contributor's fork too, if they allow
@@ -109,7 +111,7 @@ ones:
 | `d` / `D` | The diff, to read (`n` `p` from change to change), ask about (`enter`) and comment on (`c`) / in your pager |
 | `shift+↑` `shift+↓` | In the diff: select lines (`ctrl+space` sets a mark, as in Emacs) |
 | `tab` | In the diff: open or shut a file or a comment; on a change's `@@` line, the lines around it |
-| `m` | Merge a PR you approved: once to see where it stands, again to merge |
+| `m` | Merge a PR you approved: once to see where it stands (`x` closes it), again to merge |
 | `t` / `z` | The agent's reasoning in full / full screen |
 | `!` / `c` | A shell in the PR's checkout / its session in Claude Code (`/exit` comes back) |
 | `ctrl+p` / `ctrl+n` | Find any repo or PR / the latest news |
