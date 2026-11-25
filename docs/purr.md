@@ -417,11 +417,11 @@ Two-pane, lazygit-style layout. Inside a repo, PRs show as `#2841`; everywhere e
 │                                                        │                                                  │
 │ ○ NOT REVIEWED (2)                                     │ ┌──────────────────────────────────────────────┐ │
 │ ○ #2861   Docs typo                      carol      2h │ │ Post 3 comments and request changes?          │ │
-│ ○ #2855   Evals report                   dave       5h │ │ [a] approve   [x] dismiss                     │ │
+│ ○ #2855   Evals report                   dave       5h │ │ [a] request changes   [x] dismiss             │ │
 │                                                        │ └──────────────────────────────────────────────┘ │
 │                                                        │ > is the race reachable from user code?          │
 ├────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┤
-│ esc home · o open · n/p next/prev · / search · r review · a approve · x dismiss · m merge · d diff · z · ! │
+│ esc home · o open · n/p next/prev · / search · r review · a request changes · x dismiss · m merge · d diff │
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -473,7 +473,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - `r` start review on marked PRs (or the selected one), assigning you; on one already reviewed, it asks first
 - `s` on an Up next PR: not for you (see Up next)
 - `d` the diff view, to read it line by line and comment (`D`: the whole diff in your pager)
-- `a` / `x` answer the decision box: approve or dismiss a pending action, allow or deny a permission request (`A`: always allow); `x` also says replies to you need no answer
+- `a` / `x` answer the decision box: do or dismiss a pending action, allow or deny a permission request (`A`: always allow); `x` also says replies to you need no answer. The footer names what `a` does now, so it never surprises: *Post comment*, *Approve PR*, *Request changes* or *Push* for a proposal, *Allow once* for a question, *Post comments* for yours on their own (`SessionState.a_does`; the footer asks the screen, `MainScreen.describe_key`). With nothing for it to do, `a` isn't shown
 - `m` merge a PR you approved: once to see where it stands, again to merge (see Merging)
 - `t` the agent's reasoning in full, or a line per thought again
 - `z` zoom the PR session to full screen, and back, the focus where it was (the PR's pane, or the list). The transcript is written again to fill its new width (a RichLog wraps each line once, as it's written; `Transcript.Rewrap`), as when the terminal's resized

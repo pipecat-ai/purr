@@ -149,6 +149,8 @@ class PRList(GroupedList):
             return not cast("PurrApp", self.app).main.repo.on_heading()
         if parameters == ("skip",):
             return cast("PurrApp", self.app).main.repo.on_up_next()
+        if parameters == ("approve",):
+            return bool(cast("PurrApp", self.app).main.repo.a_does())
         return True
 
     def redraw_option(self, option_id: str, prompt: Table) -> None:

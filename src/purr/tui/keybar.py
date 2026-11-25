@@ -7,6 +7,7 @@ everywhere), each key once: a key two panes bind shows the nearer one. Keys in a
 group (``n p Next/prev``) go together, a run of them as ``1–9``.
 """
 
+from dataclasses import replace
 from itertools import groupby
 
 from rich.cells import cell_len
@@ -59,10 +60,13 @@ class KeyBar(Static):
     def _here(self) -> list[tuple[str, str]]:
         """``(keys, what they do)`` for each key shown here, in order."""
         shown, seen = [], set()
+        describe = getattr(self.screen, "describe_key", None)  # what some say depends
         for active in self.screen.active_bindings.values():
             binding = active.binding
             if not (binding.show and active.enabled and binding.description):
                 continue
+            if describe:
+                binding = replace(binding, description=describe(binding))
             if binding.action not in seen:  # one key per action: the nearest, first
                 seen.add(binding.action)
                 shown.append((binding, self.app.get_key_display(binding)))

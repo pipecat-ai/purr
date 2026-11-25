@@ -354,7 +354,15 @@ class RepoView(PRKeys):
             return not self.session.query_one("#prompt").has_focus
         if action == "skip":
             return self.on_up_next()
+        if action == "approve":
+            return bool(self.a_does())
         return True
+
+    def a_does(self) -> str:
+        """What a does to the selected PR now, as its key says it ("" for nothing)."""
+        pr = self.selected_pr()
+        state = self.purr_app.sessions.get(str(pr.ref)) if pr else None
+        return state.a_does() if state else ""
 
     def on_up_next(self) -> bool:
         """Whether the selected PR is up next (s skips it)."""

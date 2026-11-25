@@ -9,6 +9,7 @@ visible and refreshes its data: no screen gets composed on the way. Dialogs
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import ContentSwitcher, Static
@@ -41,6 +42,13 @@ class MainScreen(Screen):
     @property
     def repo(self) -> RepoView:
         return self.query_one(RepoView)
+
+    def describe_key(self, binding: Binding) -> str:
+        """What a key says it does (the footer, ?): most always say the same; a, what it
+        does to the PR now (Post comment, Approve PR, Push…)."""
+        if binding.action in ("approve", "repo('approve')"):
+            return self.repo.a_does() or binding.description
+        return binding.description
 
     @property
     def current(self) -> PurrView:
