@@ -1679,15 +1679,23 @@ async def test_esc_zooms_out_first(tmp_path):
         await until(pilot, lambda: "Zoom out" in footer(app))  # drawn a moment later
         await pilot.press("escape")
         assert not repo.zoomed and focused(app) == "prs" and in_repo(app)
-        # The diff, zoomed: esc zooms out, then closes it.
+        # The diff opens zoomed: esc zooms out, then closes it.
         await pilot.press("d")
         await until(pilot, lambda: repo.diff_shown)
-        await pilot.press("z")
         assert repo.zoomed and not repo.session.display
         await pilot.press("escape")
         assert not repo.zoomed and repo.diff_shown and repo.session.display
         await pilot.press("escape")
         assert not repo.diff_shown and focused(app) == "prs"
+        # z zooms it out and in again; d closes it, zoomed or not, back to both panes.
+        await pilot.press("d")
+        await until(pilot, lambda: repo.diff_shown)
+        await pilot.press("z")
+        assert not repo.zoomed and repo.session.display
+        await pilot.press("z")
+        assert repo.zoomed and not repo.session.display
+        await pilot.press("d")
+        assert not repo.diff_shown and repo.session.display and focused(app) == "prs"
         await pilot.press("escape")
         await until(pilot, lambda: home(app))
 
@@ -1819,7 +1827,8 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         await until(pilot, lambda: "[a] request changes" in decision(app))  # reviewed
         await app.bus.request(DismissAction(action_id=(await pending(app, ref))[0].id))
 
-        # d: the diff, in the list's place, to read line by line. Its files start shut too.
+        # d: the diff, in the list's place and full screen, to read line by line (z shows
+        # the PR's pane next to it). Its files start shut too.
         github.threads = [
             {"id": "T1", "path": "README.md", "line": 1, "side": "RIGHT", "resolved": False,
              "comments": [{"author": "carol", "body": "Say why"}]},
@@ -1829,7 +1838,9 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         repo = app.main.repo
         await pilot.press("d")
         await until(pilot, lambda: repo.diff_shown and focused(app) == "diff")
-        assert not repo.query_one("#prs-pane").display and repo.session.display
+        assert not repo.query_one("#prs-pane").display and not repo.session.display
+        await pilot.press("z")
+        assert repo.session.display and focused(app) == "diff"
         view = repo.query_one(DiffView)
         # The PR's review threads on GitHub come in a box under their line (their file
         # opens); tab shuts one to a line, and opens it again.

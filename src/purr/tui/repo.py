@@ -543,8 +543,9 @@ class RepoView(PRKeys):
         self.diff.view.focus() if self.diff_shown else self.query_one(PRList).focus()
 
     async def action_diff(self) -> None:
-        """The PR's diff in the list's place, to read line by line, ask about and comment
-        on; d again (or esc) closes it. D: the whole diff in your pager."""
+        """The PR's diff in the list's place, full screen, to read line by line, ask about
+        and comment on: z or esc shows the PR's pane next to it, d closes it (esc too, from
+        there). D: the whole diff in your pager."""
         if self.diff_shown:
             self.close_diff()
             return
@@ -560,8 +561,10 @@ class RepoView(PRKeys):
         await self.diff.show(pr, diff)
         self._left = "diff"
         self.query_one("#prs-pane").display = False
-        self.diff.display = self.session.display = True
+        self.diff.display, self.session.display = True, False  # zoomed
+        self.diff.add_class("-wide")
         self.diff.view.focus()
+        self.refresh_bindings()  # esc zooms out
 
     def close_diff(self) -> None:
         """The list again, in the diff's place (and the PR's pane, if the diff was zoomed)."""
