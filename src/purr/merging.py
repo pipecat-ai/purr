@@ -4,7 +4,7 @@
 merges. Approving and merging are apart on purpose: someone else may be
 reviewing it too, and you may want them to approve as well.
 
-- **Blockers** stop a merge: you haven't approved it (through Purr), it has
+- **Blockers** stop a merge: you haven't approved it (on GitHub or here), it has
   commits since you did (approve again), it has conflicts, it's a draft.
 - **Concerns** are for you to weigh: checks that failed or are still running (a
   docs build failing needn't hold it up), assignees who haven't approved, a
@@ -18,7 +18,7 @@ def blockers(check: MergeCheck, approved_head: str | None) -> list[str]:
     """What stops the merge outright; there's no deciding past these."""
     found = []
     if not approved_head:
-        found.append("You haven't approved it here")
+        found.append("You haven't approved it")
     elif check.head_sha != approved_head:
         found.append("It has new commits since you approved it: approve again first")
     if check.mergeable == "CONFLICTING" or check.merge_state == "DIRTY":

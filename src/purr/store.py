@@ -30,6 +30,7 @@ from purr.models import (
     ReviewStatus,
     Severity,
     UpNext,
+    Verdict,
 )
 from purr.news import NEWS_KINDS, news
 
@@ -322,6 +323,17 @@ MIGRATIONS: list[str] = [
     ALTER TABLE pending_actions_new RENAME TO pending_actions;
     CREATE INDEX pending_actions_pr ON pending_actions (pr_id);
     """,
+    # Your latest verdict on each PR, so one you gave on GitHub counts too: read with the
+    # replies, and set when Purr posts one. It starts from what Purr posted.
+    """
+    ALTER TABLE prs ADD COLUMN verdict TEXT;
+    ALTER TABLE prs ADD COLUMN verdict_head TEXT;
+    UPDATE prs SET (verdict, verdict_head) = (
+        SELECT kind, posted_head FROM pending_actions
+        WHERE pr_id = prs.id AND status = 'executed' AND kind IN ('approve', 'request_changes')
+        ORDER BY resolved_at DESC, rowid DESC LIMIT 1
+    );
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -389,7 +401,13 @@ def _pr(row: aiosqlite.Row) -> PR:
         model=row["model"],
         state_at=row["state_at"],
         replies=_unanswered(row),
+        verdict=_verdict(row),
     )
+
+
+def _verdict(row: aiosqlite.Row) -> Verdict | None:
+    kind, head = row["verdict"], row["verdict_head"]
+    return Verdict(ActionKind(kind), head) if kind and head else None
 
 
 def _repo(row: aiosqlite.Row) -> Repo:
@@ -615,6 +633,27 @@ class Store:
         )
         await self._db.commit()
 
+    async def set_verdict(
+        self, ref: PRRef, verdict: Verdict | None, *, read_at: str | None = None
+    ) -> None:
+        """Your latest verdict on the PR, as GitHub has it (None: you've given none, or it was
+        dismissed), or as Purr just posted it. ``read_at``: when GitHub was asked; a verdict
+        Purr posted since is newer than what it said, and stays."""
+        kind, head = (verdict.kind, verdict.head) if verdict else (None, None)
+        verdicts = [kind for kind in ActionKind if kind.verdict]
+        kinds = ", ".join("?" * len(verdicts))
+        await self._db.execute(
+            f"""
+            UPDATE prs SET verdict = ?, verdict_head = ? WHERE repo = ? AND number = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM pending_actions WHERE pr_id = prs.id AND status = ?
+                AND kind IN ({kinds}) AND resolved_at >= ?
+            )
+            """,
+            (kind, head, ref.repo, ref.number, ActionStatus.EXECUTED, *verdicts, read_at),
+        )
+        await self._db.commit()
+
     async def dismiss_replies(self, ref: PRRef) -> None:
         """You said the PR's replies need no answer: the ones Purr has seen so far."""
         pr = await self.get_pr(ref)
@@ -631,8 +670,12 @@ class Store:
         return bool(pr and pr.replies) or bool(await self.pending_actions(ref))
 
     async def decided(self, ref: PRRef) -> bool:
-        """Whether you gave your verdict on the PR as it is, through Purr: approved it or
-        requested changes, at its head."""
+        """Whether you gave your verdict on the PR as it is: approved it or requested changes,
+        at its head, on GitHub or through Purr."""
+        pr = await self.get_pr(ref)
+        if pr and pr.verdict and pr.verdict.head == pr.head_sha:
+            return True
+        # Posted through Purr, even if a read of GitHub that began before says otherwise.
         verdicts = [kind for kind in ActionKind if kind.verdict]
         kinds = ", ".join("?" * len(verdicts))
         row = await self._fetchone(
@@ -644,19 +687,12 @@ class Store:
         return row is not None
 
     async def done_without_verdict(self) -> list[PRRef]:
-        """Open PRs of others that are done with no verdict of yours ever posted through Purr:
-        done by the rule before (nothing left to decide), when they need one."""
-        verdicts = [kind for kind in ActionKind if kind.verdict]
-        kinds = ", ".join("?" * len(verdicts))
+        """Open PRs of others that are done with no verdict of yours: done by the rule before
+        (nothing left to decide), or your verdict was dismissed, when they need one."""
         rows = await self._fetchall(
-            f"""
-            SELECT repo, number FROM prs
-            WHERE gh_state = ? AND state = ? AND NOT authored AND NOT EXISTS (
-                SELECT 1 FROM pending_actions
-                WHERE pr_id = prs.id AND status = ? AND kind IN ({kinds})
-            )
-            """,
-            (GHState.OPEN, PRState.DONE, ActionStatus.EXECUTED, *verdicts),
+            "SELECT repo, number FROM prs"
+            " WHERE gh_state = ? AND state = ? AND NOT authored AND verdict IS NULL",
+            (GHState.OPEN, PRState.DONE),
         )
         return [PRRef(row["repo"], row["number"]) for row in rows]
 
@@ -1330,15 +1366,11 @@ class Store:
         return bool(row) and _action(row).kind == ActionKind.APPROVE
 
     async def approved_head(self, ref: PRRef) -> str | None:
-        """The commit you approved the PR at through Purr, if that's the last thing Purr
-        posted for you there (None: it isn't, or it was before Purr kept it)."""
-        row = await self._fetchone(
-            f"{self._ACTION_SELECT} WHERE prs.repo = ? AND prs.number = ?"
-            " AND pending_actions.status = ? ORDER BY pending_actions.resolved_at DESC LIMIT 1",
-            (ref.repo, ref.number, ActionStatus.EXECUTED),
-        )
-        approved = row is not None and _action(row).kind == ActionKind.APPROVE
-        return row["posted_head"] if approved else None
+        """The commit you approved the PR at, if approving it is your latest verdict there
+        (given on GitHub or through Purr)."""
+        pr = await self.get_pr(ref)
+        verdict = pr.verdict if pr else None
+        return verdict.head if verdict and verdict.kind == ActionKind.APPROVE else None
 
     async def get_pending_action(self, action_id: str) -> PendingAction | None:
         row = await self._fetchone(
@@ -1375,6 +1407,7 @@ class Store:
         Returns the updated action, or None if it wasn't in ``expected`` status.
         This is what stops one action being approved twice (say, from the TUI
         and by voice at the same time). ``posted_head``: the PR's head it was posted at.
+        A verdict posted is your latest verdict on the PR.
         """
         cursor = await self._db.execute(
             "UPDATE pending_actions SET status = ?, resolved_at = ?,"
@@ -1384,4 +1417,7 @@ class Store:
         await self._db.commit()
         if cursor.rowcount == 0:
             return None
-        return await self.get_pending_action(action_id)
+        action = await self.get_pending_action(action_id)
+        if action and new == ActionStatus.EXECUTED and action.kind.verdict and posted_head:
+            await self.set_verdict(action.pr, Verdict(action.kind, posted_head))
+        return action

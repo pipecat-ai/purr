@@ -13,9 +13,12 @@ from purr.github import (
     GitHub,
     GitHubError,
     PRStatus,
+    Standing,
     replies_to,
+    verdict_of,
 )
 from purr.models import (
+    ActionKind,
     Check,
     CheckState,
     FileChange,
@@ -25,6 +28,7 @@ from purr.models import (
     PRDetails,
     PRRef,
     Reply,
+    Verdict,
 )
 
 
@@ -388,6 +392,35 @@ def test_on_your_own_pr_what_others_say_is_said_to_you():
     assert replies_to("me", answered) == [Reply("carol", "Thanks", "t6", "ut6", "bus.py:42")]
     # Someone else's PR: a thread you're not in isn't said to you.
     assert replies_to("me", conversation(threads=[("bus.py", 42, thread)])) == []
+
+
+def test_your_latest_verdict():
+    def reviewed(*reviews: tuple[str, str]) -> dict:
+        nodes = [{"state": state, "commit": {"oid": oid}} for state, oid in reviews]
+        return {"yourVerdict": {"nodes": nodes}}
+
+    assert verdict_of(reviewed(("APPROVED", "abc"))) == Verdict(ActionKind.APPROVE, "abc")
+    changes = Verdict(ActionKind.REQUEST_CHANGES, "def")
+    assert verdict_of(reviewed(("APPROVED", "abc"), ("CHANGES_REQUESTED", "def"))) == changes
+    assert verdict_of(reviewed(("DISMISSED", "abc"))) is None  # dismissed: none stands
+    assert verdict_of(reviewed()) is None
+    assert verdict_of({}) is None
+
+
+async def test_where_you_stand_on_prs():
+    class Conversations(GitHub):
+        async def graphql(self, query, variables):
+            if query.startswith("query { viewer"):
+                return {"data": {"viewer": {"login": "me"}}}
+            assert 'reviews(last: 1, author: "me", states: [APPROVED' in query
+            verdict = {"nodes": [{"state": "APPROVED", "commit": {"oid": "abc"}}]}
+            pr = {"author": {"login": "bob"}, "createdAt": "t0", "yourVerdict": verdict}
+            return {"data": {"t0": {"pullRequest": pr}}}
+
+    ref = PRRef("a/b", 1)
+    assert await Conversations(gh="gh-not-used").standing([ref]) == {
+        ref: Standing([], Verdict(ActionKind.APPROVE, "abc"))
+    }
 
 
 async def test_what_you_know_of_a_repo():

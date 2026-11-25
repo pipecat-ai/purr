@@ -10,6 +10,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from purr.jobs import Invalid, NotFound, request
 from purr.messages import (
+    DismissAction,
     DismissReplies,
     PRChanged,
     PRListUpdated,
@@ -19,7 +20,7 @@ from purr.messages import (
     Watching,
     WatchRepo,
 )
-from purr.models import PRChange, PRRef, PRState, Reply
+from purr.models import ActionKind, ActionStatus, PRChange, PRRef, PRState, Reply, Verdict
 from purr.store import Store
 from purr.workers import ActivityWorker, GitHubWorker
 from tests.fakes import FakeGitHub, give_verdict, remote
@@ -122,7 +123,7 @@ async def test_comments_on_your_own_prs_need_you(setup):
     github.mine = [remote(3, author="me")]
     await worker.poll()
     assert (await store.get_pr(ref)).authored
-    assert ref in github.replies_calls[-1]  # yours: its conversation is read
+    assert ref in github.standing_calls[-1]  # yours: its conversation is read
 
     alice = Reply("alice", "Needs a test.", "2026-11-21T10:00:00Z")
     github.conversations[ref] = [alice]
@@ -165,9 +166,9 @@ async def test_replies_to_you_need_you_until_answered(setup):
     await eventually(news)
 
     # Nothing changed on GitHub: nothing to read.
-    calls = len(github.replies_calls)
+    calls = len(github.standing_calls)
     await worker.poll()
-    assert len(github.replies_calls) == calls
+    assert len(github.standing_calls) == calls
 
     # x: no reply needed.
     await request(client, DismissReplies(pr=ref))
@@ -186,6 +187,69 @@ async def test_replies_to_you_need_you_until_answered(setup):
     await worker.poll()
     pr = await store.get_pr(ref)
     assert (pr.state, pr.replies) == (PRState.DONE, ())
+
+
+async def _reviewed(store, github, worker, number: int) -> PRRef:
+    """A PR assigned to you, at ``def``, reviewed with no verdict yet: it needs you."""
+    ref = PRRef("pipecat-ai/pipecat", number)
+    github.assigned = [remote(number, assignees=("me",), head_sha="def")]
+    await worker.poll()
+    review = await store.start_review(ref)
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    await store.set_pr_state(ref, PRState.NEEDS_YOU)
+    return ref
+
+
+def _updated(github, number: int, at: str) -> None:
+    """The PR changed on GitHub at ``at`` (say, a review), so its conversation is read."""
+    github.assigned = [remote(number, assignees=("me",), head_sha="def", updated_at=at)]
+
+
+async def test_a_verdict_you_gave_on_github_counts(setup):
+    store, github, worker, client = setup
+    await client.next_event(Synced)
+    ref = await _reviewed(store, github, worker, 1)
+
+    # Approved on GitHub, at a commit before: not the PR as it is.
+    github.verdicts[ref] = Verdict(ActionKind.APPROVE, "abc")
+    _updated(github, 1, "2026-11-21T10:00:00Z")
+    await worker.poll()
+    pr = await store.get_pr(ref)
+    assert (pr.verdict, pr.state) == (Verdict(ActionKind.APPROVE, "abc"), PRState.NEEDS_YOU)
+    assert await store.approved_head(ref) == "abc"  # m: new commits since
+
+    # The agent proposes approving it, and you do, on GitHub: done, its proposal moot.
+    proposal = await store.add_pending_action(ref, kind=ActionKind.APPROVE, description="LGTM")
+    github.verdicts[ref] = Verdict(ActionKind.APPROVE, "def")
+    _updated(github, 1, "2026-11-21T11:00:00Z")
+    await worker.poll()
+    assert (await store.get_pr(ref)).state == PRState.DONE
+    assert (await store.get_pending_action(proposal.id)).status == ActionStatus.DISMISSED
+    assert await store.approved_head(ref) == "def"  # m can merge it
+
+    # Dismissed on GitHub: no verdict of yours stands (it stays done till something's new).
+    github.verdicts.pop(ref)
+    _updated(github, 1, "2026-11-21T12:00:00Z")
+    await worker.poll()
+    assert (await store.get_pr(ref)).verdict is None
+    assert await store.approved_head(ref) is None
+
+
+async def test_a_verdict_on_github_leaves_the_agents_comments_to_you(setup):
+    store, github, worker, client = setup
+    await client.next_event(Synced)
+    ref = await _reviewed(store, github, worker, 2)
+    comment = await store.add_pending_action(ref, kind=ActionKind.COMMENT, description="Nit")
+
+    github.verdicts[ref] = Verdict(ActionKind.REQUEST_CHANGES, "def")
+    _updated(github, 2, "2026-11-21T10:00:00Z")
+    await worker.poll()
+    assert (await store.get_pr(ref)).state == PRState.NEEDS_YOU  # the comment waits on you
+    assert (await store.get_pending_action(comment.id)).status == ActionStatus.PENDING
+    assert await store.approved_head(ref) is None
+
+    await request(client, DismissAction(action_id=comment.id))
+    assert (await store.get_pr(ref)).state == PRState.DONE
 
 
 async def test_replies_are_read_for_every_reviewed_pr_on_startup():
@@ -207,7 +271,7 @@ async def test_replies_are_read_for_every_reviewed_pr_on_startup():
                 return pr.state == PRState.NEEDS_YOU and len(pr.replies) == 1
 
             await eventually(read)
-            assert github.replies_calls == [[ref]]
+            assert github.standing_calls == [[ref]]
         finally:
             await runner.end()
             await asyncio.wait_for(task, 5)

@@ -14,8 +14,10 @@ from purr.models import (
     Reply,
     ReviewStatus,
     Severity,
+    Verdict,
 )
 from purr.store import MIGRATIONS, Store
+from tests.fakes import give_verdict
 
 
 def make_pr(number: int, *, updated_at: str = "2026-11-20T10:00:00+00:00", **kwargs) -> PR:
@@ -186,11 +188,50 @@ async def test_where_a_pr_rests(store):
     await store.set_replies(ref, [Reply("alice", "Done?", "2026-11-21T10:00:00Z")])
     assert await store.resting_state(ref) == PRState.NEEDS_YOU
 
+    # Given on GitHub, as it is (read with the replies): it counts all the same.
+    other = await store.upsert_pr(make_pr(3))
+    review = await store.start_review(other.ref)
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    await store.set_verdict(other.ref, Verdict(ActionKind.APPROVE, "older"))
+    assert await store.resting_state(other.ref) == PRState.NEEDS_YOU
+    await store.set_verdict(other.ref, Verdict(ActionKind.APPROVE, other.head_sha))
+    assert await store.resting_state(other.ref) == PRState.DONE
+
     mine = await store.upsert_pr(make_pr(2, authored=True))  # no verdict on your own
     assert await store.resting_state(mine.ref) == PRState.NOT_REVIEWED
     review = await store.start_review(mine.ref)
     await store.finish_review(review.id, summary="Answered", findings=[])
     assert await store.resting_state(mine.ref) == PRState.DONE
+
+
+async def test_your_latest_verdict(store):
+    """Posted through Purr or read from GitHub, the latest one is yours: whether you approved
+    the PR (m can merge it) and whether it's done as it is."""
+    ref = (await store.upsert_pr(make_pr(1))).ref
+    assert await store.approved_head(ref) is None
+    await give_verdict(store, ref, head="abc123")
+    assert (await store.get_pr(ref)).verdict == Verdict(ActionKind.APPROVE, "abc123")
+    assert await store.approved_head(ref) == "abc123"
+    comment = await store.add_pending_action(ref, kind=ActionKind.COMMENT, description="c")
+    await store.transition_action(
+        comment.id, expected=ActionStatus.PENDING, new=ActionStatus.EXECUTED, posted_head="abc123"
+    )
+    assert await store.approved_head(ref) == "abc123"  # a comment isn't a verdict
+    await store.set_verdict(ref, Verdict(ActionKind.REQUEST_CHANGES, "abc123"))  # on GitHub
+    assert await store.approved_head(ref) is None
+    await store.set_verdict(ref, None)  # dismissed
+    assert (await store.get_pr(ref)).verdict is None
+
+    # Done with none: done by the rule before, it needs one. With one, it stays done.
+    await store.set_pr_state(ref, PRState.DONE)
+    assert await store.done_without_verdict() == [ref]
+    await store.set_verdict(ref, Verdict(ActionKind.APPROVE, "abc123"))
+    assert await store.done_without_verdict() == []
+
+    # What GitHub said before Purr posted one is older than it.
+    await give_verdict(store, ref, head="abc123")
+    await store.set_verdict(ref, None, read_at="2026-01-01T00:00:00+00:00")
+    assert await store.approved_head(ref) == "abc123"
 
 
 async def test_what_waits_on_you_in_a_repo(store):
@@ -229,7 +270,7 @@ async def test_migrating_a_v1_database_keeps_prs(tmp_path):
 
 async def test_actions_survive_the_migration_that_allows_pushes(tmp_path):
     path = tmp_path / "purr.db"
-    before = len(MIGRATIONS) - 1  # the one before pushes
+    before = len(MIGRATIONS) - 2  # the one before pushes
     async with aiosqlite.connect(path) as db:
         script = "\n".join(MIGRATIONS[:before])
         await db.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {before};\nCOMMIT;")
@@ -247,6 +288,8 @@ async def test_actions_survive_the_migration_that_allows_pushes(tmp_path):
     async with Store.connect(path) as store:
         assert await store.schema_version() == len(MIGRATIONS)
         ref = PRRef("a/b", 1)
+        # Your verdicts start from what Purr posted.
+        assert (await store.get_pr(ref)).verdict == Verdict(ActionKind.APPROVE, "s")
         assert await store.approved_head(ref) == "s"
         push = await store.add_pending_action(ref, kind=ActionKind.PUSH, description="Push")
         assert [a.kind for a in await store.pending_actions(ref)] == [push.kind]

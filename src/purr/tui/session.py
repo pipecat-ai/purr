@@ -127,7 +127,7 @@ class SessionState:
     background: int = 0  # its tasks (agents, commands) still running in the background
     ask: PermissionRequest | None = None
     details_error: str | None = None  # why the description couldn't be loaded
-    approved: str | None = None  # the commit you approved it at, through Purr
+    approved: str | None = None  # the commit you approved it at (your latest verdict)
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
     proposal: ActionKind | None = None  # what the agent proposes (the oldest), as last read

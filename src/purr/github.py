@@ -17,6 +17,7 @@ from loguru import logger
 from purr.compat import batched
 from purr.models import (
     PR,
+    ActionKind,
     Check,
     CheckState,
     FileChange,
@@ -28,6 +29,7 @@ from purr.models import (
     PRHead,
     PRRef,
     Reply,
+    Verdict,
 )
 
 # Searches are sorted by creation so that pages stay stable while PRs get updated.
@@ -85,6 +87,17 @@ _CONVERSATION_FIELDS = """
     reviewThreads(last: 50) { nodes { path line
         comments(last: 30) { nodes { author { login __typename } createdAt body url } } } }
 """
+
+
+def _verdict_fields(me: str) -> str:
+    """Your latest verdict on a PR: the last review of yours that approved it, requested
+    changes or got dismissed, whatever you said after it."""
+    return (
+        f" yourVerdict: reviews(last: 1, author: {json.dumps(me)},"
+        " states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) { nodes { state commit { oid } } }"
+    )
+
+
 # What you know of a repo: your merged PRs there, and those of others you reviewed,
 # the latest 50 of each, with their files (see purr.upnext).
 _HISTORY = {
@@ -183,6 +196,15 @@ class Snapshot:
     requested: list[RemotePR] | None = field(default_factory=list)
     involved: list[RemotePR] | None = field(default_factory=list)
     mine: list[RemotePR] | None = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Standing:
+    """Where you stand on a PR on GitHub: what others said to you since your last word, and
+    your latest verdict."""
+
+    replies: list[Reply]
+    verdict: Verdict | None = None
 
 
 @dataclass(frozen=True)
@@ -529,15 +551,17 @@ class GitHub:
             maintainer_can_modify=bool(found.get("maintainerCanModify")),
         )
 
-    async def replies(self, refs: Iterable[PRRef]) -> dict[PRRef, list[Reply]]:
-        """What others said to you on these PRs since your last word (see :func:`replies_to`).
+    async def standing(self, refs: Iterable[PRRef]) -> dict[PRRef, Standing]:
+        """What others said to you on these PRs since your last word (see :func:`replies_to`),
+        and your latest verdict on each (see :func:`verdict_of`).
 
         PRs that can't be read are left out.
         """
         me = await self.viewer_login()
+        fields = _CONVERSATION_FIELDS + _verdict_fields(me)
         return {
-            ref: replies_to(me, pr)
-            for ref, pr in (await self._pull_requests(refs, _CONVERSATION_FIELDS)).items()
+            ref: Standing(replies_to(me, pr), verdict_of(pr))
+            for ref, pr in (await self._pull_requests(refs, fields)).items()
         }
 
     async def _pull_requests(
@@ -597,6 +621,20 @@ def replies_to(me: str, pr: dict) -> list[Reply]:
     for thread, nodes in threads:
         replies += _thread_replies(me, thread, nodes, on_pr, authored=authored)
     return sorted(replies, key=lambda r: r.at)
+
+
+_VERDICT_KINDS = {"APPROVED": ActionKind.APPROVE, "CHANGES_REQUESTED": ActionKind.REQUEST_CHANGES}
+
+
+def verdict_of(pr: dict) -> Verdict | None:
+    """Your latest verdict on a PR (its GraphQL node, with ``yourVerdict``), at the commit you
+    gave it: None if you've given none, or it was dismissed."""
+    latest = _nodes(pr.get("yourVerdict"))[-1:]
+    if not latest:
+        return None
+    kind = _VERDICT_KINDS.get(latest[0].get("state") or "")
+    head = (latest[0].get("commit") or {}).get("oid")
+    return Verdict(kind, head) if kind and head else None
 
 
 def _says_something(review: dict) -> bool:

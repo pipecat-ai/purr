@@ -23,7 +23,7 @@ def test_ready():
 
 
 def test_what_stops_a_merge():
-    assert blockers(READY, None) == ["You haven't approved it here"]
+    assert blockers(READY, None) == ["You haven't approved it"]
     assert blockers(READY, "older") == [
         "It has new commits since you approved it: approve again first"
     ]
