@@ -2373,10 +2373,10 @@ async def test_a_shows_the_push_under_way_at_once(tmp_path):
         await pilot.press("a")  # it's under way: a again does nothing
 
         repos.push_gate.set()
-        await until(pilot, lambda: getattr(repos, "pushed", []))
+        # Done: it says so (the moment its own refresh is), and the spinners stop.
+        await until(pilot, lambda: any("Pushed" in n.message for n in app._notifications))
         await until(pilot, lambda: not working(app) and mark() not in FRAMES)
         assert len(repos.pushed) == 1
-        assert any("Pushed" in n.message for n in app._notifications)
         assert not any(n.severity == "error" for n in app._notifications)
 
 
