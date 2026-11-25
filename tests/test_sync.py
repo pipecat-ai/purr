@@ -2,7 +2,7 @@ from dataclasses import replace
 
 from purr.github import PRStatus, RemotePR, Snapshot
 from purr.models import PR, GHState, PRChange, PRRef, PRState
-from purr.sync import missing_reviewed, plan_sync
+from purr.sync import missing_reviewed, moved_reviewed, plan_sync
 
 WATCHED = ["pipecat-ai/pipecat"]
 
@@ -73,6 +73,51 @@ def test_new_commits_only_matter_once_reviewed():
 
     assert {pr.number for pr in plan.upserts} == {1, 2}
     assert changes(plan) == [(2, PRChange.NEW_COMMITS)]
+
+
+def test_a_reviewed_prs_new_head_is_the_one_it_has():
+    """The searches lag behind a push (Purr's own, say): the head from before it is no news,
+    nor is a head that moved since; the head the PR has is."""
+    snapshot = Snapshot(
+        open={
+            "pipecat-ai/pipecat": [
+                remote(1, head_sha="aaa"),  # from before Purr pushed bbb
+                remote(2, head_sha="ccc"),  # the author pushed
+                remote(3, head_sha="ccc"),  # the author pushed twice: ddd now
+                remote(4, head_sha="ccc"),  # never reviewed: as the search has it
+                remote(5, head_sha="ccc"),  # couldn't be looked up: as the search has it
+            ]
+        },
+        assigned=[],
+    )
+    reviewed = {"state": PRState.NEEDS_YOU, "head_sha": "bbb"}
+    current = [
+        stored(1, **reviewed),
+        stored(2, **reviewed),
+        stored(3, **reviewed),
+        stored(4, head_sha="bbb"),
+        stored(5, **reviewed),
+    ]
+    refs = {n: PRRef("pipecat-ai/pipecat", n) for n in range(1, 6)}
+    assert moved_reviewed(current, snapshot) == [refs[n] for n in (1, 2, 3, 5)]
+
+    statuses = {
+        refs[1]: PRStatus(GHState.OPEN, "bbb"),
+        refs[2]: PRStatus(GHState.OPEN, "ccc"),
+        refs[3]: PRStatus(GHState.OPEN, "ddd"),
+    }
+    plan = plan_sync(current, snapshot, watched=WATCHED, statuses=statuses)
+    assert sorted((pr.number, pr.head_sha) for pr in plan.upserts) == [
+        (2, "ccc"),
+        (3, "ddd"),
+        (4, "ccc"),
+        (5, "ccc"),
+    ]
+    assert sorted(changes(plan)) == [
+        (2, PRChange.NEW_COMMITS),
+        (3, PRChange.NEW_COMMITS),
+        (5, PRChange.NEW_COMMITS),
+    ]
 
 
 def test_prs_leaving_the_pool_are_dropped_unless_reviewed():

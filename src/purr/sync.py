@@ -19,6 +19,9 @@ Pure functions, so the rules are easy to test without GitHub or a database:
   the last sync are fetched, and each is classified as listed or not. PRs that
   weren't updated are left as they are.
 - Nothing is concluded from a search that failed or came back incomplete.
+- A reviewed PR's new head is read from the PR itself before it's believed: the
+  searches lag behind a push (Purr's own, say) and can report the head from
+  before it, which would look like new commits.
 - A repo's first sync doesn't report every PR in its pool as new.
 """
 
@@ -150,6 +153,22 @@ def missing_reviewed(
     ]
 
 
+def moved_reviewed(current: Iterable[PR], snapshot: Snapshot) -> list[PRRef]:
+    """PRs Purr has reviewed whose head the searches say moved.
+
+    Their status has to be looked up before planning: the PR itself has its head
+    right, where the searches may still have the one from before a push.
+    """
+    seen = _seen(snapshot)
+    return [
+        pr.ref
+        for pr in current
+        if pr.ref in seen
+        and seen[pr.ref].head_sha != pr.head_sha
+        and pr.state != PRState.NOT_REVIEWED
+    ]
+
+
 def plan_sync(
     current: Iterable[PR],
     snapshot: Snapshot,
@@ -165,7 +184,8 @@ def plan_sync(
         snapshot: What GitHub returned.
         watched: Watched repo names.
         first_sync: Watched repos never synced before; their pool isn't reported as new.
-        statuses: GitHub status of the PRs ``missing_reviewed()`` returned.
+        statuses: GitHub status of the PRs ``missing_reviewed()`` and
+            ``moved_reviewed()`` returned.
     """
     watched, first_sync, statuses = set(watched), set(first_sync), statuses or {}
     plan = SyncPlan()
@@ -178,7 +198,7 @@ def plan_sync(
             change = _new_pr_change(new, ref.repo in first_sync, ref.repo in watched)
             plan.report(ref, change, new.title)
         else:
-            _plan_found_again(plan, old, new, watched=ref.repo in watched)
+            _plan_found_again(plan, old, new, statuses.get(ref), watched=ref.repo in watched)
     me = snapshot.viewer or ""
     for ref, old in current_by_ref.items():
         if ref not in seen and _covered(ref, snapshot, watched):
@@ -186,9 +206,14 @@ def plan_sync(
     return plan
 
 
-def _plan_found_again(plan: SyncPlan, old: PR, new: PR, *, watched: bool) -> None:
-    """A PR in the store that the searches found again: what's new about it, to store and tell."""
+def _plan_found_again(
+    plan: SyncPlan, old: PR, new: PR, status: PRStatus | None, *, watched: bool
+) -> None:
+    """A PR in the store that the searches found again: what's new about it, to store and tell.
+    Its ``status``, if it was looked up, has its head right."""
     new = replace(new, involved=new.involved or old.involved)  # it sticks
+    if status:
+        new = replace(new, head_sha=status.head_sha)
     if not _same_metadata(old, new):
         plan.upserts.append(new)
     plan.report(new.ref, _assignment_change(old, new, watched), new.title)
