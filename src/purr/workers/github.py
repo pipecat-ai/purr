@@ -12,7 +12,7 @@ from pipecat.workers.base_worker import BaseWorker
 
 from purr.actions import ActionError, GhWriter, GitHubWriter, execute, post_comments
 from purr.git import GitError, GitRepos
-from purr.github import GitHub, GitHubError, RemotePR, Snapshot
+from purr.github import GitHub, GitHubError, RemotePR, Snapshot, Standing
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, handles
 from purr.merging import blockers, concerns, new_concerns
 from purr.messages import (
@@ -62,7 +62,6 @@ from purr.models import (
     PRChange,
     PRRef,
     PRState,
-    Reply,
     Repo,
     parse_repo_name,
 )
@@ -237,10 +236,11 @@ class GitHubWorker(BaseWorker):
         return await self._github.snapshot(full, incremental, on_page=on_page)
 
     async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
-        """Read what others said to you on PRs Purr reviewed, you took part in or that are
-        yours, that changed (all of them, the first time).
+        """Read what others said to you, and your verdict, on PRs Purr reviewed, you took
+        part in or that are yours, that changed (all of them, the first time).
 
-        Returns the PRs with new replies, and whether any PR's replies or state changed.
+        Returns the PRs with new replies, and whether any PR's replies, verdict or state
+        changed.
         """
         followed = {
             pr.ref: pr
@@ -248,33 +248,59 @@ class GitHubWorker(BaseWorker):
             if pr.state != PRState.NOT_REVIEWED or pr.involved or pr.authored
         }
         due = set(followed) if self._replies_due is None else self._replies_due | changed
-        found = await self._fetch_replies(due & followed.keys())
+        asked = datetime.now(UTC).isoformat(timespec="seconds")
+        found = await self._fetch_standing(due & followed.keys())
         news, any_changed = [], False
-        for ref, replies in found.items():
+        for ref, standing in found.items():
             old = followed[ref]
-            await self._store.set_replies(ref, replies)
+            await self._store.set_replies(ref, standing.replies)
+            await self._store.set_verdict(ref, standing.verdict, read_at=asked)
             pr = await self._store.get_pr(ref)
-            if pr is None or pr.replies == old.replies:
+            if pr is None or (pr.replies, pr.verdict) == (old.replies, old.verdict):
                 continue
             any_changed = True
             if change := _replied(old, pr):
                 news.append(change)
+            if pr.verdict != old.verdict:
+                await self._verdict_given(pr)
             await self._needs_you_if_replied(pr)
         return news, any_changed
 
-    async def _fetch_replies(self, due: set[PRRef]) -> dict[PRRef, list[Reply]]:
-        """Replies to you on the PRs that are due; any GitHub didn't answer for stay due."""
+    async def _fetch_standing(self, due: set[PRRef]) -> dict[PRRef, Standing]:
+        """Replies to you, and your verdict, on the PRs that are due; any GitHub didn't
+        answer for stay due."""
         if not due:
             self._replies_due = set()
             return {}
         try:
-            found = await self._github.replies(sorted(due))
+            found = await self._github.standing(sorted(due))
         except GitHubError as e:
             logger.warning(f"Couldn't read replies on {len(due)} PRs: {e}")
             self._replies_due = due  # next time
             return {}
         self._replies_due = due - found.keys()
         return found
+
+    async def _verdict_given(self, pr: PR) -> None:
+        """You gave your verdict on the PR as it is, on GitHub: what the agent proposed to
+        approve it or request changes is moot (its other proposals still wait on you)."""
+        if not pr.verdict or pr.verdict.head != pr.head_sha:
+            return
+        for action in await self._store.pending_actions(pr.ref):
+            if action.kind.verdict:
+                await self._dismiss(action.id)
+
+    async def _dismiss(self, action_id: str) -> None:
+        """Dismiss a proposal, if it's still pending."""
+        action = await self._store.transition_action(
+            action_id, expected=ActionStatus.PENDING, new=ActionStatus.DISMISSED
+        )
+        if action:
+            await self.send_bus_message(
+                ActionResolved(
+                    source=self.name, pr=str(action.pr), action_id=action_id, approved=False
+                )
+            )
 
     async def _needs_you_if_replied(self, pr: PR) -> None:
         """A PR with replies to you needs you; once none are left, it settles back."""

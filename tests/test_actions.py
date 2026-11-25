@@ -382,7 +382,8 @@ async def approved():
         )
         await store.set_pr_state(REF, PRState.NEEDS_YOU)
         approval = await store.add_pending_action(REF, kind=ActionKind.APPROVE, description="LGTM")
-        github, writer = FakeGitHub(), FakeWriter()
+        github = FakeGitHub()
+        writer = FakeWriter(github)  # what it posts is on GitHub
         github.merge_checks[REF] = READY
         worker = GitHubWorker(store=store, github=github, writer=writer, interval=3600)
         client = BaseWorker("client")
@@ -399,7 +400,7 @@ async def approved():
 async def test_merging_is_your_final_decision(approved):
     store, github, writer, client, approval = approved
     readiness = await request(client, CheckMerge(pr=REF), timeout=5)
-    assert readiness.blockers == ["You haven't approved it here"]
+    assert readiness.blockers == ["You haven't approved it"]
     with pytest.raises(Busy, match="haven't approved"):
         await request(client, MergePR(pr=REF, seen=[]), timeout=5)
     await request(client, ApproveAction(action_id=approval.id), timeout=5)

@@ -2,8 +2,8 @@
 
 from dataclasses import replace
 
-from purr.github import RemotePR, Snapshot
-from purr.models import ActionKind, ActionStatus
+from purr.github import RemotePR, Snapshot, Standing
+from purr.models import ActionKind, ActionStatus, Verdict
 
 
 async def give_verdict(store, ref, kind=ActionKind.APPROVE, *, head="abc") -> None:
@@ -44,8 +44,9 @@ class FakeGitHub:
         self.requested: list[RemotePR] = []
         self.involved: list[RemotePR] = []  # PRs you commented on or reviewed
         self.mine: list[RemotePR] = []  # PRs you opened
-        self.conversations: dict = {}  # PRRef -> [Reply], what replies() answers
-        self.replies_calls: list[list] = []
+        self.conversations: dict = {}  # PRRef -> [Reply], what standing() answers
+        self.verdicts: dict = {}  # PRRef -> Verdict, your latest on GitHub
+        self.standing_calls: list[list] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
 
     async def repo_name(self, name: str) -> str | None:
@@ -97,10 +98,13 @@ class FakeGitHub:
     async def merge_check(self, ref):
         return self.merge_checks.get(ref)
 
-    async def replies(self, refs):
+    async def standing(self, refs):
         refs = list(refs)
-        self.replies_calls.append(refs)
-        return {ref: list(self.conversations.get(ref, [])) for ref in refs}
+        self.standing_calls.append(refs)
+        return {
+            ref: Standing(list(self.conversations.get(ref, [])), self.verdicts.get(ref))
+            for ref in refs
+        }
 
     async def review_threads(self, ref):
         return list(getattr(self, "threads", []))
@@ -282,6 +286,9 @@ class FakeAgent:
         )
 
 
+_VERDICT_EVENTS = {"APPROVE": ActionKind.APPROVE, "REQUEST_CHANGES": ActionKind.REQUEST_CHANGES}
+
+
 class FakeWriter:
     """Stands in for purr.actions.GhWriter: records reviews instead of posting them. Given
     the FakeGitHub, the comments it posts, changes and deletes are there too, as on GitHub:
@@ -308,6 +315,8 @@ class FakeWriter:
         self.reviews.append(
             {"pr": ref, "event": event, "body": body, "comments": comments, "commit_id": commit_id}
         )
+        if self.github and event in _VERDICT_EVENTS:  # your latest verdict, on GitHub
+            self.github.verdicts[ref] = Verdict(_VERDICT_EVENTS[event], commit_id)
         return f"https://github.com/{ref.repo}/pull/{ref.number}#review-{len(self.reviews)}"
 
     async def assign_self(self, ref):

@@ -113,8 +113,17 @@ class PRRef:
 
 
 @dataclass(frozen=True)
+class Verdict:
+    """Your latest verdict on a PR on GitHub (approved it, or requested changes), and the
+    commit you gave it at: given there or posted by Purr, as Purr last knew."""
+
+    kind: ActionKind  # APPROVE or REQUEST_CHANGES
+    head: str
+
+
+@dataclass(frozen=True)
 class Reply:
-    """Something said to you on a PR after your last word there (see ``GitHub.replies``).
+    """Something said to you on a PR after your last word there (see ``GitHub.standing``).
 
     ``where`` is ``path:line`` for a reply in a review thread, "" on the PR itself.
     """
@@ -151,6 +160,7 @@ class PR:
     state_at: str | None = None  # when it got to its state (done: when you finished)
     # Replies to you you haven't answered (or said need no answer), oldest first.
     replies: tuple[Reply, ...] = ()
+    verdict: Verdict | None = None  # your latest on GitHub, as Purr last knew
     id: int | None = None
 
     @property
