@@ -483,7 +483,9 @@ class GitHubWorker(BaseWorker):
             action.id, expected=ActionStatus.APPROVED, new=ActionStatus.EXECUTED,
             posted_head=push["onto"],
         )  # fmt: skip
-        self.request_poll()  # for its new head
+        # Its head now, right away: an approval next is of what you pushed.
+        await self._store.pushed(action.pr, push["commit"])
+        self.request_poll()
         ref = action.pr
         return Posted(
             url=f"https://github.com/{ref.repo}/pull/{ref.number}/commits/{push['commit']}"
@@ -698,6 +700,8 @@ class GitHubWorker(BaseWorker):
             raise Failed(f"Couldn't read the PR from GitHub: {e}") from e
         if check is None:
             raise NotFound(f"GitHub doesn't show {ref}")
+        if check.head_sha != pr.head_sha:
+            self.request_poll()  # commits Purr hasn't seen: they bring it back for review
         approved = await self._store.approved_head(ref)
         me = await self._github.viewer_login()
         return MergeReadiness(

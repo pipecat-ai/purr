@@ -598,6 +598,7 @@ def render_merge(pr: PR, readiness: MergeReadiness) -> Text:
         for blocker in readiness.blockers:
             text.append(f"\n  ✗ {blocker}", style="red")
         text.append("\n[m] check again", style="bold")
+        text.append("   [x] close", style="dim")
         return text
     check = readiness.check
     verb = _MERGE_VERBS.get(check.method, "Merge")
@@ -608,7 +609,7 @@ def render_merge(pr: PR, readiness: MergeReadiness) -> Text:
     for concern in readiness.concerns:
         text.append(f"\n  ⚠ {concern}", style="yellow")
     text.append("\n[m] merge anyway" if readiness.concerns else "\n[m] merge", style="bold")
-    text.append("   or move on to leave it", style="dim")
+    text.append("   [x] leave it", style="dim")
     return text
 
 
