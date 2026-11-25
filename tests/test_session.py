@@ -1,8 +1,14 @@
 from rich.console import Console
 
 from purr.messages import PermissionRequest
-from purr.models import ActionKind, DraftComment, Reply
-from purr.tui.session import SessionState, render_entry, render_replies, replied
+from purr.models import PR, ActionKind, DraftComment, Reply
+from purr.tui.session import (
+    SessionState,
+    needs_you_for,
+    render_entry,
+    render_replies,
+    replied,
+)
 
 
 def rendered(entry) -> str:
@@ -95,3 +101,26 @@ def test_a_says_what_it_does():
         source="reviews", pr="a/b#1", request_id="r", tool="Bash", description="", reason=""
     )
     assert state.a_does() == "Allow once"  # the agent's question comes first
+
+
+def test_what_a_pr_needs_you_for():
+    pr = PR("a/b", 1, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z")
+    ask = PermissionRequest(
+        source="reviews", pr="a/b#1", request_id="r", tool="Bash",
+        description="$ uv run pytest", reason="",
+    )  # fmt: skip
+
+    def needs(ask=None, proposal=None, drafted=False, failed=False, replies=()) -> str:
+        on = PR("a/b", 1, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z", replies=replies)
+        return needs_you_for(on, ask, proposal, drafted=drafted, failed=failed)
+
+    alice = (Reply("alice", "Why?", "2026-11-21T10:00:00Z"),)
+    # The most pressing first, as the decision box asks.
+    assert needs(ask, ActionKind.APPROVE, replies=alice) == "Asks: $ uv run pytest"
+    assert needs(None, ActionKind.APPROVE, replies=alice) == "Approve PR?"
+    assert needs(None, ActionKind.REQUEST_CHANGES) == "Request changes?"
+    assert needs(drafted=True, replies=alice) == "Post your comments?"
+    assert needs(replies=alice, failed=True) == "alice replied"
+    assert needs(failed=True) == "Review failed"
+    assert needs() == "No verdict yet"
+    assert pr.replies == ()

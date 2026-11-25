@@ -1217,9 +1217,39 @@ class Store:
                 found += [{"severity": row["severity"]}] * row["n"]
         return {ref: Outcome.of(found) for ref, found in counts.items()}
 
+    async def failed(self, repo: str) -> set[PRRef]:
+        """The repo's PRs whose latest review failed."""
+        rows = await self._fetchall(
+            """
+            SELECT prs.repo, prs.number FROM prs
+            JOIN reviews ON reviews.id = (SELECT MAX(id) FROM reviews WHERE reviews.pr_id = prs.id)
+            WHERE prs.repo = ? AND reviews.status = ?
+            """,
+            (repo, ReviewStatus.FAILED),
+        )
+        return {PRRef(row["repo"], row["number"]) for row in rows}
+
     # -- Pending actions -------------------------------------------------------
 
+    async def proposed(self, repo: str) -> dict[PRRef, ActionKind]:
+        """What the agent proposes on each of the repo's PRs (the oldest, if several)."""
+        rows = await self._fetchall(
+            f"{self._ACTION_SELECT} WHERE prs.repo = ? AND pending_actions.status = ?"
+            " ORDER BY pending_actions.created_at DESC, pending_actions.rowid DESC",
+            (repo, ActionStatus.PENDING),
+        )
+        return {PRRef(row["repo"], row["number"]): ActionKind(row["kind"]) for row in rows}
+
     # -- Your inline comments, until they're posted ----------------------------------
+
+    async def drafted(self, repo: str) -> set[PRRef]:
+        """The repo's PRs with comments of yours not posted yet."""
+        rows = await self._fetchall(
+            "SELECT DISTINCT prs.repo, prs.number FROM draft_comments"
+            " JOIN prs ON prs.id = draft_comments.pr_id WHERE prs.repo = ?",
+            (repo,),
+        )
+        return {PRRef(row["repo"], row["number"]) for row in rows}
 
     async def save_comment(
         self,

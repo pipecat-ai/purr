@@ -37,7 +37,7 @@ from purr.tui.lists import (
     separated,
 )
 from purr.tui.pr_keys import PRKeys
-from purr.tui.session import PRSession, SessionState, outcome_mark
+from purr.tui.session import PRSession, SessionState, needs_you_for, outcome_mark
 from purr.tui.theme import palette
 from purr.tui.working import FRAME_SECONDS, FRAMES
 
@@ -86,6 +86,10 @@ class RepoView(PRKeys):
         self._selected: dict[str, str] = {}  # repo -> highlighted PR
         self._marked: set[str] = set()
         self._outcomes: dict = {}  # PRRef -> what its latest review found
+        # What the repo's PRs wait on you for, besides their sessions' questions.
+        self._proposed: dict = {}  # PRRef -> what the agent proposes (ActionKind)
+        self._drafted: set = set()  # PRRefs with comments of yours not posted
+        self._failed: set = set()  # PRRefs whose latest review failed
         self._up_next: dict[str, UpNext] = {}  # what's up next in the repo, by PR
         self._listed: str | None = None  # the repo whose PRs the list has
         self._folded: dict[str, set[str]] = {}  # repo -> its groups folded (←)
@@ -129,6 +133,9 @@ class RepoView(PRKeys):
         store = self.purr_app.purr.store
         self._all = await store.list_prs(repo=self.repo, open_only=True)
         self._outcomes = await store.outcomes(self.repo)
+        self._proposed = await store.proposed(self.repo)
+        self._drafted = await store.drafted(self.repo)
+        self._failed = await store.failed(self.repo)
         self._up_next = {str(pick.pr): pick for pick in await store.up_next(self.repo)}
         self._number_width = max((len(f"#{pr.number}") for pr in self._all), default=5)
         self._list()
@@ -241,21 +248,41 @@ class RepoView(PRKeys):
 
     def _prompt(self, pr: PR) -> Table:
         unread = str(pr.ref) in self.purr_app.alerts
-        pick = self._up_next.get(str(pr.ref)) if self._group(pr) == UP_NEXT else None
         return pr_row(
             pr,
             self._mark(pr),
             unread=unread,
             number_width=self._number_width,
-            note=pick.why if pick else "",
+            note=self._note(pr),
+        )
+
+    def _note(self, pr: PR) -> str:
+        """Dim, after its title: why it's up next, or what it needs you for."""
+        key = str(pr.ref)
+        if self._group(pr) == UP_NEXT:
+            return self._up_next[key].why
+        if pr.state != PRState.NEEDS_YOU:
+            return ""
+        state = self.purr_app.sessions.get(key)
+        return needs_you_for(
+            pr,
+            state.ask if state else None,
+            self._proposed.get(pr.ref),
+            drafted=pr.ref in self._drafted,
+            failed=pr.ref in self._failed,
         )
 
     def _mark(self, pr: PR) -> Text:
-        """Marked; its agent at work (spinning); what its review found; or its group's."""
+        """Marked; its agent at work (spinning); needing you (⚠, or ✗ if its review failed:
+        the note says what for); what its review found; or its group's."""
         if str(pr.ref) in self._marked:
             return Text("▪", style="bold magenta")
         if str(pr.ref) in self._spinning:
             return Text(FRAMES[self._frame % len(FRAMES)], style=f"bold {palette().working}")
+        if pr.state == PRState.NEEDS_YOU and pr.ref in self._failed and not pr.replies:
+            return Text("✗", style="bold red")
+        if pr.state == PRState.NEEDS_YOU:
+            return Text(ICONS[PRState.NEEDS_YOU], style="bold yellow")
         outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
         return outcome_mark(outcome) if outcome else Text(ICONS[self._group(pr)])
 

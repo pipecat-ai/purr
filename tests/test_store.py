@@ -193,6 +193,23 @@ async def test_where_a_pr_rests(store):
     assert await store.resting_state(mine.ref) == PRState.DONE
 
 
+async def test_what_waits_on_you_in_a_repo(store):
+    proposing, drafting, failing = [await store.upsert_pr(make_pr(n)) for n in (1, 2, 3)]
+    other = await store.upsert_pr(PR("x/y", 4, "t", "a", "u", "s", "2026-11-20T10:00:00Z"))
+    await store.add_pending_action(proposing.ref, kind=ActionKind.APPROVE, description="a")
+    await store.add_pending_action(proposing.ref, kind=ActionKind.COMMENT, description="b")
+    await store.add_pending_action(other.ref, kind=ActionKind.COMMENT, description="c")
+    await store.save_comment(
+        drafting.ref, path="a.py", line=1, side="RIGHT", body="Why?", head_sha="abc123"
+    )
+    review = await store.start_review(failing.ref)
+    await store.fail_review(review.id, error="boom")
+    repo = "pipecat-ai/pipecat"
+    assert await store.proposed(repo) == {proposing.ref: ActionKind.APPROVE}  # the oldest
+    assert await store.drafted(repo) == {drafting.ref}
+    assert await store.failed(repo) == {failing.ref}
+
+
 async def test_migrating_a_v1_database_keeps_prs(tmp_path):
     path = tmp_path / "purr.db"
 

@@ -98,6 +98,24 @@ A_DOES = {
 }
 
 
+def needs_you_for(
+    pr: PR, ask: PermissionRequest | None, proposal: ActionKind | None, *, drafted: bool,
+    failed: bool,
+) -> str:  # fmt: skip
+    """What a PR in Needs you waits on you for, in a few words, the most pressing first (as
+    the decision box asks): the agent's question, its proposal (what a does), your
+    comments, replies, a failed review; else, your verdict."""
+    if ask:
+        return f"Asks: {_short(ask.description, 80)}"
+    if proposal:
+        return f"{A_DOES[proposal]}?"
+    if drafted:
+        return "Post your comments?"
+    if pr.replies:
+        return replied(pr.replies)
+    return "Review failed" if failed else "No verdict yet"
+
+
 @dataclass
 class SessionState:
     """What the UI keeps about a PR's session between redraws."""
