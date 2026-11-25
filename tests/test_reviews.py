@@ -8,6 +8,7 @@ from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
+from purr.git import GitError
 from purr.jobs import Busy, Done, Invalid, NotFound, R, Request, request
 from purr.messages import (
     REVIEW_WORKER,
@@ -38,12 +39,22 @@ from purr.messages import (
     StopAgent,
     Synced,
 )
-from purr.models import PR, ActionKind, ActionStatus, Depth, PRRef, PRState, Reply, ReviewStatus
+from purr.models import (
+    PR,
+    ActionKind,
+    ActionStatus,
+    Depth,
+    PRHead,
+    PRRef,
+    PRState,
+    Reply,
+    ReviewStatus,
+)
 from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
 from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
 from purr.workers.reviews import STOPPED
-from tests.fakes import FakeAgent, FakeLead, FakeRepos, give_verdict, make_plugin
+from tests.fakes import FakeAgent, FakeGitHub, FakeLead, FakeRepos, give_verdict, make_plugin
 
 REF = PRRef("pipecat-ai/pipecat", 2841)
 
@@ -90,7 +101,7 @@ async def eventually(check: Callable[[], Awaitable[bool] | bool], timeout: float
 
 
 class Setup:
-    def __init__(self, store, agent, repos, client, runner, lead):
+    def __init__(self, store, agent, repos, client, runner, lead, github):
         self.store, self.agent, self.repos, self.client, self.runner = (
             store,
             agent,
@@ -98,7 +109,7 @@ class Setup:
             client,
             runner,
         )
-        self.lead = lead
+        self.lead, self.github = lead, github
 
     async def state(self) -> PRState:
         return (await self.store.get_pr(REF)).state
@@ -114,12 +125,14 @@ async def make(tmp_path):
     ) -> Setup:
         store = await Store.open(":memory:")
         agent, repos, client, lead = FakeAgent(), FakeRepos(tmp_path), Client(), FakeLead()
+        github = FakeGitHub()
         if before_start:
             await before_start(store, agent)
         worker = ReviewWorker(
             store=store,
             repos=repos,
             agent=agent,
+            github=github,
             permission_wait=permission_wait,
             max_reviews=max_reviews,
             quick_model="quick-model",
@@ -144,7 +157,7 @@ async def make(tmp_path):
 
         cleanups.append(cleanup)
         await asyncio.sleep(0.05)
-        return Setup(store, agent, repos, client, runner, lead)
+        return Setup(store, agent, repos, client, runner, lead, github)
 
     yield build
     for cleanup in cleanups:
@@ -1084,3 +1097,53 @@ async def test_writing_tells_the_agent_who_replied_to_you(make):
     prompt = s.agent.runs[1]["prompt"]
     assert "- alice, on the PR (2026-11-22T10:00:00Z): Why a lock?" in prompt
     assert prompt.endswith("\n\nAnswer alice")
+
+
+FIX = "e0b9581" + "0" * 33
+
+
+async def test_the_agent_proposes_pushing_its_commits(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    s.github.heads = {REF: PRHead("eric7h/pipecat", "fix/units", "abc123", True)}
+    s.repos.commits_made = [(FIX, "Handle a digit after the degree sign")]
+    s.agent.proposes = (ActionKind.PUSH, "Push it", {})
+    await s.client.request(StartReview(pr=REF))
+    await eventually(lambda: s.client.of(ReviewFinished))
+
+    # Purr says what goes where, whatever the agent said.
+    [push] = await s.store.pending_actions(REF)
+    assert (push.kind, push.description) == (ActionKind.PUSH, f"Push {FIX[:7]} to eric7h:fix/units")
+    assert push.payload == {
+        "commit": FIX,
+        "onto": "abc123",
+        "repo": "eric7h/pipecat",
+        "branch": "fix/units",
+        "commits": [{"sha": FIX, "subject": "Handle a digit after the degree sign"}],
+    }
+    assert await s.state() == PRState.NEEDS_YOU
+
+    async def proposed() -> str:
+        """Ask again; what it proposed, or why that was refused."""
+        refused = len(s.agent.refused)
+        await s.client.request(SendMessage(pr=REF, text="Push it"))
+        await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
+        if len(s.agent.refused) > refused:
+            return s.agent.refused[-1]
+        return (await s.store.pending_actions(REF))[0].description
+
+    s.repos.commits_made.insert(0, ("f00d" * 10, "And a test"))
+    assert await proposed() == "Push 2 commits, up to f00df00, to eric7h:fix/units"
+    s.repos.unpushed_error = GitError("The worktree has uncommitted changes: commit them first.")
+    assert "uncommitted" in await proposed()
+    s.repos.unpushed_error, s.repos.commits_made = None, []
+    assert "nothing to push" in await proposed()
+    s.repos.commits_made = [(FIX, "Handle a digit after the degree sign")]
+    s.github.heads[REF] = PRHead("eric7h/pipecat", "fix/units", "abc123")  # no edits by others
+    assert "doesn't allow edits by maintainers" in await proposed()
+    s.github.heads[REF] = PRHead("me/pipecat", "fix/units", "abc123")  # but your own fork's fine
+    assert await proposed() == f"Push {FIX[:7]} to me:fix/units"
+    s.github.heads[REF] = PRHead("pipecat-ai/pipecat", "fix/units", "def456")  # moved on
+    assert "new commits on GitHub" in await proposed()
+    s.github.heads[REF] = None
+    assert "branch is gone" in await proposed()

@@ -30,6 +30,7 @@ from purr.messages import (
 )
 from purr.models import (
     PR,
+    ActionKind,
     CheckState,
     Depth,
     DraftComment,
@@ -128,7 +129,12 @@ def _short(value: str, width: int = 100) -> str:
     return value if len(value) <= width else value[: width - 1] + "…"
 
 
-_VERDICT = {"request_changes": "Request changes", "approve": "Approve", "comment": "Comment"}
+_VERDICT = {
+    "request_changes": "Request changes",
+    "approve": "Approve",
+    "comment": "Comment",
+    "push": "Push",
+}
 
 
 def render_proposal(proposal: dict) -> RenderableType:
@@ -151,7 +157,16 @@ def render_proposal(proposal: dict) -> RenderableType:
         line = Text("↳ reply in thread  ", style="dim")
         line.append(str(reply.get("body", "")))
         parts.append(line)
+    parts += [_commit(commit) for commit in proposal.get("commits") or []]
     return Group(*parts)
+
+
+def _commit(commit: dict) -> Text:
+    """A commit a push would send: ``• e0b9581  Handle a digit after the degree sign``."""
+    line = Text("• ")
+    line.append(str(commit.get("sha", ""))[:7], style="cyan")
+    line.append(f"  {commit.get('subject', '')}")
+    return line
 
 
 def replied(replies: Sequence[Reply]) -> str:
@@ -431,6 +446,8 @@ def _proposal_question(pr: PR, state: SessionState, actions: list[PendingAction]
     if not actions:
         return None
     action = actions[0]
+    if action.kind == ActionKind.PUSH:
+        return _push_question(action)
     comments = len(action.payload.get("comments") or [])
     plural = "s" if comments != 1 else ""
     detail = f" · {comments} inline comment{plural}" if comments else ""
@@ -441,6 +458,20 @@ def _proposal_question(pr: PR, state: SessionState, actions: list[PendingAction]
         ("\n[a] approve   [x] dismiss", "bold"),
         ("   or write to change it", "dim"),
     )
+
+
+def _push_question(action: PendingAction, shown: int = 3) -> Text:
+    """The agent proposes pushing the commits it made: which, the latest few."""
+    commits = action.payload.get("commits") or []
+    text = Text(f"{action.description}?", style="bold")
+    for commit in commits[:shown]:
+        text.append(f"\n  {str(commit.get('sha', ''))[:7]} ", style="cyan")
+        text.append(_short(str(commit.get("subject", "")), 110))
+    if len(commits) > shown:
+        text.append(f"\n  and {len(commits) - shown} before", style="dim")
+    text.append("\n[a] push   [x] dismiss", style="bold")
+    text.append("   only if nobody pushed to it since", style="dim")
+    return text
 
 
 def _yours(mine: list[DraftComment]) -> str:

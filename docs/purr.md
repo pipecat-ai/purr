@@ -121,7 +121,7 @@ Every PR assigned to you gets reviewed. No team-wide auto-review: only PRs expli
 
 **Your PRs.** The PRs you opened, in any repo, are listed too: in their own group in their repo (**Your PRs**, after Reviewing), and counted at home, where a repo you don't watch shows up for one. They're never in the pool, and nothing about them is news: you opened them, pushed to them, and assigned yourself if you did (authors often do, so being assigned to your own PR doesn't start a review either). `r` reviews one all the same, as a second pair of eyes, without assigning you. When someone comments on one, it needs you (see Replies), and the agent reads what they said for you (`auto_answer`, on by default):
 
-- **What it does**: it checks each point against the code and says whether it's right, then proposes what to answer: a reply in each thread and a comment for what was said on the PR, in your voice, short; where a point is right, it'll be changed (not that it was). Its findings are the points worth changing (issue: should; suggestion: could; nit), so the header says `◆ Comments: found 1 issue · 1 pending action`, and `a` posts the answers as a comment (GitHub doesn't let you approve or request changes on your own PR). It doesn't change files by itself: ask it to in the PR's conversation, and it changes the worktree, for you to commit and push (`!`).
+- **What it does**: it checks each point against the code and says whether it's right, then proposes what to answer: a reply in each thread and a comment for what was said on the PR, in your voice, short; where a point is right, it'll be changed (not that it was). Its findings are the points worth changing (issue: should; suggestion: could; nit), so the header says `◆ Comments: found 1 issue · 1 pending action`, and `a` posts the answers as a comment (GitHub doesn't let you approve or request changes on your own PR). It doesn't change files by itself: ask it to in the PR's conversation, and it changes the worktree; ask it to push them, and `a` pushes what it committed (see Pushing), or commit and push yourself (`!`).
 - **How**: the lead asks the review worker when a poll finds new replies on a PR of yours (`AnswerComments {pr}`, after `pr.changed` with `replied`), without planning it, since it's no review: high priority in the line for `max_reviews`, never the repo's review skill. The first time is a new conversation for the PR; after that, the same one goes on, with everything still unanswered, and replaces what it proposed before. The agent's system prompt says it's your PR (`YOUR_PR_SECTION` in `review/agent.py`).
 
 **Replies.** Once you've reviewed a PR, through Purr or on GitHub (any open PR by others you've commented on or reviewed, in any repo: `prs.involved`, which sticks), and on your own PRs, Purr keeps an eye on the other side of the conversation: after a poll, it reads the comments on those PRs that changed on GitHub (on the first poll after startup, all of them; batched, 20 PRs to a request of about half a second), and works out what was said to you since your last word there (`replies_to` in `github.py`):
@@ -169,7 +169,7 @@ The pool can be hundreds of PRs. Rather than you choosing, the lead suggests a f
   - A short summary.
   - A list of findings (with file/line where possible, severity: issue / suggestion / nit).
   - A **pending action** proposed by the agent: a GitHub review to post (e.g. "post 3 comments + request changes", "approve"). Merging is never proposed: it's yours (see Merging).
-- The agent must **never** post to GitHub or merge directly. All GitHub-visible actions are proposed as pending actions and executed by the app only after user approval. Enforced, not just prompted: Claude Code deny rules plus a PreToolUse check deny GitHub writes (`gh pr review|comment|merge`, `gh api` with a write method, `git push`; see Permissions), and the agent gets a `propose_action` tool to use instead.
+- The agent must **never** post to GitHub or merge directly. All GitHub-visible actions, pushes included, are proposed as pending actions and executed by the app only after user approval. Enforced, not just prompted: Claude Code deny rules plus a PreToolUse check deny GitHub writes (`gh pr review|comment|merge`, `gh api` with a write method, `git push`; see Permissions), and the agent gets a `propose_action` tool to use instead.
 - The user can keep working in a PR's session after the review; see PR session.
 
 How it's built (`src/purr/review/`, `src/purr/workers/reviews.py`):
@@ -251,6 +251,15 @@ Approving and merging are apart on purpose: two people may be reviewing a PR (tw
 - While the pane says a check is still running, it stays current: Purr asks GitHub again every 10 seconds (`MERGE_RECHECK`) until none is, so a check that finishes or fails shows as it happens, without pressing anything. It stops when you move on or merge.
 - The PR shows merged at once (and its worktree goes); the next poll would only find it out. The commit an approval was of is kept when it's posted (`pending_actions.posted_head`).
 
+## Pushing: what the agent changed
+
+When you ask the agent to change a PR (a fix, a test), it edits the PR's worktree. It can't push (`git push` stays denied, see Permissions), but you can have Purr push what it committed:
+
+- Ask for it ("push it"). The agent commits on top of the PR's head and proposes a push (`propose_action` with kind `push`), only when you ask for one.
+- Purr works out what would go where and names it, whatever the agent said: `Push e0b9581 to eric7h:fix/units-temperature-degrees?` (or `Push 2 commits, up to e0b9581, to …`), with each commit's subject under it. It refuses, telling the agent why, when nothing's committed, changes are left uncommitted, the commits don't build on the PR's head, GitHub has commits Purr hasn't seen yet, the PR's branch is gone, or its author doesn't allow edits by maintainers on their fork (your own fork is fine).
+- `a` pushes them as you, from Purr's clone, to the PR's branch in its repo: a fork's URL is the clone's (https or ssh) with the fork's name. The push carries a lease on the head the commits were made on (`--force-with-lease`), so a push that came in meanwhile is never overwritten; if GitHub refuses, the proposal is back, to try again or dismiss. `x` dismisses it.
+- A push isn't a verdict: the PR still needs you. Its new commits come in with the next poll (asked for at once), and are re-reviewed like anyone's.
+
 ## Permissions: Claude Code's own
 
 Reviews use Claude Code's permission system, not one of Purr's own (`review/agent.py`, `review/rules.py`):
@@ -307,7 +316,7 @@ Jobs:
 - `GetWorktree {pr}` (git worker): the PR's worktree, made again if it was removed (for `c` and `!`).
 - `DismissReplies {pr}` (GitHub worker): the PR's replies to you need no answer (`x`).
 - `CheckMerge {pr}` / `MergePR {pr, seen}` (GitHub worker): where a PR stands for merging, and merging it past the concerns you saw (see Merging).
-- `ApproveAction {action_id}` / `DismissAction {action_id}` (GitHub worker). Approving claims the action atomically (so two requests at once can't post it twice), posts the GitHub review with its inline comments and yours (see Commenting), and marks the PR Done if it was a verdict (approve, request changes) and nothing else is pending; after a comment it still needs you. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. An approval with nothing to say is "LGTM". The proposal in the PR's conversation shows it too, so `a` posts exactly what you read.
+- `ApproveAction {action_id}` / `DismissAction {action_id}` (GitHub worker). Approving claims the action atomically (so two requests at once can't post it twice), posts the GitHub review with its inline comments and yours (see Commenting), and marks the PR Done if it was a verdict (approve, request changes) and nothing else is pending; after a comment it still needs you. If GitHub won't place an inline comment (line outside the diff), the comments go into the review body. If posting fails, the action goes back to pending for a retry. An approval with nothing to say is "LGTM". The proposal in the PR's conversation shows it too, so `a` posts exactly what you read. A push proposal is pushed instead (see Pushing).
 
 Events (broadcast, everyone listens):
 - `pr.list_updated` (repos, PRs or their states changed; re-read the store)

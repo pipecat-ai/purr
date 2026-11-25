@@ -11,6 +11,7 @@ from loguru import logger
 from pipecat.workers.base_worker import BaseWorker
 
 from purr.actions import ActionError, GhWriter, GitHubWriter, execute, post_comments
+from purr.git import GitError, GitRepos
 from purr.github import GitHub, GitHubError, RemotePR, Snapshot
 from purr.jobs import Busy, Done, Failed, Invalid, NotFound, handles
 from purr.merging import blockers, concerns, new_concerns
@@ -52,6 +53,7 @@ from purr.messages import (
 )
 from purr.models import (
     PR,
+    ActionKind,
     ActionStatus,
     DraftComment,
     GHState,
@@ -120,6 +122,7 @@ class GitHubWorker(BaseWorker):
         store: Where PRs and repos live.
         github: GitHub client.
         writer: Posts approved actions to GitHub.
+        repos: Pushes the commits an approved push proposal names (none: no pushing).
         interval: Seconds between polls.
     """
 
@@ -130,12 +133,14 @@ class GitHubWorker(BaseWorker):
         store: Store,
         github: GitHub,
         writer: GitHubWriter | None = None,
+        repos: GitRepos | None = None,
         interval: float = 60.0,
     ):
         super().__init__(name)
         self._store = store
         self._github = github
         self._writer = writer or GhWriter()
+        self._repos = repos
         self._interval = interval
         self._poll_now = asyncio.Event()
         # Serializes polls with repo changes, so a poll never re-adds PRs from a
@@ -383,6 +388,13 @@ class GitHubWorker(BaseWorker):
         )
         if action is None:
             raise NotFound("That action was already decided, or doesn't exist")
+        carry_out = self._push if action.kind == ActionKind.PUSH else self._post
+        posted = await carry_out(action)
+        await self._resolved(action.pr, action_id, approved=True)
+        return posted
+
+    async def _post(self, action: PendingAction) -> Posted:
+        """Post an approved review, with your inline comments, as you."""
         pr = await self._store.get_pr(action.pr)
         head_sha = pr.head_sha if pr else ""
         mine = await self._store.draft_comments(action.pr)
@@ -390,13 +402,10 @@ class GitHubWorker(BaseWorker):
         try:
             posted = await execute(self._writer, action, head_sha=head_sha, mine=here)
         except ActionError as e:
-            # Back to pending, so it can be retried.
-            await self._store.transition_action(
-                action_id, expected=ActionStatus.APPROVED, new=ActionStatus.PENDING
-            )
+            await self._retry_later(action)
             raise Failed(f"GitHub didn't take it: {e}") from e
         await self._store.transition_action(
-            action_id,
+            action.id,
             expected=ActionStatus.APPROVED,
             new=ActionStatus.EXECUTED,
             posted_head=head_sha or None,  # an approval is of this commit
@@ -405,8 +414,40 @@ class GitHubWorker(BaseWorker):
         # Yours on earlier commits: a review of their own each, on the commit they're on.
         warnings = [*posted.warnings, *await self._post_older(action.pr, mine, head_sha)]
         await self._store.dismiss_replies(action.pr)  # you've had your say
-        await self._resolved(action.pr, action_id, approved=True)
         return Posted(url=posted.url, warnings=warnings)
+
+    async def _push(self, action: PendingAction) -> Posted:
+        """Push the commits an approved proposal names to the PR's branch, as you: only if
+        it's still at the head they were made on, so nobody's work is overwritten."""
+        push = action.payload
+        try:
+            if self._repos is None:
+                raise GitError("Purr can't push from here")
+            await self._repos.push(
+                action.pr,
+                push["commit"],
+                repo=push["repo"],
+                branch=push["branch"],
+                onto=push["onto"],
+            )
+        except GitError as e:
+            await self._retry_later(action)
+            raise Failed(f"Couldn't push: {e}") from e
+        await self._store.transition_action(
+            action.id, expected=ActionStatus.APPROVED, new=ActionStatus.EXECUTED,
+            posted_head=push["onto"],
+        )  # fmt: skip
+        self.request_poll()  # for its new head
+        ref = action.pr
+        return Posted(
+            url=f"https://github.com/{ref.repo}/pull/{ref.number}/commits/{push['commit']}"
+        )
+
+    async def _retry_later(self, action: PendingAction) -> None:
+        """An approved action that didn't go through: back to pending, to try again."""
+        await self._store.transition_action(
+            action.id, expected=ActionStatus.APPROVED, new=ActionStatus.PENDING
+        )
 
     async def _post_older(self, ref: PRRef, mine: list[DraftComment], head_sha: str) -> list[str]:
         """Post your comments on commits other than ``head_sha``; what didn't go through."""

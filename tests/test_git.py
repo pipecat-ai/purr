@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from purr.git import GitError, GitRepos
+from purr.git import GitError, GitRepos, push_url
 from purr.models import PR, PRRef
 
 
@@ -321,3 +321,56 @@ async def test_your_changes_in_a_worktree_are_never_thrown_away(tmp_path, upstre
     # Both are in it: the edit, and the new file (git keeps untracked files in ^3).
     assert git(path, "show", "stash@{0}:a.txt") == "my experiment"
     assert git(path, "show", "stash@{0}^3:notes.txt") == "try this"
+
+
+async def test_pushing_the_commits_made_in_a_worktree(tmp_path, upstream):
+    # A blobless clone, as gh makes them (over file://, for the filter to apply).
+    git(upstream, "config", "uploadpack.allowFilter", "true")
+    uri = upstream.as_uri()
+    clone = ["git", "clone", "--quiet", "--bare", "--filter=blob:none", uri]
+    repos = GitRepos(tmp_path / "data", clone_command=lambda repo, dest: [*clone, str(dest)])
+    ref = PRRef("a/b", 7)
+    head = git(upstream, "rev-parse", "feature")
+    path = await repos.checkout(ref, head)
+    assert await repos.unpushed(ref, head) == []
+
+    (path / "a.txt").write_text("fixed\n")
+    with pytest.raises(GitError, match="uncommitted"):
+        await repos.unpushed(ref, head)
+    git(path, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "Fix it")
+    fix = git(path, "rev-parse", "HEAD")
+    assert await repos.unpushed(ref, head) == [(fix, "Fix it")]
+
+    # Not on top of the PR's head: nothing to push from there.
+    main = git(upstream, "rev-parse", "main")
+    git(path, "checkout", "-q", "--detach", main)
+    with pytest.raises(GitError, match="doesn't build on"):
+        await repos.unpushed(ref, head)
+    git(path, "checkout", "-q", "--detach", fix)
+
+    # Someone pushed to the branch since: the lease refuses.
+    git(upstream, "update-ref", "refs/heads/feature", main)
+    with pytest.raises(GitError):
+        await repos.push(ref, fix, repo="a/b", branch="feature", onto=head)
+    git(upstream, "update-ref", "refs/heads/feature", head)
+    await repos.push(ref, fix, repo="a/b", branch="feature", onto=head)
+    assert git(upstream, "rev-parse", "feature") == fix
+
+
+def test_pushing_to_a_fork_goes_the_way_the_clone_came():
+    https = "https://github.com/pipecat-ai/pipecat.git"
+    assert push_url(https, "pipecat-ai/pipecat", "eric7h/pipecat") == (
+        "https://github.com/eric7h/pipecat.git"
+    )
+    ssh = "git@github.com:pipecat-ai/pipecat.git"
+    assert (
+        push_url(ssh, "pipecat-ai/pipecat", "eric7h/my-fork") == "git@github.com:eric7h/my-fork.git"
+    )
+    bare = "https://github.com/Pipecat-AI/pipecat"
+    assert (
+        push_url(bare, "pipecat-ai/pipecat", "eric7h/pipecat")
+        == "https://github.com/eric7h/pipecat"
+    )
+    assert push_url("/tmp/upstream", "a/b", "a/b") == "/tmp/upstream"  # the PR's own repo
+    with pytest.raises(GitError):
+        push_url("/tmp/upstream", "a/b", "c/b")

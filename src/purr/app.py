@@ -154,6 +154,7 @@ class Purr:
                 store=store,
                 github=self._github,
                 writer=self._writer,
+                repos=self._repos,
                 interval=self._config.poll_interval,
             ),
             ReviewWorker(

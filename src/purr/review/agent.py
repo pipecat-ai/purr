@@ -93,6 +93,12 @@ digging deeper, and deciding what to post. When they ask to change what gets
 posted (drop a comment, reword one, change the verdict), call `propose_action`
 again with the whole updated proposal; it replaces the previous one. Same if
 your recommendation changes.
+
+When the user asks you to push changes to the PR: commit them here, on top of the
+PR's head (the worktree is detached there), then call `propose_action` with kind
+`push`. Purr shows them which commits go to which branch, and pushes them if they
+approve. Only propose a push when they ask for one, and never run `git push`
+yourself.
 """
 
 
@@ -181,7 +187,7 @@ The user opened it: you're helping them with it, not reviewing someone else's wo
 GitHub doesn't let them approve their own PR or request changes on it, so when you
 propose, use `comment`. When others have commented, help them answer: whether each
 point is right, what to change, and what to reply. If they ask you to change the code,
-change it in this worktree (they commit and push it themselves; you can't push)."""
+change it in this worktree; when they ask you to push it, commit it and propose `push`."""
 
 
 def guidelines_section(repo: str, guidelines: str) -> str:
@@ -218,6 +224,10 @@ def review_prompt(pr: PR, skill: str | None = None) -> str:
     return f'Review {pr.repo}#{pr.number}: "{pr.title}" by {pr.author} ({pr.url}).'
 
 
+class Refused(Exception):
+    """What the agent proposed can't be done; the message says why, for it to read."""
+
+
 @dataclass
 class ReviewCallbacks:
     """How a running review reports back to the review worker.
@@ -226,7 +236,7 @@ class ReviewCallbacks:
         on_message: Each transcript entry, as a plain dict (see :func:`transcript_entries`).
         on_submit: The agent's summary and findings.
         on_propose: A proposed GitHub action ``(kind, description, payload)``;
-            returns the pending action's ID.
+            returns the pending action's ID, or raises Refused.
         on_ask: Claude Code wants to ask about a tool call ``(tool, input,
             reason)``; returns whether the user allows it, or None if nobody
             answered in time.
@@ -662,7 +672,8 @@ def _purr_server(callbacks: ReviewCallbacks) -> McpSdkServerConfig:
 
     @tool(
         PROPOSE_ACTION,
-        "Propose a GitHub review for the user to approve; Purr posts it if they do.",
+        "Propose a GitHub review, or pushing your commits, for the user to approve; Purr "
+        "does it if they do.",
         PROPOSE_ACTION_SCHEMA,
     )
     async def propose_action(args: dict) -> dict:
@@ -675,7 +686,10 @@ def _purr_server(callbacks: ReviewCallbacks) -> McpSdkServerConfig:
             "comments": args.get("comments", []),
             "replies": args.get("replies", []),
         }
-        action_id = await callbacks.on_propose(kind, str(args.get("description", "")), payload)
+        try:
+            action_id = await callbacks.on_propose(kind, str(args.get("description", "")), payload)
+        except Refused as e:
+            return {**_ok(f"Not proposed: {e}"), "is_error": True}
         return _ok(f"Proposed (action {action_id}). The user will approve or dismiss it.")
 
     @tool(

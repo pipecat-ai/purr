@@ -298,6 +298,30 @@ MIGRATIONS: list[str] = [
     DROP TABLE recaps;
     DROP TABLE meta;
     """,
+    # The agent can propose pushing the commits it made to the PR's branch: a kind
+    # of action SQLite's CHECK won't take without making the table again.
+    """
+    CREATE TABLE pending_actions_new (
+        id          TEXT PRIMARY KEY,
+        pr_id       INTEGER NOT NULL REFERENCES prs (id) ON DELETE CASCADE,
+        kind        TEXT NOT NULL
+                    CHECK (kind IN ('comment', 'request_changes', 'approve', 'merge', 'push')),
+        description TEXT NOT NULL,
+        payload     TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'dismissed', 'executed', 'failed')),
+        created_at  TEXT NOT NULL,
+        resolved_at TEXT,
+        posted_head TEXT
+    );
+    INSERT INTO pending_actions_new
+        SELECT id, pr_id, kind, description, payload, status, created_at, resolved_at,
+               posted_head
+        FROM pending_actions;
+    DROP TABLE pending_actions;
+    ALTER TABLE pending_actions_new RENAME TO pending_actions;
+    CREATE INDEX pending_actions_pr ON pending_actions (pr_id);
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
