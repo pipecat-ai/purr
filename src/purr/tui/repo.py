@@ -225,11 +225,13 @@ class RepoView(PRKeys):
         return options
 
     def _working(self, key: str) -> bool:
+        """Its agent's at work, or Purr's doing what you asked for on it (a push, a merge)."""
         state = self.purr_app.sessions.get(key)
-        return bool(state and state.working)
+        return bool(state and (state.working or state.doing))
 
     def working_changed(self) -> None:
-        """Some review started or stopped working: start or stop its spinning mark."""
+        """Some review started or stopped working, or what you asked for on a PR got going
+        or is done: start or stop its spinning mark."""
         if not self.repo:
             return
         self.refresh_bindings()  # in the PR's pane, esc stops the agent, or doesn't
