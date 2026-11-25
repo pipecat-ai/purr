@@ -88,7 +88,7 @@ _TASK_EVENTS = {
 _WORKTREE_PREFIX = re.compile(r"\S*/worktrees/[^/\s]+/[^/\s]+/\d+/")
 
 
-# What a does to a proposal, by its kind, as the footer says it: so a never surprises.
+# What a does to a proposal, by its kind, as ? and the Needs you note say it.
 A_DOES = {
     ActionKind.COMMENT: "Post comment",
     ActionKind.APPROVE: "Approve PR",
@@ -684,7 +684,6 @@ class PRSession(Vertical):
         self.query_one(PromptArea).completer = self
         self._suggested: list[Command] = []
         self._drawn: PRRef | None = None  # the PR whose transcript is on screen
-        self._a_does: str | None = None  # what the footer said a does, last time
         self._wrote = False  # anything in the transcript yet (for the blank lines)
 
     # -- Slash commands (see purr.tui.commands) ----------------------------------------
@@ -945,7 +944,6 @@ class PRSession(Vertical):
         state.approved, state.mine = approved, mine
         state.proposal = actions[0].kind if actions else None
         state.verdict_due = _verdict_due(pr, review, actions)
-        self._footer(state)
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details, up_next)
@@ -959,21 +957,14 @@ class PRSession(Vertical):
 
     def show_doing(self) -> None:
         """What you asked for on the PR shown got going, or is done: the spinner says so at
-        once, in place of the decision box (bar the agent's question), and a does nothing
-        meanwhile. Done, refresh_status says what's next."""
+        once, in place of the decision box (bar the agent's question). Done, refresh_status
+        says what's next."""
         if not self.pr:
             return
         state = self.state()
         self._show_working(state)
-        self._footer(state)
         if state.doing and not state.ask:
             self.query_one("#pr-decision").display = False
-
-    def _footer(self, state: SessionState) -> None:
-        """The footer says what a does now."""
-        if state.a_does() != self._a_does:
-            self._a_does = state.a_does()
-            self.refresh_bindings()
 
     def _show_working(self, state: SessionState) -> None:
         working = self.query_one(Working)

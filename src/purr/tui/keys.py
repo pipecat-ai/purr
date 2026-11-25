@@ -20,11 +20,12 @@ REPO_KEYS = {
     "skip": Binding("s", "skip", "Skip"),  # up next: not for you
     "mark": Binding("space", "mark", "Mark"),
     # Whatever the decision box offers: do or dismiss a proposal, allow or deny a
-    # permission request. a says what it does (see MainScreen.describe_key).
-    "approve": Binding("a", "approve", "Accept"),
-    "always": Binding("A", "always", "Always allow"),
-    "dismiss": Binding("x", "dismiss", "Dismiss"),
-    "merge": Binding("m", "merge", "Merge"),
+    # permission request, merge. The box says them, with what each does, so the footer
+    # doesn't; ? lists them, a saying what it does (see MainScreen.describe_key).
+    "approve": Binding("a", "approve", "Accept", show=False),
+    "always": Binding("A", "always", "Always allow", show=False),
+    "dismiss": Binding("x", "dismiss", "Dismiss", show=False),
+    "merge": Binding("m", "merge", "Merge", show=False),
     "move(1)": Binding("n", "move(1)", "Next", group=_NEXT),
     "move(-1)": Binding("p", "move(-1)", "Previous", group=_NEXT),
     "diff": Binding("d", "diff", "Diff"),

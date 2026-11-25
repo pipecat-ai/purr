@@ -188,6 +188,13 @@ def footer(app: PurrApp) -> set[str]:
     return {what for bar in app.screen.query(KeyBar) for _, what in bar.keys}
 
 
+def key_help(app: PurrApp) -> set[str]:
+    """What ? says the keys do, where you are."""
+    from purr.tui.keyhelp import key_groups
+
+    return {what for _, rows in key_groups(app) for _, what in rows}
+
+
 def header(app: PurrApp) -> str:
     return str(app.main.repo.session.query_one("#pr-header").render())
 
@@ -237,9 +244,11 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         reviewed = agent.runs[0]["pr"]
         await until(pilot, lambda: writer.assigned == [reviewed])
         assert "Bash(gh pr diff)" in transcript(app)
-        # a says what it'll do: here, and in the footer.
+        # a says what it'll do: here, and in ?. The footer leaves a, A, x and m to the
+        # decision box, which says them.
         assert "[a] request changes" in decision(app)
-        await until(pilot, lambda: "Request changes" in footer(app))
+        await until(pilot, lambda: "Request changes" in key_help(app))
+        assert not footer(app) & {"Request changes", "Always allow", "Dismiss", "Merge"}
         # In the list, it needs you (⚠), and its note says what for.
         needs = "⚠", "Request changes?"
         rows = lambda: option_texts_of(app.main.repo)  # noqa: E731 (zoomed: not drawn)
@@ -253,7 +262,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: writer.reviews)
         assert writer.reviews[0]["event"] == "REQUEST_CHANGES"
         await until(pilot, lambda: not decision(app))
-        await until(pilot, lambda: not footer(app) & {"Request changes", "Accept"})
+        await until(pilot, lambda: not key_help(app) & {"Request changes", "Accept"})
 
         # Next review (of the same PR: r asks first) asks for permission first; a allows
         # it, like approving.
@@ -263,7 +272,8 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("y")
         await until(pilot, lambda: "[a] allow" in decision(app))
         assert "uv run pytest" in decision(app)
-        await until(pilot, lambda: "Allow once" in footer(app))
+        await until(pilot, lambda: "Allow once" in key_help(app))
+        assert not footer(app) & {"Allow once", "Always allow"}
         await pilot.press("a")
         await until(pilot, lambda: agent.answers == [True])
         agent.ask = None
@@ -386,7 +396,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: in_repo(app))
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
         # ...and in the list, the list's.
-        await until(pilot, lambda: {"Home", "PR", "Search", "Mark", "Dismiss"} <= footer(app))
+        await until(pilot, lambda: {"Home", "PR", "Search", "Mark"} <= footer(app))
         assert {"Claude Code", "Thinking"} <= footer(app) and not footer(app) & {"Ask", "Quit"}
 
         # The / suggestions close first.
@@ -2368,7 +2378,7 @@ async def test_a_shows_the_push_under_way_at_once(tmp_path):
         await pilot.press("a")
         await until(pilot, lambda: "Pushing…" in working(app))
         assert "esc to stop" not in working(app)
-        assert not decision(app) and "Push" not in footer(app)
+        assert not decision(app) and "Push" not in key_help(app)
         await until(pilot, lambda: mark() in FRAMES)
         await pilot.press("a")  # it's under way: a again does nothing
 
@@ -2397,7 +2407,7 @@ async def test_a_approves_a_pr_waiting_for_your_verdict_alone(tmp_path):
         await pilot.press("x")
         await until(pilot, lambda: "No verdict yet" in decision(app))
         assert "[a] approve PR" in decision(app)
-        await until(pilot, lambda: "Approve PR" in footer(app))
+        await until(pilot, lambda: "Approve PR" in key_help(app))
         await pilot.press("a")
         await until(pilot, lambda: writer.reviews)
         assert writer.reviews[-1]["event"] == "APPROVE"
@@ -2405,7 +2415,7 @@ async def test_a_approves_a_pr_waiting_for_your_verdict_alone(tmp_path):
         ref = PRRef("pipecat-ai/pipecat", 1)
         await until_async(lambda: _state_is(store, ref, PRState.DONE))
         await until(pilot, lambda: "You approved it." in decision(app))  # m merges it
-        assert "Approve PR" not in footer(app)
+        assert "Approve PR" not in key_help(app)
 
 
 async def _state_is(store, ref, state) -> bool:

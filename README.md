@@ -93,8 +93,9 @@ answers.
 
 ### ⌨️ Keys
 
-The footer shows the keys for where you are; `?` lists all of them, including the ones that
-work everywhere. The main ones:
+The footer shows the keys for where you are, except those the decision box asks you to press
+(`a`, `A`, `x`, `m`); `?` lists all of them, including the ones that work everywhere. The main
+ones:
 
 | Key | Does |
 |---|---|
@@ -104,7 +105,7 @@ work everywhere. The main ones:
 | `n` `p` / `/` | Next or previous PR / search |
 | `r` / `space` | Review the PR (once reviewed, it asks before starting over) / mark several first (`esc` unmarks them) |
 | `s` | On a PR up next: not for you (another takes its place) |
-| `a` `x` / `A` | Do or dismiss what's proposed (or allow or deny what's asked); the footer says what `a` does: *Post comment*, *Approve PR*, *Request changes*, *Push*; with nothing proposed, it approves the PR / always allow |
+| `a` `x` / `A` | Do or dismiss what's proposed (or allow or deny what's asked), as the decision box says: *Post comment*, *Approve PR*, *Request changes*, *Push*; with nothing proposed, `a` approves the PR / always allow |
 | `d` / `D` | The diff, to read (`n` `p` from change to change), ask about (`enter`) and comment on (`c`) / in your pager |
 | `shift+↑` `shift+↓` | In the diff: select lines (`ctrl+space` sets a mark, as in Emacs) |
 | `tab` | In the diff: open or shut a file or a comment; on a change's `@@` line, the lines around it |

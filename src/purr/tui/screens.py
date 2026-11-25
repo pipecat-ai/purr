@@ -44,8 +44,8 @@ class MainScreen(Screen):
         return self.query_one(RepoView)
 
     def describe_key(self, binding: Binding) -> str:
-        """What a key says it does (the footer, ?): most always say the same; a, what it
-        does to the PR now (Post comment, Approve PR, Push…)."""
+        """What a key says it does (the footer, ?): most always say the same; a, in ?, what
+        it does to the PR now (Post comment, Approve PR, Push…)."""
         if binding.action in ("approve", "repo('approve')"):
             return self.repo.a_does() or binding.description
         return binding.description
