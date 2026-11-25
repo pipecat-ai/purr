@@ -1,0 +1,340 @@
+"""Purr's dialogs: modal screens over the main one."""
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
+
+from rich.table import Table
+from rich.text import Text
+from textual import events, on, work
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Input, Label, OptionList, Static
+from textual.widgets.option_list import Option
+
+from purr.jobs import PurrError
+from purr.messages import WatchRepo
+from purr.review.skills import Skill
+from purr.tui.theme import palette
+
+if TYPE_CHECKING:
+    from purr.tui.app import PurrApp
+
+
+class AddRepoScreen(ModalScreen[str | None]):
+    """Ask for a repo to watch and check it on GitHub."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, repo: str = ""):
+        super().__init__()
+        self._repo = repo  # filled in, ready to watch
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label("[b]Watch a repo[/b]")
+            yield Input(value=self._repo, placeholder="owner/name or GitHub URL")
+            yield Static(id="error")
+            yield Label("enter add · esc cancel", classes="hint")
+
+    @on(Input.Submitted)
+    def submit(self, event: Input.Submitted) -> None:
+        if event.value.strip():
+            self.query_one("#error", Static).update(Text("Checking GitHub…", style="dim"))
+            self.add(event.value)
+
+    @work(exclusive=True)
+    async def add(self, value: str) -> None:
+        try:
+            name = (await cast("PurrApp", self.app).bus.request(WatchRepo(repo=value))).repo
+        except PurrError as e:
+            self.query_one("#error", Static).update(Text(str(e), style="red"))
+            return
+        self.dismiss(name)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    """A yes/no question."""
+
+    BINDINGS = [
+        Binding("y", "answer(True)", "Yes"),
+        Binding("n", "answer(False)", "No"),
+        Binding("escape", "answer(False)", "No", show=False),
+    ]
+
+    def __init__(self, question: str, detail: str = ""):
+        super().__init__()
+        self._question = question
+        self._detail = detail
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label(self._question)
+            if self._detail:
+                yield Label(self._detail, classes="hint")
+            yield Label("y yes · n no", classes="hint")
+
+    def action_answer(self, yes: bool) -> None:
+        self.dismiss(yes)
+
+
+class NoticeScreen(ModalScreen[None]):
+    """Something you should know (it went wrong), until you close it."""
+
+    BINDINGS = [Binding("escape,enter", "close", "Close")]
+
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__()
+        self._message = message
+        self._detail = detail
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label(self._message)
+            if self._detail:
+                yield Label(self._detail, classes="hint")
+            yield Label("enter or esc closes", classes="hint")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class AlwaysScreen(ModalScreen[str | None]):
+    """Where to always allow a rule: this repo (``repo``), everywhere (``all``), or not (None)."""
+
+    BINDINGS = [
+        Binding("r", "pick('repo')", "This repo"),
+        Binding("e", "pick('all')", "Everywhere"),
+        Binding("escape", "pick('')", "Cancel", show=False),
+    ]
+
+    def __init__(self, rule: str, repo: str):
+        super().__init__()
+        self._rule, self._repo = rule, repo
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label("Always allow")
+            yield Label(Text(self._rule, style="bold yellow"))
+            yield Label(Text.from_markup(f"[b]r[/b]  in {self._repo}'s reviews"))
+            yield Label(
+                Text.from_markup("[b]e[/b]  everywhere: your Claude Code settings, Claude Code too")
+            )
+            yield Label("It's Claude Code's own rule. Change them with i, then p.", classes="hint")
+            yield Label("r this repo · e everywhere · esc cancel", classes="hint")
+
+    def action_pick(self, scope: str) -> None:
+        self.dismiss(scope or None)
+
+
+@dataclass(frozen=True)
+class SettingItem:
+    """One of the things the settings menu opens."""
+
+    kind: str  # what the menu dismisses with
+    key: str  # its letter
+    title: str
+    about: str
+    where: str = ""  # the file it opens, or what it is now (the theme)
+
+
+Sections = list[tuple[str, list[SettingItem]]]
+
+
+class SettingsScreen(ModalScreen[None]):
+    """How reviews go (your instructions and the agents' permissions) and Purr's settings
+    and theme, in sections: the arrows and enter, or each one's letter, open one over it
+    (``open``, with its ``kind``); closing that comes back here, drawn again (``menu``)."""
+
+    DEFAULT_CSS = """
+    SettingsScreen { align: center middle; }
+    #settings-items { height: auto; max-height: 30; margin: 1 0; border: none; }
+    """
+    BINDINGS = [Binding("escape", "close", "Close")]
+
+    def __init__(self, menu: Callable[[], Sections], open: Callable[[str], Awaitable[None]]):
+        super().__init__()
+        self._menu, self._open = menu, open
+        self._keys: dict[str, str] = {}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="settings"):
+            yield Label(Text("Settings", style="bold"))
+            yield OptionList(id="settings-items")
+            yield Label("↑ ↓ and enter, or a letter · esc closes", classes="hint")
+
+    def on_screen_resume(self) -> None:
+        """Back from what it opened (or just opened): drawn again, as things are now."""
+        sections = self._menu()
+        self._keys = {item.key: item.kind for _, items in sections for item in items}
+        items = self.query_one(OptionList)
+        was = items.highlighted
+        items.set_options(self._options(sections))
+        first = next(i for i, o in enumerate(items.options) if not o.disabled)
+        items.highlighted = first if was is None else was
+        items.focus()
+
+    def _options(self, sections: Sections) -> list[Option]:
+        accent = palette().number
+        options: list[Option] = []
+        for heading, items in sections:
+            if options:
+                options.append(Option(" ", disabled=True))
+            options.append(Option(Text(heading.upper(), style=f"bold {accent}"), disabled=True))
+            options += [Option(_setting_row(item), id=item.kind) for item in items]
+        return options
+
+    def on_key(self, event: events.Key) -> None:
+        if kind := self._keys.get(event.key):
+            event.stop()
+            self.run_worker(self._open(kind))
+
+    @on(OptionList.OptionSelected, "#settings-items")
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        if event.option.id:
+            self.run_worker(self._open(event.option.id))
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+def _setting_row(item: SettingItem) -> Table:
+    """``r  Review style   How reviews should go``, and under it, dim, where it is."""
+    row = Table.grid(padding=(0, 1))
+    row.add_column(width=2)
+    row.add_column(width=14, no_wrap=True)
+    row.add_column(ratio=1)
+    # The letter bold, not in a color: the cursor's (the accent) would hide it.
+    row.add_row(Text(item.key, style="bold"), Text(item.title, style="bold"), item.about)
+    if item.where:
+        row.add_row("", "", Text(item.where, style="dim"))
+    return row
+
+
+class ReviewSkillScreen(ModalScreen[str | None]):
+    """Which of a repo's skills its reviews follow, if any.
+
+    Dismisses with the skill, ``""`` for Purr's own review, or None (escape):
+    leave it as it is, and when asking, ask again next time.
+
+    Args:
+        repo: The repo.
+        skills: Its skills that may be for reviewing.
+        chosen: What its reviews follow now ('' for Purr's own, None: not decided).
+        asking: Purr is asking (reviews are waiting), rather than you changing it.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Not now")]
+
+    def __init__(
+        self, repo: str, skills: list[Skill], chosen: str | None = None, *, asking: bool = False
+    ):
+        super().__init__()
+        self._repo = repo
+        self._choices = [skill.name for skill in skills] + [""]
+        self._skills = skills
+        self._chosen = chosen
+        self._asking = asking
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="review-skill"):
+            if self._asking:
+                yield Label(
+                    f"[b]{self._repo}[/b] has skills that may be how it reviews PRs. "
+                    "Should Purr's reviews there follow one?"
+                )
+            else:
+                yield Label(f"What Purr's reviews in [b]{self._repo}[/b] follow")
+            yield OptionList(id="review-skill-items")
+            later = "ask me next time" if self._asking else "cancel"
+            yield Label(f"enter chooses · esc {later} · you can change it with i", classes="hint")
+
+    def on_mount(self) -> None:
+        options = []
+        for skill in [*self._skills, Skill(name="", description="", likely=False)]:
+            name = skill.name
+            title = f"/{name}" if name else "Purr's own review"
+            description = (
+                skill.description
+                if name
+                else "Its general review, holding the PR to the repo's CLAUDE.md / AGENTS.md"
+            )
+            # Descriptions wrap in their own column, under the name.
+            row = Table.grid(padding=(0, 1))
+            row.add_column(width=1)
+            row.add_column(ratio=1)
+            row.add_row("✓" if name == self._chosen else "", Text(title, style="bold"))
+            row.add_row("", Text(description, style="dim"))
+            options.append(Option(row))
+        items = self.query_one(OptionList)
+        items.set_options(options)
+        items.highlighted = (
+            self._choices.index(self._chosen) if self._chosen in self._choices else 0
+        )
+        items.focus()
+
+    @on(OptionList.OptionSelected, "#review-skill-items")
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self._choices[event.option_index])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ThemeScreen(ModalScreen[str | None]):
+    """Purr's colors: Textual's themes, each one shown as you move to it. Dismisses with
+    the one you're on (enter), or None (esc) for the one you had."""
+
+    DEFAULT_CSS = """
+    #themes { width: 44; }
+    #theme-items { height: auto; max-height: 16; margin: 1 0; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, names: list[str], current: str):
+        super().__init__()
+        self._names, self._current = names, current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="themes"):
+            yield Label("Purr's colors")
+            rows = [Option(self._row(name), id=name) for name in self._names]
+            yield OptionList(*rows, id="theme-items")
+            yield Label("↑ ↓ shows each · enter keeps it · esc goes back", classes="hint")
+
+    def _row(self, name: str) -> Text:
+        from textual.theme import BUILTIN_THEMES
+
+        row = Text(f"{'✓' if name == self._current else ' '} {name}")
+        theme = BUILTIN_THEMES.get(name)
+        row.append(f"  {'dark' if theme is None or theme.dark else 'light'}", style="dim")
+        return row
+
+    def on_mount(self) -> None:
+        items = self.query_one(OptionList)
+        if self._current in self._names:
+            items.highlighted = self._names.index(self._current)
+        items.focus()
+
+    @on(OptionList.OptionHighlighted, "#theme-items")
+    def _show(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option.id:
+            self._preview(event.option.id)
+
+    @work(exclusive=True, group="theme")
+    async def _preview(self, name: str) -> None:
+        await asyncio.sleep(0.08)  # moving fast, only the one you stop on
+        await cast("PurrApp", self.app).change_theme(name)
+
+    @on(OptionList.OptionSelected, "#theme-items")
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

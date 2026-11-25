@@ -645,9 +645,10 @@ class PRSession(Vertical):
         Binding("ctrl+v", "page(1)", "Page down", show=False),
         Binding("alt+v", "page(-1)", "Page up", show=False),
         Binding("ctrl+r", "search_history", "Search history"),
-        # While the agent's at work on the PR, esc stops it, as in Claude Code (zoomed, it
-        # zooms out first: the repo's). In the prompt: the / suggestions close, or back to
-        # the pane. Elsewhere it's the repo's (zoom out, home).
+        # In the prompt, esc closes the / suggestions, or goes back to the pane. It never
+        # stops the agent there: leaving the prompt mustn't cut short what it's doing (a
+        # rebase, say). In the pane, while the agent's at work on the PR, esc stops it
+        # (zoomed, it zooms out first: the repo's). Elsewhere it's the repo's (zoom out, home).
         Binding("escape", "repo('stop')", "Stop"),
         Binding("escape", "leave_prompt", "Back"),
         # The repo's keys, for reading and deciding (they work from the list too).
@@ -1056,15 +1057,14 @@ class PRSession(Vertical):
             self.focus_transcript()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        """Typing, enter sends and esc leaves; reading, enter goes to the prompt. esc stops
-        the agent at work first (unless it closes the / suggestions, or zooms out)."""
+        """Typing, enter sends and esc leaves; reading, enter goes to the prompt and esc
+        stops the agent at work (unless it zooms out)."""
+        typing = self.query_one("#prompt").has_focus
         if parameters == ("stop",):
             repo = self.purr_app.main.repo
-            suggesting = self.query_one("#suggestions").display
-            return bool(repo.at_work()) and not suggesting and not repo.zoomed
+            return bool(repo.at_work()) and not typing and not repo.zoomed
         if parameters == ("approve",):  # only when there's something for it to do
             return bool(self.purr_app.main.repo.a_does())
-        typing = self.query_one("#prompt").has_focus
         if action in ("search_history", "leave_prompt"):
             return typing
         return not (action == "ask" and typing)
