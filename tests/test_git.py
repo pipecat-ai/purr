@@ -405,6 +405,27 @@ async def test_pushing_the_commits_made_in_a_worktree(tmp_path, upstream):
     assert git(upstream, "rev-parse", "feature") == fix
 
 
+async def test_merging_main_into_a_pr_is_one_commit_to_push(tmp_path, upstream):
+    """What a merge brings from main is main's already: what's pushed is the merge (and what
+    was committed on the branch), not every commit main had since."""
+    for n in (1, 2, 3):
+        (upstream / f"main{n}.txt").write_text(f"{n}\n")
+        git(upstream, "add", ".")
+        git(upstream, "commit", "-qm", f"main {n}")
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    ref = PRRef("a/b", 7)
+    head = git(upstream, "rev-parse", "feature")
+    path = await repos.checkout(ref, head)
+    me = ("-c", "user.name=T", "-c", "user.email=t@example.com")
+    (path / "a.txt").write_text("fixed\n")
+    git(path, *me, "commit", "-qam", "Fix it")
+    git(path, *me, "merge", "-q", "--no-edit", "-m", "Merge main", "refs/purr/base")
+    merge, fix = git(path, "rev-parse", "HEAD", "HEAD^1").split()
+    assert await repos.unpushed(ref, head) == [(merge, "Merge main"), (fix, "Fix it")]
+    await repos.push(ref, merge, repo="a/b", branch="feature", onto=head)
+    assert git(upstream, "rev-parse", "feature") == merge
+
+
 def test_pushing_to_a_fork_goes_the_way_the_clone_came():
     https = "https://github.com/pipecat-ai/pipecat.git"
     assert push_url(https, "pipecat-ai/pipecat", "eric7h/pipecat") == (

@@ -319,7 +319,8 @@ class GitRepos:
 
     async def unpushed(self, ref: PRRef, onto: str) -> list[tuple[str, str]]:
         """The commits made in the PR's worktree on top of ``onto`` (the PR's head), newest
-        first: ``(sha, subject)``. Raises GitError if there's no worktree, it has
+        first: ``(sha, subject)``. A merge (of main, say) is one: what it brings is on its
+        other side's branch already. Raises GitError if there's no worktree, it has
         uncommitted changes, or what's checked out doesn't build on ``onto``."""
         path = self.worktree_path(ref)
         if not (path / ".git").exists():
@@ -331,7 +332,7 @@ class GitRepos:
                 f"What's checked out doesn't build on the PR's head ({onto[:7]}): only new "
                 "commits on top of it can be pushed."
             )
-        log = await self._git(path, "log", "--format=%H %s", f"{onto}..HEAD")
+        log = await self._git(path, "log", "--first-parent", "--format=%H %s", f"{onto}..HEAD")
         commits = (line.partition(" ") for line in log.splitlines())
         return [(sha, subject) for sha, _, subject in commits]
 
