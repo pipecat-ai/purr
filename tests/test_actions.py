@@ -278,10 +278,38 @@ async def test_a_failed_post_can_be_retried(setup):
 
 async def test_dismissing(setup):
     store, writer, client, pending = setup
+    review = await store.start_review(REF)
+    await store.finish_review(review.id, summary="Fine", findings=[])
     assert await request(client, DismissAction(action_id=pending.id), timeout=5) == Done()
     assert (await store.get_pending_action(pending.id)).status == ActionStatus.DISMISSED
-    assert (await store.get_pr(REF)).state == PRState.DONE
+    # Nothing's posted, and that's no verdict: it still needs you.
+    assert (await store.get_pr(REF)).state == PRState.NEEDS_YOU
     assert writer.reviews == []
+
+
+async def test_only_a_verdict_makes_the_pr_done(setup):
+    store, writer, client, pending = setup
+    review = await store.start_review(REF)
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    await request(client, DismissAction(action_id=pending.id), timeout=5)
+
+    # A comment isn't a verdict: the PR still needs you.
+    comment = await store.add_pending_action(
+        REF, kind=ActionKind.COMMENT, description="Post 1 comment", payload={"body": "Why?"}
+    )
+    await request(client, ApproveAction(action_id=comment.id), timeout=5)
+    assert writer.reviews[-1]["event"] == "COMMENT"
+    assert (await store.get_pr(REF)).state == PRState.NEEDS_YOU
+
+    # Approving it is.
+    approval = await store.add_pending_action(REF, kind=ActionKind.APPROVE, description="Approve")
+    await request(client, ApproveAction(action_id=approval.id), timeout=5)
+    assert (await store.get_pr(REF)).state == PRState.DONE
+
+    # It was of the commit it was at: after new commits, it doesn't count.
+    pr = await store.get_pr(REF)
+    await store.upsert_pr(replace(pr, head_sha="def"))
+    assert await store.resting_state(REF) == PRState.NEEDS_YOU
 
 
 async def test_assigning_yourself(setup):

@@ -3,6 +3,15 @@
 from dataclasses import replace
 
 from purr.github import RemotePR, Snapshot
+from purr.models import ActionKind, ActionStatus
+
+
+async def give_verdict(store, ref, kind=ActionKind.APPROVE, *, head="abc") -> None:
+    """You approved the PR (or requested changes) through Purr, at ``head``."""
+    action = await store.add_pending_action(ref, kind=kind, description="Verdict")
+    await store.transition_action(
+        action.id, expected=ActionStatus.PENDING, new=ActionStatus.EXECUTED, posted_head=head
+    )
 
 
 def remote(number: int, repo: str = "pipecat-ai/pipecat", **kwargs) -> RemotePR:

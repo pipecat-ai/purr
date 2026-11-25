@@ -62,6 +62,11 @@ class ActionKind(StrEnum):
     APPROVE = "approve"
     MERGE = "merge"
 
+    @property
+    def verdict(self) -> bool:
+        """Approving or requesting changes: your verdict on the PR, after which it's done."""
+        return self in (ActionKind.APPROVE, ActionKind.REQUEST_CHANGES)
+
 
 class ActionStatus(StrEnum):
     """Lifecycle of a pending action: pending → approved → executed/failed, or dismissed."""

@@ -43,7 +43,7 @@ from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
 from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
 from purr.workers.reviews import STOPPED
-from tests.fakes import FakeAgent, FakeLead, FakeRepos, make_plugin
+from tests.fakes import FakeAgent, FakeLead, FakeRepos, give_verdict, make_plugin
 
 REF = PRRef("pipecat-ai/pipecat", 2841)
 
@@ -383,11 +383,12 @@ async def test_esc_stops_a_follow_up_and_the_review_stands(make):
     [stopped] = s.client.of(ReviewStopped)
     assert not stopped.dropped
     assert s.client.of(SessionMessage)[-1].message == {"kind": "stopped"}
-    # The review stands; the PR's back as it was (its proposal set aside by writing).
+    # The review stands. Its proposal was set aside by writing, and that's no verdict:
+    # the PR still needs you.
     assert (await s.store.latest_review(REF)).id == review.id
     await eventually(lambda: _statuses(s, ["finished", "failed"]))
     assert (await s.store.runs(REF))[1]["error"] == STOPPED
-    assert await s.state() == PRState.DONE
+    assert await s.state() == PRState.NEEDS_YOU
 
 
 async def test_esc_stops_a_review_again_and_brings_back_the_one_before(make):
@@ -570,6 +571,7 @@ async def test_a_pr_left_reviewing_by_a_cut_short_follow_up_is_settled(make):
         await store.upsert_pr(make_pr())
         review = await store.start_review(REF)
         await store.finish_review(review.id, summary="ok", findings=[])
+        await give_verdict(store, REF, head=make_pr().head_sha)  # you'd approved it: done
         await store.set_pr_state(REF, PRState.REVIEWING)
 
     s = await make(before_start=seed)

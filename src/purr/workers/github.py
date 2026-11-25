@@ -61,7 +61,6 @@ from purr.models import (
     PRState,
     Reply,
     Repo,
-    ReviewStatus,
     parse_repo_name,
 )
 from purr.store import Store
@@ -278,20 +277,15 @@ class GitHubWorker(BaseWorker):
         elif not pr.replies:
             await self._settle(pr)
 
-    async def _settle(self, pr: PR, *, done: bool = False) -> None:
-        """Back where it was, if it needed you and nothing does any more (and no agent is
-        at it): done (``done``: you decided something), or not reviewed if only replies
-        on GitHub brought a PR Purr never reviewed here."""
+    async def _settle(self, pr: PR) -> None:
+        """Where it rests, if it needed you and no agent is at it: done once you've given
+        your verdict, not reviewed if only replies on GitHub brought a PR Purr never
+        reviewed here, else it still needs you (see Store.resting_state)."""
         if pr.state != PRState.NEEDS_YOU or pr.gh_state != GHState.OPEN:
             return
-        if await self._store.waits_on_you(pr.ref) or await self._store.running(pr.ref):
+        if await self._store.running(pr.ref):
             return
-        review = await self._store.latest_review(pr.ref)
-        if review and review.status == ReviewStatus.FAILED:
-            return  # it needs you for that
-        await self._store.set_pr_state(
-            pr.ref, PRState.DONE if review or done else PRState.NOT_REVIEWED
-        )
+        await self._store.set_pr_state(pr.ref, await self._store.resting_state(pr.ref))
 
     def _needs_full_sync(self, repo: Repo) -> bool:
         last = self._last_full_sync.get(repo.name)
@@ -557,7 +551,8 @@ class GitHubWorker(BaseWorker):
 
     @handles(PostComments)
     async def post_your_comments(self, request: PostComments) -> Posted:
-        """Your comments on their own: then the PR's done, as after approving a proposal."""
+        """Your comments on their own, as a review comment: not a verdict, so the PR still
+        needs you, unless you'd given one at its head."""
         mine = await self._store.draft_comments(request.pr)
         if not mine:
             raise NotFound("You have no comments on it to post")
@@ -567,7 +562,7 @@ class GitHubWorker(BaseWorker):
             raise Failed(f"GitHub didn't take them: {e}") from e
         await self._store.dismiss_replies(request.pr)  # you've had your say
         if pr := await self._store.get_pr(request.pr):
-            await self._settle(pr, done=True)
+            await self._settle(pr)
         await self.send_bus_message(PRListUpdated(source=self.name))
         return Posted(url=url)
 
@@ -632,9 +627,9 @@ class GitHubWorker(BaseWorker):
         await self.send_bus_message(PRListUpdated(source=self.name))
 
     async def _resolved(self, ref: PRRef, action_id: str, *, approved: bool) -> None:
-        # Nothing left to decide: the PR is done (unless something else needs you).
+        # Nothing left to decide: done after a verdict, else it still needs you.
         if pr := await self._store.get_pr(ref):
-            await self._settle(pr, done=True)
+            await self._settle(pr)
         await self.send_bus_message(
             ActionResolved(source=self.name, pr=str(ref), action_id=action_id, approved=approved)
         )
