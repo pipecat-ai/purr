@@ -164,11 +164,13 @@ class GitRepos:
     async def _move_worktree(self, path: Path, ref: PRRef, head_sha: str) -> None:
         """Move the PR's existing worktree to ``head_sha``.
 
-        Already there: leave it as it is, with whatever you (or the agent)
-        changed in it. Moving on: those changes are stashed, not lost.
+        Already there, or on commits made there on top of it (not pushed yet):
+        leave it as it is, with whatever you (or the agent) changed in it. Moving
+        on: those changes are stashed, not lost (commits made there stay in the
+        worktree's reflog).
         """
         current = (await self._git(path, "rev-parse", "HEAD")).strip()
-        if current == head_sha:
+        if current == head_sha or await self._builds_on(path, head_sha):
             return
         if await self.has_changes(path):
             message = f"purr: changes in {ref} at {current[:7]}, before {head_sha[:7]}"
@@ -216,6 +218,14 @@ class GitRepos:
             if path.is_dir() and path.name.isdigit():
                 found.append(PRRef(f"{path.parent.parent.name}/{path.parent.name}", int(path.name)))
         return found
+
+    async def _builds_on(self, path: Path, sha: str) -> bool:
+        """Whether what's checked out in the worktree has ``sha`` in its history."""
+        try:
+            await self._git(path, "merge-base", "--is-ancestor", sha, "HEAD")
+        except GitError:
+            return False
+        return True
 
     async def has_changes(self, path: Path) -> bool:
         """Whether a worktree has uncommitted changes (ignored files don't count)."""
@@ -283,13 +293,11 @@ class GitRepos:
             raise GitError("There's no worktree to push from.")
         if await self.has_changes(path):
             raise GitError("The worktree has uncommitted changes: commit them first.")
-        try:
-            await self._git(path, "merge-base", "--is-ancestor", onto, "HEAD")
-        except GitError:
+        if not await self._builds_on(path, onto):
             raise GitError(
                 f"What's checked out doesn't build on the PR's head ({onto[:7]}): only new "
                 "commits on top of it can be pushed."
-            ) from None
+            )
         log = await self._git(path, "log", "--format=%H %s", f"{onto}..HEAD")
         commits = (line.partition(" ") for line in log.splitlines())
         return [(sha, subject) for sha, _, subject in commits]

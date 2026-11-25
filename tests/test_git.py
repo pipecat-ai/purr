@@ -340,6 +340,9 @@ async def test_pushing_the_commits_made_in_a_worktree(tmp_path, upstream):
     git(path, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "Fix it")
     fix = git(path, "rev-parse", "HEAD")
     assert await repos.unpushed(ref, head) == [(fix, "Fix it")]
+    # The next turn (asking it to push) checks out the same head: the commit stays.
+    await repos.checkout(ref, head)
+    assert git(path, "rev-parse", "HEAD") == fix
 
     # Not on top of the PR's head: nothing to push from there.
     main = git(upstream, "rev-parse", "main")
