@@ -1310,7 +1310,7 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         await until(pilot, lambda: not working.display and mark() not in FRAMES)
 
 
-async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_path):
+async def test_esc_stops_the_agent_from_its_pane_and_r_asks_before_starting_over(tmp_path):
     app, github = make_app(tmp_path)
     agent = app.purr.agent
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
@@ -1354,14 +1354,19 @@ async def test_esc_stops_the_agent_first_and_r_asks_before_starting_over(tmp_pat
         await until(pilot, lambda: "review: found 1 issue · 1 pending action" in header(app))
         assert in_repo(app) and len(agent.runs) == 2
 
-        # In the prompt, esc stops your question first, then leaves the prompt.
+        # In the prompt, esc leaves it, the agent still at work (it's not there you stop
+        # it): then, in the pane, esc stops it.
         await pilot.press("enter", "w", "h", "y", "enter")
         await until(pilot, lambda: working.display and len(agent.runs) == 3)
+        assert "Stop" not in footer(app)
+        await pilot.press("escape")
+        await until(pilot, lambda: focused(app) == "transcript")
+        await pilot.pause(0.1)
+        assert working.display and "◼ Stopped" not in transcript(app)
+        assert "Stop" in footer(app)
         await pilot.press("escape")
         await until(pilot, lambda: "◼ Stopped" in transcript(app))
-        assert focused(app) == "prompt" and not working.display
-        await pilot.press("escape")
-        assert focused(app) == "transcript"
+        assert not working.display and focused(app) == "transcript"
 
 
 async def test_r_moves_the_pr_to_reviewing_at_once(tmp_path):
