@@ -19,9 +19,9 @@ REPO_KEYS = {
     "review": Binding("r", "review", "Review"),
     "skip": Binding("s", "skip", "Skip"),  # up next: not for you
     "mark": Binding("space", "mark", "Mark"),
-    # Whatever the decision box offers: approve or dismiss a proposal, allow or
-    # deny a permission request, merge.
-    "approve": Binding("a", "approve", "Approve"),
+    # Whatever the decision box offers: do or dismiss a proposal, allow or deny a
+    # permission request. a says what it does (see MainScreen.describe_key).
+    "approve": Binding("a", "approve", "Accept"),
     "always": Binding("A", "always", "Always allow"),
     "dismiss": Binding("x", "dismiss", "Dismiss"),
     "merge": Binding("m", "merge", "Merge"),

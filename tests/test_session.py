@@ -1,7 +1,8 @@
 from rich.console import Console
 
-from purr.models import Reply
-from purr.tui.session import render_entry, render_replies, replied
+from purr.messages import PermissionRequest
+from purr.models import ActionKind, DraftComment, Reply
+from purr.tui.session import SessionState, render_entry, render_replies, replied
 
 
 def rendered(entry) -> str:
@@ -74,3 +75,23 @@ def test_prs_asking_for_your_review_have_their_own_group():
     assert group(replace(pr, requested_from_me=False, assignees=("alice",))) == OTHERS
     assert group(replace(pr, assigned_to_me=True, assignees=("me",))) == PRState.NOT_REVIEWED
     assert group(replace(pr, state=PRState.DONE)) == PRState.DONE
+
+
+def test_a_says_what_it_does():
+    state = SessionState()
+    assert state.a_does() == ""  # nothing for it to do
+    state.mine = [DraftComment(1, "bus.py", 3, "RIGHT", "Why?", "abc")]
+    assert state.a_does() == "Post comments"
+    said = {
+        ActionKind.COMMENT: "Post comment",
+        ActionKind.APPROVE: "Approve PR",
+        ActionKind.REQUEST_CHANGES: "Request changes",
+        ActionKind.PUSH: "Push",
+    }
+    for kind, label in said.items():
+        state.proposal = kind
+        assert state.a_does() == label
+    state.ask = PermissionRequest(
+        source="reviews", pr="a/b#1", request_id="r", tool="Bash", description="", reason=""
+    )
+    assert state.a_does() == "Allow once"  # the agent's question comes first

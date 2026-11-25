@@ -231,16 +231,19 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         reviewed = agent.runs[0]["pr"]
         assert writer.assigned == [reviewed]
         assert "Bash(gh pr diff)" in transcript(app)
-        assert "[a] approve" in decision(app)
+        # a says what it'll do: here, and in the footer.
+        assert "[a] request changes" in decision(app)
+        await until(pilot, lambda: "Request changes" in footer(app))
         # What it found, and how deep it went (the plan shows only while it's under way).
         await until(pilot, lambda: "review: found 1 issue" in header(app))
         assert "Full review: found 1 issue" in header(app) and "Planned" not in header(app)
 
-        # a posts the proposed review.
+        # a posts the proposed review. Then there's nothing for it to do: it's not shown.
         await pilot.press("a")
         await until(pilot, lambda: writer.reviews)
         assert writer.reviews[0]["event"] == "REQUEST_CHANGES"
         await until(pilot, lambda: not decision(app))
+        await until(pilot, lambda: not footer(app) & {"Request changes", "Accept"})
 
         # Next review (of the same PR: r asks first) asks for permission first; a allows
         # it, like approving.
@@ -250,6 +253,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("y")
         await until(pilot, lambda: "[a] allow" in decision(app))
         assert "uv run pytest" in decision(app)
+        await until(pilot, lambda: "Allow once" in footer(app))
         await pilot.press("a")
         await until(pilot, lambda: agent.answers == [True])
         agent.ask = None
@@ -340,7 +344,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
 
         # The footer has the keys for where you are: typing, the prompt's...
         await until(pilot, lambda: {"Back", "Search history"} <= footer(app))
-        assert not footer(app) & {"Home", "Review", "Approve", "Ask"}
+        assert not footer(app) & {"Home", "Review", "Request changes", "Ask"}
 
         # esc leaves the prompt for the PR's pane; esc again goes home, and what
         # you'd typed is there when you're back.
@@ -372,7 +376,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: in_repo(app))
         assert focused(app) == "prs" and prompt.text == "first\nsecond\nthird"
         # ...and in the list, the list's.
-        await until(pilot, lambda: {"Home", "PR", "Search", "Mark", "Approve"} <= footer(app))
+        await until(pilot, lambda: {"Home", "PR", "Search", "Mark", "Dismiss"} <= footer(app))
         assert {"Claude Code", "Thinking"} <= footer(app) and not footer(app) & {"Ask", "Quit"}
 
         # The / suggestions close first.
@@ -1007,7 +1011,7 @@ async def test_a_shell_in_the_worktree_and_claude_code(tmp_path, monkeypatch):
 
         # After a review, the header says where its worktree is; c opens its session there.
         await pilot.press("r")
-        await until(pilot, lambda: "[a] approve" in decision(app))
+        await until(pilot, lambda: "[a] request changes" in decision(app))
         await until(pilot, lambda: header(app).endswith(f"\nWorktree {worktree}"))  # no key hints
         await pilot.press("c")
         await until(pilot, lambda: len(ran) == 2)
@@ -1060,7 +1064,7 @@ async def test_slash_commands(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
         await pilot.press("r")
-        await until(pilot, lambda: "[a] approve" in decision(app))
+        await until(pilot, lambda: "[a] request changes" in decision(app))
         prompt = app.main.repo.session.query_one(PromptArea)
         prompt.focus()
 
@@ -1093,7 +1097,7 @@ async def test_slash_commands(tmp_path):
         assert agent.runs[1]["model"] == "opus"
 
         # /review quick starts over, quick.
-        await until(pilot, lambda: "[a] approve" in decision(app))
+        await until(pilot, lambda: "[a] request changes" in decision(app))
         await pilot.press(*"/review quick", "enter")
         await until(pilot, lambda: len(agent.runs) == 3)
         assert agent.runs[2]["plan"].depth == "quick" and agent.runs[2]["resume"] is False
@@ -1540,7 +1544,7 @@ async def test_writing_instead_of_approving_says_so_in_the_thread(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 1)
         await pilot.press("r")
-        await until(pilot, lambda: "[a] approve" in decision(app))
+        await until(pilot, lambda: "[a] request changes" in decision(app))
         assert "or write to change it" in decision(app)
         await until(pilot, lambda: not app.purr.runner.get_worker("reviews").running)
         await pilot.press("enter", *"is the race real?", "enter")
@@ -1812,7 +1816,7 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
 
         await until(pilot, lambda: "Fixes the bus." in transcript(app))
         assert "self.lock" not in transcript(app)  # the PR's pane doesn't show the diff
-        await until(pilot, lambda: "[a] approve" in decision(app))  # reviewed
+        await until(pilot, lambda: "[a] request changes" in decision(app))  # reviewed
         await app.bus.request(DismissAction(action_id=(await pending(app, ref))[0].id))
 
         # d: the diff, in the list's place, to read line by line. Its files start shut too.

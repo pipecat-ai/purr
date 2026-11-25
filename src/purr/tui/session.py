@@ -88,6 +88,16 @@ _TASK_EVENTS = {
 _WORKTREE_PREFIX = re.compile(r"\S*/worktrees/[^/\s]+/[^/\s]+/\d+/")
 
 
+# What a does to a proposal, by its kind, as the footer says it: so a never surprises.
+A_DOES = {
+    ActionKind.COMMENT: "Post comment",
+    ActionKind.APPROVE: "Approve PR",
+    ActionKind.REQUEST_CHANGES: "Request changes",
+    ActionKind.PUSH: "Push",
+    ActionKind.MERGE: "Merge",
+}
+
+
 @dataclass
 class SessionState:
     """What the UI keeps about a PR's session between redraws."""
@@ -102,6 +112,7 @@ class SessionState:
     approved: str | None = None  # the commit you approved it at, through Purr
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
+    proposal: ActionKind | None = None  # what the agent proposes (the oldest), as last read
     quote: Quote | None = None  # the lines of the diff you're asking about, if any
     suggestion: str = ""  # what you might ask next (purr.suggest)
     suggested_at: int | None = None  # how far the transcript was when it was asked for
@@ -109,6 +120,15 @@ class SessionState:
     def suggested(self) -> str:
         """The suggestion, if it's still for where the conversation is."""
         return self.suggestion if self.suggested_at == len(self.entries or []) else ""
+
+    def a_does(self) -> str:
+        """What a does now, as its key says it ("" for nothing): allow what the agent asks,
+        do what it proposes, or post your comments."""
+        if self.ask:
+            return "Allow once"
+        if self.proposal:
+            return A_DOES[self.proposal]
+        return "Post comments" if self.mine else ""
 
     @property
     def working(self) -> bool:
@@ -455,9 +475,14 @@ def _proposal_question(pr: PR, state: SessionState, actions: list[PendingAction]
         (f"{action.description}?", "bold"),
         (detail, "dim"),
         (f" · and {_yours(state.mine)}" if state.mine else "", "yellow"),
-        ("\n[a] approve   [x] dismiss", "bold"),
+        (f"\n[a] {_lower_first(A_DOES[action.kind])}   [x] dismiss", "bold"),
         ("   or write to change it", "dim"),
     )
+
+
+def _lower_first(label: str) -> str:
+    """``approve PR``, from ``Approve PR``."""
+    return label[:1].lower() + label[1:]
 
 
 def _push_question(action: PendingAction, shown: int = 3) -> Text:
@@ -610,6 +635,7 @@ class PRSession(Vertical):
         self.query_one(PromptArea).completer = self
         self._suggested: list[Command] = []
         self._drawn: PRRef | None = None  # the PR whose transcript is on screen
+        self._a_does: str | None = None  # what the footer said a does, last time
         self._wrote = False  # anything in the transcript yet (for the blank lines)
 
     # -- Slash commands (see purr.tui.commands) ----------------------------------------
@@ -868,6 +894,10 @@ class PRSession(Vertical):
         self.pr = pr
         state = self.state()
         state.approved, state.mine = approved, mine
+        state.proposal = actions[0].kind if actions else None
+        if state.a_does() != self._a_does:  # the footer says what a does now
+            self._a_does = state.a_does()
+            self.refresh_bindings()
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
             self._header(pr, review, outcome, actions, state, details, up_next)
@@ -973,6 +1003,8 @@ class PRSession(Vertical):
             repo = self.purr_app.main.repo
             suggesting = self.query_one("#suggestions").display
             return bool(repo.at_work()) and not suggesting and not repo.zoomed
+        if parameters == ("approve",):  # only when there's something for it to do
+            return bool(self.purr_app.main.repo.a_does())
         typing = self.query_one("#prompt").has_focus
         if action in ("search_history", "leave_prompt"):
             return typing

@@ -43,7 +43,9 @@ def key_groups(app: "App") -> list[tuple[str, list[tuple[str, str]]]]:
         if not active.enabled or not binding.description or not _ours(node, binding):
             continue
         section = _SECTIONS.get(type(node).__name__, type(node).__name__)
-        keys = groups.setdefault(section, {}).setdefault(binding.description, [])
+        describe = getattr(app.screen, "describe_key", None)  # what some say depends
+        what = describe(binding) if describe else binding.description
+        keys = groups.setdefault(section, {}).setdefault(what, [])
         keys.append(app.get_key_display(binding))
     return [
         (section, [(_together(keys), what) for what, keys in rows.items()])

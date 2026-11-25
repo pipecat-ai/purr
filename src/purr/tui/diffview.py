@@ -908,6 +908,8 @@ class DiffPane(Vertical):
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if parameters == ("unzoom",):
             return cast("PurrApp", self.app).main.repo.zoomed
+        if parameters == ("approve",):
+            return bool(cast("PurrApp", self.app).main.repo.a_does())
         if action == "reply":  # on a comment on GitHub; elsewhere r reviews (the repo's)
             row = self.view.current()
             return bool(row and row.said and row.said.source == "github")
