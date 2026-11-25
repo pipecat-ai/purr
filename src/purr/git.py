@@ -42,6 +42,16 @@ BASE_REFS = "refs/purr/heads"  # refs/purr/heads/<branch>: the branches PRs merg
 _BASE_REFSPEC = f"+HEAD:{BASE_REF}"
 # Fail fast on a missing object instead of fetching it on its own (blobless clones).
 _NO_LAZY_FETCH = {"GIT_NO_LAZY_FETCH": "1"}
+# What git leaves in a worktree's git dir while something's halfway, and what aborts it
+# (git am keeps its state where a rebase does, with an "applying" file: it comes first).
+_UNFINISHED = (
+    ("rebase-apply/applying", ("am", "--abort")),
+    ("rebase-merge", ("rebase", "--abort")),
+    ("rebase-apply", ("rebase", "--abort")),
+    ("MERGE_HEAD", ("merge", "--abort")),
+    ("CHERRY_PICK_HEAD", ("cherry-pick", "--abort")),
+    ("REVERT_HEAD", ("revert", "--abort")),
+)
 # How often bases are refetched when no PR moved (where a PR branched off rarely changes).
 BASE_REFRESH = 600
 GUIDELINE_FILES = ("CLAUDE.md", "AGENTS.md")
@@ -97,6 +107,15 @@ def push_url(origin: str, base: str, head: str) -> str:
 def _pr_refspec(number: int) -> str:
     """Fetches a PR's head into the clone's ref for it."""
     return f"+refs/pull/{number}/head:{PR_REFS}/{number}"
+
+
+def _command(args: tuple[str, ...]) -> str:
+    """A command, as an error names it: ``git stash push``, git's own options (``-C dir``,
+    ``-c key=value``) left out, which would hide what it was."""
+    program, *rest = args
+    while rest[:1] in (["-C"], ["-c"]):
+        rest = rest[2:]
+    return " ".join([program, *rest[:2]])
 
 
 def _blobs(raw_diff: str) -> set[str]:
@@ -165,17 +184,31 @@ class GitRepos:
         """Move the PR's existing worktree to ``head_sha``.
 
         Already there, or on commits made there on top of it (not pushed yet):
-        leave it as it is, with whatever you (or the agent) changed in it. Moving
-        on: those changes are stashed, not lost (commits made there stay in the
-        worktree's reflog).
+        leave it as it is, with whatever you (or the agent) changed in it, a merge
+        stopped on a conflict included. Moving on: a rebase, merge, cherry-pick or
+        revert left halfway is undone (it may have been all that was in the way, as
+        a rebase is), and the changes are stashed, not lost (commits made there stay
+        in the worktree's reflog).
         """
         current = (await self._git(path, "rev-parse", "HEAD")).strip()
         if current == head_sha or await self._builds_on(path, head_sha):
             return
+        if await self._undo_unfinished(path):
+            return await self._move_worktree(path, ref, head_sha)
         if await self.has_changes(path):
             message = f"purr: changes in {ref} at {current[:7]}, before {head_sha[:7]}"
             await self._stash(path, message)
         await self._git(path, "checkout", "--quiet", "--detach", "--force", head_sha)
+
+    async def _undo_unfinished(self, path: Path) -> bool:
+        """Abort what git left halfway in a worktree (stopped on a conflict, or cut short):
+        back to where it began. Whether there was something to undo."""
+        git_dir = Path((await self._git(path, "rev-parse", "--absolute-git-dir")).strip())
+        for left, command in _UNFINISHED:
+            if (git_dir / left).exists():
+                await self._git(path, *command)
+                return True
+        return False
 
     async def _stash(self, path: Path, message: str) -> None:
         """Stash a worktree's uncommitted changes, untracked files included."""
@@ -630,5 +663,5 @@ class GitRepos:
         )
         stdout, stderr = await process.communicate(stdin.encode() if stdin is not None else None)
         if process.returncode != 0:
-            raise GitError(f"{' '.join(args[:4])} failed: {stderr.decode().strip()}")
+            raise GitError(f"{_command(args)} failed: {stderr.decode().strip()}")
         return stdout

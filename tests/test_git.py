@@ -323,6 +323,51 @@ async def test_your_changes_in_a_worktree_are_never_thrown_away(tmp_path, upstre
     assert git(path, "show", "stash@{0}^3:notes.txt") == "try this"
 
 
+def stopped_on_a_conflict(path: Path, *args: str) -> None:
+    """Run a git command in ``path`` that stops on a conflict (and fails, saying so)."""
+    run = subprocess.run(
+        ["git", "-C", str(path), "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode != 0 and "CONFLICT" in run.stdout + run.stderr
+
+
+async def test_a_worktree_left_halfway_through_a_rebase_or_a_merge(tmp_path, upstream):
+    """The agent stopped while a rebase or a merge was stopped on a conflict: the next turn
+    still gets a worktree (it once failed with "could not write index", turn after turn)."""
+    # main changes the line the PR changes: rebasing the PR on it, or merging it, conflicts.
+    (upstream / "a.txt").write_text("main\n")
+    git(upstream, "commit", "-qam", "main")
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    ref = PRRef("a/b", 7)
+    head = git(upstream, "rev-parse", "refs/pull/7/head")
+    path = await repos.checkout(ref, head)
+
+    # A rebase halfway isn't on top of the PR's head: it's undone, back to the head.
+    stopped_on_a_conflict(path, "rebase", "refs/purr/base")
+    await repos.checkout(ref, head)
+    assert git(path, "rev-parse", "HEAD") == head and git(path, "status", "--porcelain") == ""
+    assert (path / "a.txt").read_text() == "two\n"
+
+    # A merge halfway is on top of it: it's left for the agent to finish (a merge commit
+    # can be pushed).
+    stopped_on_a_conflict(path, "merge", "--no-edit", "refs/purr/base")
+    await repos.checkout(ref, head)
+    assert "UU a.txt" in git(path, "status", "--porcelain")
+
+    # Unless the PR has new commits: then it's undone too, and the worktree moves on.
+    git(upstream, "checkout", "-q", "feature")
+    (upstream / "b.txt").write_text("new\n")
+    git(upstream, "add", "b.txt")
+    git(upstream, "commit", "-qm", "three")
+    git(upstream, "update-ref", "refs/pull/7/head", "HEAD")
+    git(upstream, "checkout", "-q", "main")
+    new_head = git(upstream, "rev-parse", "refs/pull/7/head")
+    await repos.checkout(ref, new_head)
+    assert git(path, "rev-parse", "HEAD") == new_head and git(path, "status", "--porcelain") == ""
+
+
 async def test_pushing_the_commits_made_in_a_worktree(tmp_path, upstream):
     # A blobless clone, as gh makes them (over file://, for the filter to apply).
     git(upstream, "config", "uploadpack.allowFilter", "true")
