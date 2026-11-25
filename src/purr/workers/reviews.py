@@ -239,6 +239,10 @@ class ReviewWorker(BaseWorker):
             if review is None or review.status != ReviewStatus.RUNNING:
                 await self._store.set_pr_state(pr.ref, await self._store.resting_state(pr.ref))
                 settled = True
+        # Done with no verdict, by the rule before: it needs one.
+        for ref in await self._store.done_without_verdict():
+            await self._store.set_pr_state(ref, await self._store.resting_state(ref))
+            settled = True
         if settled:
             await self.send_bus_message(PRListUpdated(source=self.name))
         for review in await self._store.interrupted_reviews():

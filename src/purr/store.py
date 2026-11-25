@@ -619,6 +619,23 @@ class Store:
         )
         return row is not None
 
+    async def done_without_verdict(self) -> list[PRRef]:
+        """Open PRs of others that are done with no verdict of yours ever posted through Purr:
+        done by the rule before (nothing left to decide), when they need one."""
+        verdicts = [kind for kind in ActionKind if kind.verdict]
+        kinds = ", ".join("?" * len(verdicts))
+        rows = await self._fetchall(
+            f"""
+            SELECT repo, number FROM prs
+            WHERE gh_state = ? AND state = ? AND NOT authored AND NOT EXISTS (
+                SELECT 1 FROM pending_actions
+                WHERE pr_id = prs.id AND status = ? AND kind IN ({kinds})
+            )
+            """,
+            (GHState.OPEN, PRState.DONE, ActionStatus.EXECUTED, *verdicts),
+        )
+        return [PRRef(row["repo"], row["number"]) for row in rows]
+
     async def resting_state(self, ref: PRRef) -> PRState:
         """Where the PR goes once no agent is at it. It needs you while something waits on
         you (a proposal, replies), its review failed, or until you give your verdict on it as

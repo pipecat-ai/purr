@@ -38,7 +38,7 @@ from purr.messages import (
     StopAgent,
     Synced,
 )
-from purr.models import PR, ActionStatus, Depth, PRRef, PRState, Reply, ReviewStatus
+from purr.models import PR, ActionKind, ActionStatus, Depth, PRRef, PRState, Reply, ReviewStatus
 from purr.review.agent import RESUME_PROMPT
 from purr.store import Store
 from purr.workers import ActivityWorker, LeadWorker, ReviewWorker
@@ -581,6 +581,33 @@ async def test_a_pr_left_reviewing_by_a_cut_short_follow_up_is_settled(make):
             break
         await asyncio.sleep(0.01)
     assert await s.state() == PRState.DONE
+
+
+async def test_prs_done_with_no_verdict_need_you_again(make):
+    """Done by the rule before (nothing left to decide), with no verdict: on starting, they
+    need one. Those you approved stay done."""
+    approved = PRRef(REF.repo, 1)
+
+    async def seed(store, agent):
+        for ref in (REF, approved):
+            await store.upsert_pr(make_pr(number=ref.number))
+            review = await store.start_review(ref)
+            await store.finish_review(review.id, summary="ok", findings=[])
+            await store.set_pr_state(ref, PRState.DONE)
+        dismissed = await store.add_pending_action(REF, kind=ActionKind.APPROVE, description="x")
+        await store.transition_action(
+            dismissed.id, expected=ActionStatus.PENDING, new=ActionStatus.DISMISSED
+        )
+        await give_verdict(store, approved, head=make_pr().head_sha)
+
+    s = await make(before_start=seed)
+    await eventually(lambda: s.state())
+    for _ in range(100):
+        if await s.state() == PRState.NEEDS_YOU:
+            break
+        await asyncio.sleep(0.01)
+    assert await s.state() == PRState.NEEDS_YOU
+    assert (await s.store.get_pr(approved)).state == PRState.DONE
 
 
 async def test_reviews_get_the_repo_guidelines(make):
