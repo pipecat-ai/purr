@@ -66,7 +66,7 @@ from purr.models import (
     parse_repo_name,
 )
 from purr.store import Store
-from purr.sync import Change, SyncPlan, missing_reviewed, plan_sync
+from purr.sync import Change, SyncPlan, missing_reviewed, moved_reviewed, plan_sync
 
 # Between full syncs, polls only fetch PRs updated since the last sync. A full
 # sync still runs on startup and this often, to catch anything search missed.
@@ -197,8 +197,9 @@ class GitHubWorker(BaseWorker):
         first_sync = {repo.name for repo in repos if repo.synced_at is None}
         snapshot = await self._snapshot(repos, first_sync)
         current = await self._store.open_prs()
-        missing = missing_reviewed(current, snapshot, watched)
-        statuses = await self._github.pr_statuses(missing) if missing else {}
+        # Gone from the searches, or a new head in them: what the PRs themselves say.
+        lookup = [*missing_reviewed(current, snapshot, watched), *moved_reviewed(current, snapshot)]
+        statuses = await self._github.pr_statuses(lookup) if lookup else {}
         plan = plan_sync(
             current,
             snapshot,

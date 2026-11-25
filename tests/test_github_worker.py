@@ -8,6 +8,7 @@ from pipecat.bus import BusMessage
 from pipecat.workers.base_worker import BaseWorker
 from pipecat.workers.runner import WorkerRunner
 
+from purr.github import PRStatus
 from purr.jobs import Invalid, NotFound, request
 from purr.messages import (
     DismissAction,
@@ -20,7 +21,16 @@ from purr.messages import (
     Watching,
     WatchRepo,
 )
-from purr.models import ActionKind, ActionStatus, PRChange, PRRef, PRState, Reply, Verdict
+from purr.models import (
+    ActionKind,
+    ActionStatus,
+    GHState,
+    PRChange,
+    PRRef,
+    PRState,
+    Reply,
+    Verdict,
+)
 from purr.store import Store
 from purr.workers import ActivityWorker, GitHubWorker
 from tests.fakes import FakeGitHub, give_verdict, remote
@@ -103,6 +113,33 @@ async def test_add_poll_and_remove_a_repo(setup):
     await request(client, UnwatchRepo(repo="pipecat-ai/pipecat"))
     assert await store.list_repos() == []
     assert await store.list_prs() == []
+
+
+async def test_a_push_the_searches_havent_seen_is_no_news(setup):
+    """Right after Purr pushes, the searches can still have the head from before. The PR
+    itself has the one pushed: no new commits, nothing to re-review."""
+    store, github, worker, client = setup
+    await client.next_event(Synced)
+    ref = PRRef("pipecat-ai/pipecat", 5)
+    github.assigned = [remote(5, head_sha="abc")]
+    await worker.poll()
+    review = await store.start_review(ref)
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    await store.set_pr_state(ref, PRState.NEEDS_YOU)
+    await store.pushed(ref, "e0b9581")
+
+    github.statuses = {ref: PRStatus(GHState.OPEN, "e0b9581")}
+    plan = await worker.poll()
+    assert ref in github.status_calls[-1]
+    assert plan.changes == []
+    assert (await store.get_pr(ref)).head_sha == "e0b9581"
+
+    # The author pushed on top of it: that's news.
+    github.assigned = [remote(5, head_sha="f00")]
+    github.statuses = {ref: PRStatus(GHState.OPEN, "f00")}
+    plan = await worker.poll()
+    assert [(c.pr, c.change) for c in plan.changes] == [(ref, PRChange.NEW_COMMITS)]
+    assert (await store.get_pr(ref)).head_sha == "f00"
 
 
 async def test_adding_an_unknown_repo_is_rejected(setup):

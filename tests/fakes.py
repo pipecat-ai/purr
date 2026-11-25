@@ -72,7 +72,11 @@ class FakeGitHub:
         return "me"
 
     async def pr_statuses(self, refs):
-        return {}
+        """From ``statuses``: PRRef -> PRStatus, what the PR itself says (left out: unread)."""
+        refs = list(refs)
+        self.status_calls = [*getattr(self, "status_calls", []), refs]
+        statuses = getattr(self, "statuses", {})
+        return {ref: statuses[ref] for ref in refs if ref in statuses}
 
     async def pr_details(self, refs):
         refs = list(refs)
