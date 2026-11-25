@@ -494,7 +494,16 @@ async def test_approving_a_push(tmp_path):
             assert writer.reviews == []  # nothing posted
             assert (await store.get_pending_action(push.id)).status == ActionStatus.EXECUTED
             # A push is no verdict: it still needs you.
-            assert (await store.get_pr(REF)).state == PRState.NEEDS_YOU
+            pr = await store.get_pr(REF)
+            assert pr.state == PRState.NEEDS_YOU
+            # What you pushed is its head right away, and its review has seen it: no new
+            # commits to re-review when the next poll finds them.
+            assert pr.head_sha == "e0b9581"
+            assert (await store.latest_review(REF)).head_sha == "e0b9581"
+            # So approving next approves what you pushed.
+            await request(client, ApprovePR(pr=REF), timeout=5)
+            assert writer.reviews[-1]["commit_id"] == "e0b9581"
+            assert (await store.get_pr(REF)).state == PRState.DONE
         finally:
             await runner.end()
             await asyncio.wait_for(task, 5)

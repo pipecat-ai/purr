@@ -1661,6 +1661,49 @@ async def test_merging_with_m_after_approving(tmp_path):
         await until(pilot, lambda: app.purr._writer.merges == [(ref, "squash", "abc")])
 
 
+async def test_a_merge_it_cant_do_says_so_and_x_closes_it(tmp_path):
+    from purr.messages import ApproveAction
+    from purr.models import ActionKind, MergeCheck, PRRef, PRState
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    # GitHub has a commit Purr hasn't seen yet.
+    github.merge_checks[ref] = MergeCheck(
+        head_sha="def", base="main", method="merge", mergeable="MERGEABLE", merge_state="CLEAN"
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        store = app.purr.store
+        await store.set_pr_state(ref, PRState.NEEDS_YOU)
+        approval = await store.add_pending_action(ref, kind=ActionKind.APPROVE, description="LGTM")
+        await app.bus.request(ApproveAction(action_id=approval.id))
+        await app.main.repo.session.refresh_status()
+        await until(pilot, lambda: "You approved it." in decision(app))
+
+        polls = len(github.calls)
+        await pilot.press("m")
+        await until(pilot, lambda: "Can't merge #7 yet:" in decision(app))
+        assert "new commits since you approved it" in decision(app)
+        assert "[m] check again   [x] close" in decision(app)
+        await until(pilot, lambda: len(github.calls) > polls)  # Purr looks for them now
+
+        # m again, and nothing changed: it says so.
+        await pilot.press("m")
+
+        def still() -> bool:
+            return any("Still can't merge" in n.message for n in app._notifications)
+
+        await until(pilot, still)
+        # x: the box goes.
+        await pilot.press("x")
+        await until(pilot, lambda: "Can't merge" not in decision(app))
+        assert "You approved it." in decision(app)
+
+
 async def test_esc_zooms_out_first(tmp_path):
     from purr.models import PRRef
 

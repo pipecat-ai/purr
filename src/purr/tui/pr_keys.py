@@ -195,6 +195,10 @@ class PRKeys(PurrView):
         pr = self.selected_pr()
         if pr is None:
             return
+        if (merging := self.purr_app.sessions.get(str(pr.ref))) and merging.merge:
+            merging.merge = None  # the merge box goes: m asks again
+            await self.session.refresh_status()
+            return
         store = self.purr_app.purr.store
         actions = await store.pending_actions(pr.ref)
         try:
@@ -249,7 +253,10 @@ class PRKeys(PurrView):
         state = self.session.state(pr)
         try:
             if state.merge is None or state.merge.blockers:
+                before = state.merge
                 state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
+                if before and state.merge.blockers == before.blockers:
+                    self.notify(f"Still can't merge: {before.blockers[0]}", severity="warning")
             else:
                 await self._merge(pr, state)
         except PurrError as e:

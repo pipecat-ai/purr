@@ -572,6 +572,18 @@ class Store:
 
     # -- PRs -------------------------------------------------------------------
 
+    async def pushed(self, ref: PRRef, head: str) -> None:
+        """Purr pushed the agent's commits (you approved them) to the PR: they're its head
+        now, and its review has seen them, so they're no new commits to re-review."""
+        pr_id = await self._pr_id(ref)
+        await self._db.execute("UPDATE prs SET head_sha = ? WHERE id = ?", (head, pr_id))
+        await self._db.execute(
+            "UPDATE reviews SET head_sha = ?"
+            " WHERE id = (SELECT MAX(id) FROM reviews WHERE pr_id = ?)",
+            (head, pr_id),
+        )
+        await self._db.commit()
+
     async def upsert_pr(self, pr: PR) -> PR:
         """Insert or refresh a PR's GitHub metadata. Never changes its review state."""
         row = await self._fetchone(f"{_UPSERT_PR} RETURNING *", _upsert_params(pr))
