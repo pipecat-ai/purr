@@ -10,7 +10,7 @@ from typing import NamedTuple
 
 from rich.text import Text
 
-from purr.diff import File, Gap, Line, gaps, mover, parse
+from purr.diff import File, Gap, Line, gaps, mover
 from purr.models import DraftComment, PRComment
 from purr.tui.boxes import BOX_WIDTH, comment_box
 from purr.tui.code import code, colored_source, highlighted
@@ -18,13 +18,6 @@ from purr.tui.overview import VERDICTS, short_age
 from purr.tui.theme import Palette, palette
 
 SHORT_DIFF = 60  # a diff this short starts with its files opened
-
-
-def opens_short(diff: str | None) -> set[str]:
-    """The files that start opened: all of a short diff's, none of a longer one's."""
-    if diff is None or len(diff.splitlines()) > SHORT_DIFF:
-        return set()
-    return {file.path for file in parse(diff)}
 
 
 def file_line(file: File, opened: bool) -> Text:
@@ -351,7 +344,8 @@ def _indent(said: Said) -> str:
 
 
 def first_opened(files: Sequence[File], diff: str, comments: Sequence[Said]) -> set[int]:
-    """The files opened at first: all of a short diff, else those with comments."""
-    short = opens_short(diff)
+    """The files opened at first: all of a short diff's (not the conversation), and those
+    with comments."""
+    short = len(diff.splitlines()) <= SHORT_DIFF
     commented = {c.path for c in comments}
-    return {i for i, file in enumerate(files) if file.path in short or file.path in commented}
+    return {i for i, file in enumerate(files) if (short and file.path) or file.path in commented}

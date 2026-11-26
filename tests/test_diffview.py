@@ -2,7 +2,7 @@
 
 from purr.diff import parse
 from purr.models import DraftComment
-from purr.tui.diffrows import first_opened, moved, opens_short, rows, said
+from purr.tui.diffrows import first_opened, moved, rows, said
 
 DIFF = """diff --git a/src/bus.py b/src/bus.py
 index 1111111..2222222 100644
@@ -124,12 +124,13 @@ def test_a_reply_starts_with_what_it_answers_quoted():
 
 
 def test_which_files_start_opened():
-    files = parse(DIFF)
-    assert opens_short(DIFF) == {"src/bus.py", "uv.lock", "docs/new.md"}
-    assert opens_short(DIFF * 10) == set() and opens_short(None) == set()
-    assert first_opened(files, DIFF, []) == {0, 1, 2}  # short: all
+    from purr.tui.diffrows import CONVERSATION
+
+    files = (CONVERSATION, *parse(DIFF))
+    assert first_opened(files, DIFF, []) == {1, 2, 3}  # short: all its files
+    assert first_opened(files, DIFF * 10, []) == set()
     commented = said([], [{"path": "docs/new.md", "line": 1, "body": "Hi"}])
-    assert first_opened(files, DIFF * 10, commented) == {2}  # long: those with comments
+    assert first_opened(files, DIFF * 10, commented) == {3}  # long: those with comments
 
 
 def styles_at(text, start: str) -> set[str]:
