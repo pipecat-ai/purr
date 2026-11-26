@@ -231,7 +231,8 @@ class PRDetails:
     """What you look at before deciding to review a PR. Fetched on demand.
 
     ``checks`` is the head commit's combined CI state as GitHub names it
-    (``SUCCESS``, ``FAILURE``, ``PENDING``, ...), or None without CI.
+    (``SUCCESS``, ``FAILURE``, ``PENDING``, ...), or None without CI;
+    ``ACTION_REQUIRED`` while workflows wait for someone to approve them.
     """
 
     body: str = ""
@@ -266,6 +267,15 @@ class Check:
 
 
 @dataclass(frozen=True)
+class WaitingRun:
+    """A GitHub Actions run that won't start till someone with write access approves it:
+    GitHub holds them on PRs from forks, by first-time contributors."""
+
+    id: int  # the run's, to approve it
+    workflow: str  # its workflow's name
+
+
+@dataclass(frozen=True)
 class MergeCheck:
     """Where a PR stands for merging, as GitHub says now (see :mod:`purr.merging`).
 
@@ -284,6 +294,7 @@ class MergeCheck:
     checks: tuple[Check, ...] = ()
     assignees: tuple[str, ...] = ()
     reviews: tuple[tuple[str, str], ...] = ()  # (login, state)
+    waiting: tuple[WaitingRun, ...] = ()  # workflows that haven't run: approve them
 
 
 @dataclass

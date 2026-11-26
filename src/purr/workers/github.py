@@ -20,6 +20,7 @@ from purr.messages import (
     ActionResolved,
     ApproveAction,
     ApprovePR,
+    ApproveRuns,
     AssignMe,
     CheckMerge,
     CommentsChanged,
@@ -673,6 +674,17 @@ class GitHubWorker(BaseWorker):
     @handles(CheckMerge)
     async def check_merge(self, request: CheckMerge) -> MergeReadiness:
         return await self._readiness(request.pr)
+
+    @handles(ApproveRuns)
+    async def approve_runs(self, request: ApproveRuns) -> Done:
+        """Let GitHub run the workflows it holds on the PR: each run's approved on its own,
+        as GitHub's button does, all at once."""
+        approvals = (self._writer.approve_run(request.pr.repo, run) for run in request.runs)
+        try:
+            await asyncio.gather(*approvals)
+        except ActionError as e:
+            raise Failed(f"GitHub didn't run CI: {e}") from e
+        return Done()
 
     @handles(MergePR)
     async def merge_pr(self, request: MergePR) -> Merged:

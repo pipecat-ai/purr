@@ -7,7 +7,8 @@ reviewing it too, and you may want them to approve as well.
 - **Blockers** stop a merge: you haven't approved it (on GitHub or here), it has
   commits since you did (approve again), it has conflicts, it's a draft.
 - **Concerns** are for you to weigh: checks that failed or are still running (a
-  docs build failing needn't hold it up), assignees who haven't approved, a
+  docs build failing needn't hold it up), workflows GitHub holds till someone
+  approves them (CI hasn't run), assignees who haven't approved, a
   branch rule GitHub says isn't met (it may refuse; it says why), GitHub still
   working out whether it can be merged (it does, in seconds, once asked).
 """
@@ -33,6 +34,7 @@ def concerns(check: MergeCheck, me: str) -> list[str]:
     """What you may want to wait for; merging anyway is your call."""
     return [
         *check_concerns(check),
+        *_approval_concerns(check),
         *_review_concerns(check, me),
         *_rule_concerns(check),
         *([WORKING_OUT] if working_out(check) else []),
@@ -47,6 +49,16 @@ def check_concerns(check: MergeCheck) -> list[str]:
             required = " (required)" if run.required else ""
             found.append(f"{run.name}{required} {what}")
     return found
+
+
+def _approval_concerns(check: MergeCheck) -> list[str]:
+    """Workflows that haven't run: GitHub holds them till someone approves them."""
+    if not (waiting := check.waiting):
+        return []
+    names = ", ".join(run.workflow for run in waiting)
+    one = len(waiting) == 1
+    count = "1 workflow waits" if one else f"{len(waiting)} workflows wait"
+    return [f"CI hasn't run: {count} for approval ({names})"]
 
 
 def _review_concerns(check: MergeCheck, me: str) -> list[str]:

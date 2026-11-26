@@ -18,6 +18,7 @@ from purr.messages import (
     AnswerPermission,
     ApproveAction,
     ApprovePR,
+    ApproveRuns,
     AssignMe,
     CheckMerge,
     DismissAction,
@@ -32,7 +33,7 @@ from purr.messages import (
 from purr.models import PR, ActionKind, PRRef, ReviewStatus
 from purr.review.agent import claude_code_command
 from purr.tui.dialogs import AlwaysScreen, ConfirmScreen, NoticeScreen
-from purr.tui.session import PRSession, SessionState, settling
+from purr.tui.session import PRSession, SessionState, can_run_ci, settling
 from purr.tui.views import PurrView
 
 
@@ -190,7 +191,12 @@ class PRKeys(PurrView):
             await self._answer(state, True)
             return
         pr = self.selected_pr()
-        if not pr or self.session.state(pr).doing or not (to_do := await self._to_post(pr)):
+        if not pr or (state := self.session.state(pr)).doing:
+            return
+        if can_run_ci(state.merge):
+            await self._run_ci(pr, state)
+            return
+        if not (to_do := await self._to_post(pr)):
             return
         job, doing, done = to_do
         async with self._doing(pr, doing):
@@ -316,6 +322,19 @@ class PRKeys(PurrView):
             except PurrError:
                 return  # what it said stays; m asks again
             await self.session.refresh_status()
+
+    async def _run_ci(self, pr: PR, state: SessionState) -> None:
+        """a on the merge box, with workflows GitHub holds: approve them, and follow them
+        as they run."""
+        assert state.merge is not None
+        runs = [run.id for run in state.merge.check.waiting]
+        async with self._doing(pr, "Starting CI"):
+            try:
+                await self.purr_app.bus.request(ApproveRuns(pr=pr.ref, runs=runs))
+                state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
+            except PurrError as e:
+                self.notify(str(e), severity="error")
+        self._follow_merge(pr, state)
 
     async def _merge(self, pr: PR, state: SessionState) -> None:
         """Merge past what you saw, unless something new came up: then you see it again."""

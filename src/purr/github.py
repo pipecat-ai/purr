@@ -30,6 +30,7 @@ from purr.models import (
     PRRef,
     Reply,
     Verdict,
+    WaitingRun,
 )
 
 # Searches are sorted by creation so that pages stay stable while PRs get updated.
@@ -69,13 +70,22 @@ _PR_FIELDS = """
     reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }
     repository { nameWithOwner }
 """
-_DETAILS_FIELDS = """
+# The head's GitHub Actions workflows: those waiting for approval, and those starting
+# (not in the rollup till they have a check run). Only suites with a workflow run:
+# other apps' sit queued forever.
+_WORKFLOWS = """
+    checkSuites(first: 30) { nodes {
+        status conclusion checkRuns(first: 0) { totalCount }
+        workflowRun { databaseId workflow { name } }
+    } }
+"""
+_DETAILS_FIELDS = f"""
     body baseRefName headRefName additions deletions changedFiles reviewDecision
-    labels(first: 10) { nodes { name } }
-    files(first: 100) { nodes { path additions deletions } }
-    commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-    comments(last: 30) { nodes { id author { login } body createdAt viewerDidAuthor } }
-    reviews(last: 30) { nodes { id author { login } body submittedAt state viewerDidAuthor } }
+    labels(first: 10) {{ nodes {{ name }} }}
+    files(first: 100) {{ nodes {{ path additions deletions }} }}
+    commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} {_WORKFLOWS} }} }} }}
+    comments(last: 30) {{ nodes {{ id author {{ login }} body createdAt viewerDidAuthor }} }}
+    reviews(last: 30) {{ nodes {{ id author {{ login }} body submittedAt state viewerDidAuthor }} }}
 """
 # Who said what on a PR, for replies to you (see replies_to).
 _CONVERSATION_FIELDS = """
@@ -685,7 +695,8 @@ def _merge_fields(number: int) -> str:
         baseRepository {{ viewerDefaultMergeMethod }}
         assignees(first: 20) {{ nodes {{ login }} }}
         latestOpinionatedReviews(first: 20) {{ nodes {{ author {{ login }} state }} }}
-        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{
+        commits(last: 1) {{ nodes {{ commit {{ {_WORKFLOWS}
+            statusCheckRollup {{ contexts(first: 100) {{
             nodes {{
                 ... on CheckRun {{ name status conclusion startedAt completedAt {required} }}
                 ... on StatusContext {{ context state createdAt {required} }}
@@ -722,10 +733,36 @@ def _check(node: dict) -> Check | None:
     return Check(name, state, required=required, started=started, finished=finished)
 
 
-def _merge_check(pr: dict) -> MergeCheck:
+# A workflow's suite that's starting: not WAITING, which is on a deployment's approval.
+_STARTING = frozenset({"REQUESTED", "QUEUED", "PENDING", "IN_PROGRESS"})
+
+
+def _workflows(commit: dict) -> tuple[list[WaitingRun], list[Check]]:
+    """The head's workflow runs waiting for approval, and those starting, as checks still
+    running: the rollup has no word of them till their first check run."""
+    waiting, starting = [], []
+    for suite in _nodes(commit.get("checkSuites")):
+        if not (run := suite.get("workflowRun")):
+            continue
+        name = (run.get("workflow") or {}).get("name") or "workflow"
+        runs = (suite.get("checkRuns") or {}).get("totalCount")
+        if suite.get("conclusion") == "ACTION_REQUIRED":
+            waiting.append(WaitingRun(run["databaseId"], name))
+        elif suite.get("status") in _STARTING and not runs:
+            starting.append(Check(name, CheckState.RUNNING))
+    return waiting, starting
+
+
+def _head(pr: dict) -> dict:
     commits = _nodes(pr.get("commits"))
-    rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
+    return (commits[0].get("commit") or {}) if commits else {}
+
+
+def _merge_check(pr: dict) -> MergeCheck:
+    head = _head(pr)
+    rollup = head.get("statusCheckRollup")
     checks = [_check(node) for node in _nodes((rollup or {}).get("contexts"))]
+    waiting, starting = _workflows(head)
     reviews = [
         ((review.get("author") or {}).get("login", "ghost"), review.get("state") or "")
         for review in _nodes(pr.get("latestOpinionatedReviews"))
@@ -738,15 +775,25 @@ def _merge_check(pr: dict) -> MergeCheck:
         ).lower(),
         mergeable=pr.get("mergeable"),
         merge_state=pr.get("mergeStateStatus"),
-        checks=tuple(check for check in checks if check),
+        checks=(*(check for check in checks if check), *starting),
         assignees=tuple(a["login"] for a in _nodes(pr.get("assignees"))),
         reviews=tuple(reviews),
+        waiting=tuple(waiting),
     )
 
 
+def _ci(head: dict) -> str | None:
+    """The head's CI, as the header says it: the rollup's state, unless workflows wait for
+    approval (then CI hasn't run, whatever the rest says) or are starting (only a failure
+    says more)."""
+    state = (head.get("statusCheckRollup") or {}).get("state")
+    waiting, starting = _workflows(head)
+    if waiting:
+        return "ACTION_REQUIRED"
+    return "PENDING" if starting and state in (None, "SUCCESS") else state
+
+
 def _details(pr: dict) -> PRDetails:
-    commits = _nodes(pr.get("commits"))
-    rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
     return PRDetails(
         body=pr.get("body") or "",
         base=pr.get("baseRefName") or "",
@@ -760,7 +807,7 @@ def _details(pr: dict) -> PRDetails:
         ),
         labels=tuple(label["name"] for label in _nodes(pr.get("labels"))),
         review_decision=pr.get("reviewDecision"),
-        checks=(rollup or {}).get("state"),
+        checks=_ci(_head(pr)),
         conversation=_conversation(pr),
     )
 
