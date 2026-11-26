@@ -181,19 +181,24 @@ def test_the_merge_box_waits_while_github_works_out_if_it_can_be_merged():
     assert not settling(MergeReadiness(check=known, blockers=[], concerns=[]))
 
 
-def test_what_you_approved_and_is_still_open_is_to_merge():
+def test_open_prs_you_gave_a_verdict_on_wait_to_merge_or_on_their_author():
     from dataclasses import replace
 
     from purr.models import PR, GHState, PRState, Verdict
-    from purr.tui.lists import TO_MERGE, group
+    from purr.tui.lists import TO_MERGE, WAITING, group
 
     pr = PR("a/b", 1, "Fix", "someone", "u", "abc", "t", state=PRState.DONE)
     approved = replace(pr, verdict=Verdict(ActionKind.APPROVE, "abc"))
+    changes = replace(pr, verdict=Verdict(ActionKind.REQUEST_CHANGES, "abc"))
     assert group(approved) == TO_MERGE  # merging's next: in Done, it'd be missed
+    assert group(changes) == WAITING  # the author's turn: it isn't done
     assert group(pr) == PRState.DONE  # done without a verdict (a comment)
-    assert group(replace(pr, verdict=Verdict(ActionKind.REQUEST_CHANGES, "abc"))) == PRState.DONE
     assert group(replace(approved, verdict=Verdict(ActionKind.APPROVE, "old"))) == PRState.DONE
+    # Merged or closed, it's done, whatever waited on you.
     assert group(replace(approved, gh_state=GHState.MERGED)) == PRState.DONE
+    assert group(replace(changes, gh_state=GHState.CLOSED)) == PRState.DONE
+    needs_you = replace(pr, state=PRState.NEEDS_YOU, gh_state=GHState.MERGED)
+    assert group(needs_you) == PRState.DONE
 
 
 def test_review_requests_come_before_up_next():
@@ -202,3 +207,16 @@ def test_review_requests_come_before_up_next():
     # Someone asked you (a teammate, mostly, whose PRs come first): before Purr's picks.
     keys = [key for key, *_ in GROUPS]
     assert keys.index(REQUESTED) < keys.index(UP_NEXT)
+
+
+def test_back_in_needs_you_with_new_commits_says_so():
+    from dataclasses import replace
+
+    from purr.models import PR, PRState, Verdict
+    from purr.tui.session import needs_you_for
+
+    pr = PR("a/b", 1, "Fix", "someone", "u", "f00", "t", state=PRState.NEEDS_YOU)
+    note = lambda pr: needs_you_for(pr, None, None, drafted=False, failed=False)  # noqa: E731
+    assert note(pr) == "No verdict yet"
+    changes = Verdict(ActionKind.REQUEST_CHANGES, "abc")
+    assert note(replace(pr, verdict=changes)) == "New commits since your verdict"

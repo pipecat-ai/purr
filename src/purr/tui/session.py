@@ -97,7 +97,10 @@ def needs_you_for(
         return "Post your comments?"
     if pr.replies:
         return replied(pr.replies)
-    return "Review failed" if failed else "No verdict yet"
+    if failed:
+        return "Review failed"
+    moved_on = pr.verdict is not None and pr.verdict.head != pr.head_sha
+    return "New commits since your verdict" if moved_on else "No verdict yet"
 
 
 @dataclass
@@ -249,11 +252,12 @@ def _decision(pr: PR, state: SessionState, *, typing: bool = False) -> Text | No
     may be the answer. The rest wait while you type (a and x type there, and sending sets
     a proposal aside), while what you asked for is under way (the spinner says so), and
     while the agent's at it (what it says next may change them), bar where the PR stands
-    for merging, which you asked for (m). They're back once that's over.
+    for merging, which you asked for (m). They're back once that's over. Merged or closed,
+    nothing does: what was proposed is moot.
     """
     if state.ask:
         return _permission_question(pr, state)
-    if typing or state.doing:
+    if typing or state.doing or pr.gh_state != GHState.OPEN:
         return None
     if state.progress:
         return _merge_question(pr, state)

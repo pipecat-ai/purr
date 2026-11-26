@@ -274,6 +274,27 @@ async def test_a_verdict_you_gave_on_github_counts(setup):
     assert await store.approved_head(ref) is None
 
 
+async def test_new_commits_after_your_verdict_bring_the_pr_back_to_you(setup):
+    # You requested changes: it waits on its author. They push: your verdict was of what
+    # it was, so it needs you again (with auto-review, the lead re-reviews it too).
+    store, github, worker, client = setup
+    await client.next_event(Synced)
+    ref = await _reviewed(store, github, worker, 1)
+    github.verdicts[ref] = Verdict(ActionKind.REQUEST_CHANGES, "def")
+    _updated(github, 1, "2026-11-21T10:00:00Z")
+    await worker.poll()
+    assert (await store.get_pr(ref)).state == PRState.DONE
+
+    github.assigned = [
+        remote(1, assignees=("me",), head_sha="f00", updated_at="2026-11-21T11:00:00Z")
+    ]
+    github.statuses = {ref: PRStatus(GHState.OPEN, "f00")}
+    plan = await worker.poll()
+    assert [(c.pr, c.change) for c in plan.changes] == [(ref, PRChange.NEW_COMMITS)]
+    pr = await store.get_pr(ref)
+    assert (pr.state, pr.head_sha) == (PRState.NEEDS_YOU, "f00")
+
+
 async def test_a_verdict_on_github_leaves_the_agents_comments_to_you(setup):
     store, github, worker, client = setup
     await client.next_event(Synced)

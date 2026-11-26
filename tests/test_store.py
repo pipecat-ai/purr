@@ -360,6 +360,19 @@ async def test_apply_sync(store):
     assert sorted(pr.number for pr in await store.open_prs()) == [1, 4]
 
 
+async def test_a_pr_is_done_from_when_it_merged_or_closed(store):
+    # Done PRs show latest first: merged a while after you approved it, it's that recent.
+    ref = (await store.upsert_pr(make_pr(1))).ref
+    await store.set_pr_state(ref, PRState.DONE)
+    approved = (await store.get_pr(ref)).state_at
+    await asyncio.sleep(0.005)
+    await store.apply_sync(gh_states={ref: GHState.MERGED})
+    merged = (await store.get_pr(ref)).state_at
+    assert merged > approved
+    await store.apply_sync(gh_states={ref: GHState.MERGED})  # told again: it stays
+    assert (await store.get_pr(ref)).state_at == merged
+
+
 async def test_activity_log(store):
     ref = PRRef("pipecat-ai/pipecat", 1)
     first = await store.record_activity("pr.changed", pr=ref, data={"change": "pooled"})

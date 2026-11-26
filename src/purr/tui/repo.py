@@ -16,7 +16,7 @@ from textual.widgets.option_list import Option
 
 from purr.jobs import PurrError
 from purr.messages import FetchDetails, GetDiff, SkipUpNext
-from purr.models import PR, PRState, UpNext
+from purr.models import PR, GHState, PRState, UpNext
 from purr.tui.diffview import DiffPane
 from purr.tui.keys import REPO_KEYS
 from purr.tui.lists import (
@@ -25,8 +25,10 @@ from purr.tui.lists import (
     GROUPS,
     HEADING,
     ICONS,
+    STYLES,
     TO_MERGE,
     UP_NEXT,
+    WAITING,
     PRGroup,
     PRList,
     blank,
@@ -132,7 +134,7 @@ class RepoView(PRKeys):
             return
         await super().reload()
         store = self.purr_app.purr.store
-        self._all = await store.list_prs(repo=self.repo, open_only=True)
+        self._all = await store.list_prs(repo=self.repo)  # merged and closed ones: done
         self._outcomes = await store.outcomes(self.repo)
         self._proposed = await store.proposed(self.repo)
         self._drafted = await store.drafted(self.repo)
@@ -264,9 +266,12 @@ class RepoView(PRKeys):
     def _note(self, pr: PR) -> str:
         """Dim, after its title: why it's up next, or what it needs you for."""
         key = str(pr.ref)
-        if self._group(pr) == UP_NEXT:
+        listed = self._group(pr)
+        if listed == UP_NEXT:
             return self._up_next[key].why
-        if pr.state != PRState.NEEDS_YOU:
+        if pr.gh_state == GHState.CLOSED:
+            return "closed"  # not merged
+        if listed != PRState.NEEDS_YOU:
             return ""
         state = self.purr_app.sessions.get(key)
         return needs_you_for(
@@ -284,14 +289,15 @@ class RepoView(PRKeys):
             return Text("▪", style="bold magenta")
         if str(pr.ref) in self._spinning:
             return Text(FRAMES[self._frame % len(FRAMES)], style=f"bold {palette().working}")
-        if pr.state == PRState.NEEDS_YOU and pr.ref in self._failed and not pr.replies:
+        key = self._group(pr)
+        if key == PRState.NEEDS_YOU and pr.ref in self._failed and not pr.replies:
             return Text("✗", style="bold red")
-        if pr.state == PRState.NEEDS_YOU:
+        if key == PRState.NEEDS_YOU:
             return Text(ICONS[PRState.NEEDS_YOU], style="bold yellow")
-        if self._group(pr) == TO_MERGE:
-            return Text(ICONS[TO_MERGE], style="bold green")
+        if key in (TO_MERGE, WAITING):  # the group says it all
+            return Text(ICONS[key], style=STYLES[key])
         outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
-        return outcome_mark(outcome) if outcome else Text(ICONS[self._group(pr)])
+        return outcome_mark(outcome) if outcome else Text(ICONS[key])
 
     def selected_pr(self) -> PR | None:
         option = self.query_one(PRList).highlighted_option
@@ -395,7 +401,9 @@ class RepoView(PRKeys):
     def a_does(self) -> str:
         """What a does to the selected PR now, as its key says it ("" for nothing)."""
         pr = self.selected_pr()
-        state = self.purr_app.sessions.get(str(pr.ref)) if pr else None
+        if pr is None or pr.gh_state != GHState.OPEN:
+            return ""  # merged or closed: nothing to post
+        state = self.purr_app.sessions.get(str(pr.ref))
         return state.a_does() if state else ""
 
     def on_up_next(self) -> bool:
