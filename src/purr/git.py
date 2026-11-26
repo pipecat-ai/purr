@@ -765,13 +765,16 @@ class GitRepos:
 
     @staticmethod
     async def _run(*args: str, stdin: str | None = None, env: dict | None = None) -> bytes:
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, **env} if env else None,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, **env} if env else None,
+            )
+        except OSError as e:  # git isn't installed, say
+            raise GitError(f"Couldn't run {_command(args)}: {e}") from e
         stdout, stderr = await process.communicate(stdin.encode() if stdin is not None else None)
         if process.returncode != 0:
             raise GitError(f"{_command(args)} failed: {stderr.decode().strip()}")

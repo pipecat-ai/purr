@@ -249,13 +249,16 @@ class GhWriter:
     async def _run(self, *args: str, stdin: str | None = None) -> bytes:
         """What gh prints. Raises ActionError if it fails: with what GitHub said, if it
         answered a REST call, else with what gh said."""
-        process = await asyncio.create_subprocess_exec(
-            self._gh,
-            *args,
-            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._gh,
+                *args,
+                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as e:  # not installed, say: what you approved waits for another go
+            raise ActionError(f"Couldn't run the GitHub CLI ({self._gh}): {e}") from e
         stdout, stderr = await process.communicate(stdin.encode() if stdin is not None else None)
         if process.returncode != 0:
             detail = _refusal(stdout) or stderr.decode().strip()

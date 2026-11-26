@@ -378,6 +378,11 @@ async def test_writing_to_github_through_gh(tmp_path):
     await writer.assign_self(PRRef("a/b", 2))
     with pytest.raises(ActionError, match="^could not assign$"):
         await writer.assign_self(PRRef("a/b", 3))
+    # No gh to run: an error like GitHub's refusals, so what you approved waits for
+    # another go instead of getting stuck.
+    missing = GhWriter(gh=str(tmp_path / "no-gh"))
+    with pytest.raises(ActionError, match="Couldn't run the GitHub CLI"):
+        await missing.post_pr_comment(PRRef("a/b", 1), "Hi")
 
 
 def test_the_proposal_shows_what_would_be_posted():
