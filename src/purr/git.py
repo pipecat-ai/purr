@@ -29,6 +29,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from purr.diff import unquoted
 from purr.models import PR, FileChange, PRRef
 
 
@@ -177,7 +178,9 @@ def _file_change(numstat: str) -> FileChange:
     """A line of ``git diff --numstat``: added, removed, path (a binary file's counts: -)."""
     added, removed, path = numstat.split("\t", 2)
     return FileChange(
-        path, int(added) if added.isdigit() else 0, int(removed) if removed.isdigit() else 0
+        unquoted(path),
+        int(added) if added.isdigit() else 0,
+        int(removed) if removed.isdigit() else 0,
     )
 
 

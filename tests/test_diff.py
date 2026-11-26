@@ -131,3 +131,24 @@ deleted file mode 100644
     ]  # fmt: skip
     assert where("gone.py", 3) == 0
     assert where("same.py", 7) == 7  # a file they didn't touch
+
+
+def test_paths_git_quotes():
+    from purr.diff import unquoted
+
+    # git quotes a path that isn't plain ASCII, with its bytes in octal.
+    diff = (
+        'diff --git "a/docs/caf\\303\\251.md" "b/docs/caf\\303\\251.md"\n'
+        "index 1111111..2222222 100644\n"
+        '--- "a/docs/caf\\303\\251.md"\n'
+        '+++ "b/docs/caf\\303\\251.md"\n'
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    [file] = parse(diff)
+    assert file.path == "docs/café.md"
+    assert mover(diff)("docs/café.md", 1) == 0  # changed
+    assert unquoted('"tab\\there \\"quoted\\""') == 'tab\there "quoted"'
+    assert unquoted('"café \\"x\\""') == 'café "x"'  # core.quotePath=false: UTF-8 as is
+    assert unquoted("plain/path.py") == "plain/path.py"
