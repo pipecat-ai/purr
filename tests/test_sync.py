@@ -1,7 +1,7 @@
 from dataclasses import replace
 
 from purr.github import PRStatus, RemotePR, Snapshot
-from purr.models import PR, GHState, PRChange, PRRef, PRState
+from purr.models import PR, ActionKind, GHState, PRChange, PRRef, PRState, Reply, Verdict
 from purr.sync import missing_reviewed, moved_reviewed, not_open, plan_sync
 
 WATCHED = ["pipecat-ai/pipecat"]
@@ -49,8 +49,15 @@ def test_first_sync_does_not_report_the_whole_pool():
 
 
 def test_unchanged_prs_are_not_rewritten():
-    snapshot = Snapshot(open={"pipecat-ai/pipecat": [remote(1)]}, assigned=[])
-    plan = plan_sync([stored(1)], snapshot, watched=WATCHED)
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": [remote(1), remote(2)]}, assigned=[])
+    # What Purr keeps of its own (not from the searches) isn't news from GitHub.
+    reviewed = stored(
+        2,
+        state=PRState.DONE,
+        replies=(Reply("alice", "Done?", "2026-11-21T10:00:00Z"),),
+        verdict=Verdict(ActionKind.APPROVE, "aaa"),
+    )
+    plan = plan_sync([stored(1), reviewed], snapshot, watched=WATCHED)
     assert plan.empty
     assert plan.changes == []
 

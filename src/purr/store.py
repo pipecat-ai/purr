@@ -353,6 +353,10 @@ _STATE_ORDER = """
     END
 """
 
+# The actions that are your verdict on a PR, for SQL: kind IN ({_VERDICT_MARKS}).
+_VERDICTS = tuple(kind for kind in ActionKind if kind.verdict)
+_VERDICT_MARKS = ", ".join("?" * len(_VERDICTS))
+
 
 def _draft(row: aiosqlite.Row) -> DraftComment:
     return DraftComment(
@@ -528,6 +532,10 @@ class Store:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON")
         await db.execute("PRAGMA journal_mode = WAL")
+        # No fsync per commit (with WAL, a power cut can lose the last commits, never the
+        # database): every write is a fraction of a millisecond, not several, and reads
+        # (the UI's) don't wait behind them.
+        await db.execute("PRAGMA synchronous = NORMAL")
         store = cls(db)
         await store._migrate()
         return store
@@ -656,17 +664,15 @@ class Store:
         dismissed), or as Purr just posted it. ``read_at``: when GitHub was asked; a verdict
         Purr posted since is newer than what it said, and stays."""
         kind, head = (verdict.kind, verdict.head) if verdict else (None, None)
-        verdicts = [kind for kind in ActionKind if kind.verdict]
-        kinds = ", ".join("?" * len(verdicts))
         await self._db.execute(
             f"""
             UPDATE prs SET verdict = ?, verdict_head = ? WHERE repo = ? AND number = ?
             AND NOT EXISTS (
                 SELECT 1 FROM pending_actions WHERE pr_id = prs.id AND status = ?
-                AND kind IN ({kinds}) AND resolved_at >= ?
+                AND kind IN ({_VERDICT_MARKS}) AND resolved_at >= ?
             )
             """,
-            (kind, head, ref.repo, ref.number, ActionStatus.EXECUTED, *verdicts, read_at),
+            (kind, head, ref.repo, ref.number, ActionStatus.EXECUTED, *_VERDICTS, read_at),
         )
         await self._db.commit()
 
@@ -692,13 +698,11 @@ class Store:
         if pr and pr.verdict and pr.verdict.head == pr.head_sha:
             return True
         # Posted through Purr, even if a read of GitHub that began before says otherwise.
-        verdicts = [kind for kind in ActionKind if kind.verdict]
-        kinds = ", ".join("?" * len(verdicts))
         row = await self._fetchone(
             f"{self._ACTION_SELECT} WHERE prs.repo = ? AND prs.number = ?"
-            f" AND pending_actions.status = ? AND pending_actions.kind IN ({kinds})"
+            f" AND pending_actions.status = ? AND pending_actions.kind IN ({_VERDICT_MARKS})"
             " AND pending_actions.posted_head = prs.head_sha LIMIT 1",
-            (ref.repo, ref.number, ActionStatus.EXECUTED, *verdicts),
+            (ref.repo, ref.number, ActionStatus.EXECUTED, *_VERDICTS),
         )
         return row is not None
 
@@ -793,7 +797,8 @@ class Store:
 
     async def repo_summaries(self) -> list[RepoSummary]:
         """The repo list: watched repos plus any other repo with an open PR Purr tracks
-        (yours, assigned to you, or reviewed), alphabetically, with per-state counts."""
+        (assigned to you, asking for your review, or reviewed), alphabetically, with
+        per-state counts."""
         rows = await self._fetchall(
             """
             WITH names (name, watched) AS (
@@ -844,8 +849,8 @@ class Store:
     async def remove_repo(self, name: str) -> bool:
         """Stop watching a repo and drop its pool.
 
-        PRs of yours, assigned to you, asking for your review, that you've taken part in,
-        or that Purr has started reviewing, are kept.
+        PRs assigned to you, asking for your review, that you've taken part in, or that
+        Purr has started reviewing, are kept.
         Returns whether the repo was being watched.
         """
         cursor = await self._db.execute("DELETE FROM repos WHERE name = ?", (name,))
@@ -932,8 +937,9 @@ class Store:
     async def record_activity(
         self, kind: str, *, pr: PRRef | None = None, data: dict | None = None
     ) -> Activity:
-        cursor = await self._db.execute(
-            "INSERT INTO activity (at, kind, repo, number, data) VALUES (?, ?, ?, ?, ?)",
+        row = await self._fetchone(
+            "INSERT INTO activity (at, kind, repo, number, data) VALUES (?, ?, ?, ?, ?)"
+            " RETURNING *",
             (
                 _now(),
                 kind,
@@ -943,21 +949,11 @@ class Store:
             ),
         )
         await self._db.commit()
-        row = await self._fetchone("SELECT * FROM activity WHERE id = ?", (cursor.lastrowid,))
         return _activity(row)
 
-    async def activity(
-        self, *, since: str | None = None, pr: PRRef | None = None
-    ) -> list[Activity]:
-        """Activity entries, oldest first; optionally only after ``since`` or for one PR."""
-        clauses, params = [], []
-        if since:
-            clauses.append("at > ?")
-            params.append(since)
-        if pr:
-            clauses += ["repo = ?", "number = ?"]
-            params += [pr.repo, pr.number]
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    async def activity(self, *, pr: PRRef | None = None) -> list[Activity]:
+        """Activity entries, oldest first: all, or one PR's."""
+        where, params = ("WHERE repo = ? AND number = ?", [pr.repo, pr.number]) if pr else ("", [])
         rows = await self._fetchall(f"SELECT * FROM activity {where} ORDER BY id", params)
         return [_activity(row) for row in rows]
 
@@ -1321,18 +1317,15 @@ class Store:
     ) -> DraftComment:
         """A new inline comment of yours, on ``line`` of ``path`` at ``head_sha`` (or from
         ``start_line`` to it)."""
-        cursor = await self._db.execute(
+        pr_id = await self._pr_id(ref)
+        row = await self._fetchone(
             "INSERT INTO draft_comments"
             " (pr_id, path, line, side, body, head_sha, created_at, start_line, start_side)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (await self._pr_id(ref), path, line, side, body, head_sha, _now(), start_line,
-             start_side),
-        )  # fmt: skip
-        await self._db.commit()
-        comment_id = cursor.lastrowid or 0
-        return DraftComment(
-            comment_id, path, line, side, body, head_sha, start_line, start_side, _now()
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+            (pr_id, path, line, side, body, head_sha, _now(), start_line, start_side),
         )
+        await self._db.commit()
+        return _draft(row)
 
     async def edit_comment(self, comment_id: int, body: str) -> None:
         sql = "UPDATE draft_comments SET body = ? WHERE id = ?"

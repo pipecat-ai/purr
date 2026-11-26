@@ -125,8 +125,6 @@ class SaveComment(Request[Done]):
     comment_id: int | None = None
     start_line: int | None = None  # on several lines: the first (line is the last)
     start_side: str | None = None
-    start_line: int | None = None  # on several lines: the first (line is the last)
-    start_side: str | None = None
 
 
 @dataclass(kw_only=True)
