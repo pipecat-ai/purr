@@ -337,12 +337,55 @@ async def test_assigning_yourself(setup):
     assert (await store.get_pr(REF)).assigned_to_me is True
 
 
+# Stands in for gh: answers what it's asked as GitHub would, or refuses.
+FAKE_GH = """#!/bin/sh
+case "$*" in
+  *pulls/1/reviews*) cat >"$0.in"; echo '{"html_url": "https://github.com/a/b/pull/1#r1"}' ;;
+  *pulls/2/reviews*) echo '{"message": "Unprocessable Entity", "errors": ["Line is wrong"]}'
+    echo 'gh: Unprocessable Entity (HTTP 422)' >&2; exit 1 ;;
+  *pulls/2/merge*) echo 'error connecting to api.github.com' >&2; exit 1 ;;
+  *addPullRequestReviewThreadReply*)
+    echo '{"data": {"addPullRequestReviewThreadReply": {"comment": {"url": "u1"}}}}' ;;
+  *updateIssueComment*) echo '{"data": null, "errors": [{"message": "Not yours"}]}'
+    echo 'gh: Not yours' >&2; exit 1 ;;
+  *"pr edit 3"*) echo 'could not assign' >&2; exit 1 ;;
+esac
+"""
+
+
+async def test_writing_to_github_through_gh(tmp_path):
+    """What GhWriter makes of gh's answers: a URL, or why GitHub refused."""
+    import json
+
+    from purr.actions import GhWriter
+
+    gh = tmp_path / "gh"
+    gh.write_text(FAKE_GH)
+    gh.chmod(0o755)
+    writer = GhWriter(gh=str(gh))
+    review = {"event": "APPROVE", "body": "LGTM", "comments": [], "commit_id": "abc"}
+    assert await writer.submit_review(PRRef("a/b", 1), **review) == (
+        "https://github.com/a/b/pull/1#r1"
+    )
+    assert json.loads((tmp_path / "gh.in").read_text()) == review
+    with pytest.raises(ActionError, match="^Unprocessable Entity Line is wrong$"):
+        await writer.submit_review(PRRef("a/b", 2), **review)
+    with pytest.raises(ActionError, match="^error connecting to api.github.com$"):
+        await writer.merge(PRRef("a/b", 2), method="squash", sha="abc")
+    assert await writer.reply_to_thread("T1", "Done") == "u1"
+    with pytest.raises(ActionError, match="^gh: Not yours$"):
+        await writer.edit_pr_comment("IC1", "Better")
+    await writer.assign_self(PRRef("a/b", 2))
+    with pytest.raises(ActionError, match="^could not assign$"):
+        await writer.assign_self(PRRef("a/b", 3))
+
+
 def test_the_proposal_shows_what_would_be_posted():
     import io
 
     from rich.console import Console
 
-    from purr.tui.session import render_proposal
+    from purr.tui.entries import render_proposal
 
     def shown(proposal: dict) -> list[str]:
         console = Console(width=100, record=True, file=io.StringIO())

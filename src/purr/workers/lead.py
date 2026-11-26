@@ -33,11 +33,11 @@ from purr.models import (
     PRRef,
     PRState,
     ReviewPlan,
-    ReviewStatus,
 )
 from purr.review.instructions import ReviewInstructions
 from purr.review.skills import repo_skills
 from purr.store import Store
+from purr.workers.reviews import rereviewable
 
 
 def _due_review(pr: PR) -> bool:
@@ -207,7 +207,7 @@ class LeadWorker(BaseWorker):
         prs: list[PR] = []
         for ref in dict.fromkeys(refs):
             pr = await self._store.get_pr(ref)
-            if pr and ref not in self._planning and await self._rereviewable(pr):
+            if ref not in self._planning and rereviewable(pr, await self._store.latest_review(ref)):
                 prs.append(pr)
         return prs
 
@@ -256,17 +256,6 @@ class LeadWorker(BaseWorker):
         await self._store.set_pr_state(ref, PRState.NEEDS_YOU if waits else PRState.NOT_REVIEWED)
         await self.send_bus_message(PRListUpdated(source=self.name))
 
-    async def _rereviewable(self, pr: PR) -> bool:
-        """Whether a re-review would look at anything: the review the review worker continues."""
-        review = await self._store.latest_review(pr.ref)
-        return bool(
-            pr.assigned_to_me
-            and review
-            and review.status == ReviewStatus.FINISHED
-            and review.session_id
-            and review.head_sha != pr.head_sha
-        )
-
     async def plan(
         self, prs: list[PR], *, requested: bool = False, rereviews: set[PRRef] = frozenset()
     ) -> dict[PRRef, ReviewPlan]:
@@ -288,9 +277,7 @@ class LeadWorker(BaseWorker):
         except Exception as e:
             logger.warning(f"The lead couldn't plan {len(prs)} reviews: {e}")
             planned, reason = {}, f"the lead couldn't plan it ({e})"
-        plans = {
-            pr.ref: planned.get(pr.ref) or default_plan(reason, requested=requested) for pr in prs
-        }
+        plans = {pr.ref: planned.get(pr.ref) or default_plan(reason) for pr in prs}
         if requested:  # you're waiting for it
             plans = {ref: replace(plan, priority=Priority.HIGH) for ref, plan in plans.items()}
         return plans

@@ -290,7 +290,8 @@ async def test_follow_up_continues_the_session(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
     await s.client.request(StartReview(pr=REF))
-    await eventually(lambda: s.client.of(ReviewFinished))
+    # Finished, and its run over (it says so before it settles the PR).
+    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
 
     [proposal] = await s.store.pending_actions(REF)
     s.agent.gate = asyncio.Event()
@@ -307,11 +308,11 @@ async def test_follow_up_continues_the_session(make):
     # It proposes again (the fake always does), and the PR needs you again.
     s.agent.gate.set()
     await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
+    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
     assert len(await s.store.pending_actions(REF)) == 1
     assert await s.state() == PRState.NEEDS_YOU
 
     # A slash command isn't a reply: the proposal stays.
-    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
     await s.client.request(SendMessage(pr=REF, text="/compact"))
     await eventually(lambda: len(s.agent.runs) == 3)
     assert s.agent.runs[2]["prompt"] == "/compact"
@@ -489,7 +490,7 @@ def test_a_no_with_what_to_do_instead_reaches_the_agent_and_the_transcript():
         replies_note,
         set_aside_note,
     )
-    from purr.tui.session import render_entry
+    from purr.tui.entries import render_entry
 
     result = permission_result(PermissionAnswer(False, instead="Only bus tests"), [], "a/b", None)
     assert result.message.endswith("Only bus tests") and not result.interrupt
@@ -887,8 +888,13 @@ async def test_reviews_go_ahead_when_the_lead_cant_plan(make):
     await s.client.send_bus_message(Synced(source="github"))
     await eventually(lambda: s.client.of(ReviewFinished))
     plan = s.agent.runs[0]["plan"]
-    assert (plan.depth, plan.by) == ("full", "default")
+    assert (plan.depth, plan.priority, plan.by) == ("full", "normal", "default")
     assert "offline" in plan.why
+
+    # One you ask for is still high priority: you're waiting for it.
+    await s.client.request(PlanReviews(prs=[REF]))
+    await eventually(lambda: len(s.agent.runs) == 2)
+    assert s.agent.runs[1]["plan"].priority == "high"
 
 
 async def test_quick_reviews_skip_the_repo_review_skill(make, tmp_path):

@@ -72,10 +72,6 @@ class File:
         name = self.path.rpartition("/")[2]
         return any(fnmatch(name, pattern) for pattern in GENERATED)
 
-    def at(self, line: int, side: str) -> int | None:
-        """The index of the line a comment at (line, side) is on, if it's in the diff."""
-        return next((i for i, x in enumerate(self.lines) if x.target() == (line, side)), None)
-
 
 @dataclass(frozen=True)
 class Gap:

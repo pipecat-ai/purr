@@ -92,6 +92,11 @@ def _changed(before: list[PR], plan: SyncPlan) -> set[PRRef]:
     }
 
 
+def _needs_words(body: str, what: str = "A comment") -> None:
+    if not body.strip():
+        raise Invalid(f"{what} needs some words")
+
+
 def _replied(old: PR, pr: PR) -> Change | None:
     """News of the replies ``pr`` has that ``old`` didn't, saying who replied."""
     new = [reply for reply in pr.replies if reply not in old.replies]
@@ -109,9 +114,9 @@ class GitHubWorker(BaseWorker):
     :class:`PRListUpdated` when anything changed. Handles the jobs that change
     GitHub or the watched repos (``WatchRepo``, ``ApproveAction``, ``MergePR``, ...).
 
-    After a poll it reads the conversation of the PRs Purr reviewed, you took part
-    in or opened, that changed (all of them on the first poll), for replies to you
-    since your last word there: a PR with replies you haven't answered needs you.
+    After a poll it reads the conversation of the PRs Purr reviewed or you took part
+    in that changed (all of them on the first poll), for replies to you since your
+    last word there: a PR with replies you haven't answered needs you.
 
     Each repo gets a full sync on its first poll after startup and every
     ``FULL_SYNC_EVERY`` seconds; polls in between only fetch PRs updated since
@@ -149,7 +154,7 @@ class GitHubWorker(BaseWorker):
         self._lock = asyncio.Lock()
         self._poll_task: asyncio.Task | None = None
         self._last_full_sync: dict[str, float] = {}  # repo -> time.monotonic()
-        # Reviewed PRs whose replies to read on the next poll; None: all of them.
+        # Followed PRs whose replies to read on the next poll; None: all of them.
         self._replies_due: set[PRRef] | None = None
 
     async def on_activated(self, args: dict | None) -> None:
@@ -242,8 +247,8 @@ class GitHubWorker(BaseWorker):
         return await self._github.snapshot(full, incremental, on_page=on_page)
 
     async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
-        """Read what others said to you, and your verdict, on PRs Purr reviewed, you took
-        part in, that changed (all of them, the first time).
+        """Read what others said to you, and your verdict, on PRs Purr reviewed or you took
+        part in that changed (all of them, the first time).
 
         Returns the PRs with new replies, and whether any PR's replies, verdict or state
         changed.
@@ -531,8 +536,7 @@ class GitHubWorker(BaseWorker):
 
     @handles(SaveComment)
     async def save_comment(self, request: SaveComment) -> Done:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         if request.comment_id is not None:
             await self._store.edit_comment(request.comment_id, request.body)
         else:
@@ -557,8 +561,7 @@ class GitHubWorker(BaseWorker):
 
     @handles(EditProposedComment)
     async def edit_proposed_comment(self, request: EditProposedComment) -> Done:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         action, comments = await self._proposed(request.pr, request.index)
         comments[request.index] = {**comments[request.index], "body": request.body}
         await self._propose(action, comments)
@@ -566,28 +569,19 @@ class GitHubWorker(BaseWorker):
 
     @handles(ReplyToThread)
     async def reply_to_thread(self, request: ReplyToThread) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A reply needs some words")
-        try:
-            url = await self._writer.reply_to_thread(request.thread_id, request.body)
-        except ActionError as e:
-            raise Failed(f"GitHub didn't take it: {e}") from e
-        return Posted(url=url)
+        _needs_words(request.body, "A reply")
+        return await self._posting(self._writer.reply_to_thread(request.thread_id, request.body))
 
     @handles(EditGitHubComment)
     async def edit_github_comment(self, request: EditGitHubComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
-        try:
-            url = await self._writer.edit_review_comment(request.comment_id, request.body)
-        except ActionError as e:
-            raise Failed(f"GitHub didn't take it: {e}") from e
-        return Posted(url=url)
+        _needs_words(request.body)
+        return await self._posting(
+            self._writer.edit_review_comment(request.comment_id, request.body)
+        )
 
     @handles(PostLineComment)
     async def post_line_comment(self, request: PostLineComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         comment = {"path": request.path, "line": request.line, "side": request.side,
                    "body": request.body}  # fmt: skip
         if request.start_line is not None and request.start_line != request.line:
@@ -598,14 +592,12 @@ class GitHubWorker(BaseWorker):
 
     @handles(PostPRComment)
     async def post_pr_comment(self, request: PostPRComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         return await self._posting(self._writer.post_pr_comment(request.pr, request.body))
 
     @handles(EditPRComment)
     async def edit_pr_comment(self, request: EditPRComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         return await self._posting(self._writer.edit_pr_comment(request.comment_id, request.body))
 
     @handles(DeleteGitHubComment)

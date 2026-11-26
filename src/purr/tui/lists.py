@@ -24,6 +24,7 @@ from purr.tui.theme import palette
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
+    from purr.tui.repo import RepoView
 
 OTHERS = "others"
 REQUESTED = "requested"
@@ -32,10 +33,9 @@ TO_MERGE = "tomerge"
 # What's yours first: what needs you, what you approved and is still open (merging's
 # next, and in Done it'd be missed), what's under way, PRs asking for your review
 # (someone's waiting on you: a teammate, mostly, whose PRs come first), what's up next
-# (the pool's PRs
-# worth looking at next, best first), and what you finished lately (the latest few;
-# search finds the rest). Then what others are reviewing, and last the pool of
-# unreviewed PRs (hundreds, in a big repo).
+# (the pool's PRs worth looking at next, best first), and what you finished lately (the
+# latest few; search finds the rest). Then what others are reviewing, and last the pool
+# of unreviewed PRs (hundreds, in a big repo).
 GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (TO_MERGE, "⇡", "TO MERGE", "bold green"),
@@ -135,8 +135,12 @@ class PRList(GroupedList):
         *pane_keys(["switch_pane"], switch_pane="PR"),
     ]
 
+    @property
+    def _repo(self) -> "RepoView":
+        return cast("PurrApp", self.app).main.repo
+
     async def action_repo(self, action: str) -> None:
-        await cast("PurrApp", self.app).main.repo.run_action(action)
+        await self._repo.run_action(action)
 
     def _heading(self, option: Option) -> bool:
         return option.disabled or bool(option.id and option.id.startswith(HEADING))
@@ -145,13 +149,13 @@ class PRList(GroupedList):
         """On a heading, tab folds or opens it (shift+tab's the other pane still, through
         the repo view's keys); elsewhere tab's the other pane, as everywhere."""
         if parameters == ("toggle_group",):
-            return cast("PurrApp", self.app).main.repo.on_heading()
+            return self._repo.on_heading()
         if parameters == ("switch_pane",):
-            return not cast("PurrApp", self.app).main.repo.on_heading()
+            return not self._repo.on_heading()
         if parameters == ("skip",):
-            return cast("PurrApp", self.app).main.repo.on_up_next()
+            return self._repo.on_up_next()
         if parameters == ("approve",):
-            return bool(cast("PurrApp", self.app).main.repo.a_does())
+            return bool(self._repo.a_does())
         return True
 
     def redraw_option(self, option_id: str, prompt: Table) -> None:
@@ -222,10 +226,8 @@ def _row(*cells: Text | str, number_width: int = 5) -> Table:
     row: list[Text | str] = []
     for column, cell, gap in zip(columns, cells, gaps, strict=True):
         grid.add_column(**column)
-        row.append(cell)
-        if gap:
-            grid.add_column(width=gap)
-            row.append("")
+        grid.add_column(width=gap)
+        row += [cell, ""]
     grid.add_row(*row)
     return grid
 

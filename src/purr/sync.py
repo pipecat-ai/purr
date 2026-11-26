@@ -11,9 +11,9 @@ Pure functions, so the rules are easy to test without GitHub or a database:
   replies (see the GitHub worker).
 - Never your own PRs: you work on them elsewhere (in Claude Code, say).
 - The pool is a watched repo's: PRs from other repos never join or leave it.
-- A PR that drops out of both is removed if Purr never reviewed it. If Purr did,
-  it stays, and its GitHub state is looked up to tell closed/merged from
-  "drafted" or "unassigned from you elsewhere".
+- A PR that drops out of every search is removed if Purr never reviewed it. If
+  Purr did, it stays, and its GitHub state is looked up to tell closed/merged
+  from "drafted" or "unassigned from you elsewhere".
 - Between full syncs, a repo is synced incrementally: only PRs updated since
   the last sync are fetched, and each is classified as listed or not. PRs that
   weren't updated are left as they are.
@@ -87,18 +87,19 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
     for pr in snapshot.requested or []:
         seen.setdefault(pr.ref, replace(pr.to_pr(me), requested_from_me=True))
     for pr in snapshot.involved or []:
-        seen.setdefault(pr.ref, pr.to_pr(me))
-    for ref in {pr.ref for pr in snapshot.involved or []}:
-        seen[ref] = replace(seen[ref], involved=True)
+        seen[pr.ref] = replace(seen.get(pr.ref) or pr.to_pr(me), involved=True)
     for pr in snapshot.assigned or []:
         seen[pr.ref] = replace(pr.to_pr(me), assigned_to_me=True)
     return seen
 
 
+# What Purr keeps of a PR that the searches don't say.
+_OWN_FIELDS = ("id", "state", "model", "state_at", "replies", "verdict")
+
+
 def _same_metadata(old: PR, new: PR) -> bool:
     """Whether GitHub reports nothing new; Purr's own fields don't count."""
-    own = {"id": old.id, "state": old.state, "model": old.model, "state_at": old.state_at}
-    return replace(new, **own, replies=old.replies) == old
+    return replace(new, **{name: getattr(old, name) for name in _OWN_FIELDS}) == old
 
 
 def _assignment_change(old: PR, new: PR, watched: bool) -> PRChange | None:

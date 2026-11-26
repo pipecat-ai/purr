@@ -33,7 +33,8 @@ from purr.messages import (
 from purr.models import PR, ActionKind, PRRef, ReviewStatus
 from purr.review.agent import claude_code_command
 from purr.tui.dialogs import AlwaysScreen, ConfirmScreen, NoticeScreen
-from purr.tui.session import PRSession, SessionState, can_run_ci, settling
+from purr.tui.merge_box import can_run_ci, settling
+from purr.tui.session import PRSession, SessionState
 from purr.tui.views import PurrView
 
 
@@ -196,7 +197,7 @@ class PRKeys(PurrView):
         if can_run_ci(state.merge):
             await self._run_ci(pr, state)
             return
-        if not (to_do := await self._to_post(pr)):
+        if not (to_do := await self._to_post(pr, state)):
             return
         job, doing, done = to_do
         async with self._doing(pr, doing):
@@ -210,7 +211,7 @@ class PRKeys(PurrView):
             self.notify(warning, severity="warning")
 
     async def _to_post(
-        self, pr: PR
+        self, pr: PR, state: SessionState
     ) -> tuple[ApproveAction | PostComments | ApprovePR, str, str] | None:
         """What a does, what the spinner says meanwhile, and what it says once done: the
         agent's proposal (a review, with your comments, or a push), your comments on their
@@ -222,9 +223,7 @@ class PRKeys(PurrView):
             return ApproveAction(action_id=actions[0].id), _DOING.get(kind, "Posting"), done
         if await store.draft_comments(pr.ref):
             return PostComments(pr=pr.ref), "Posting", "Posted"
-        state = self.purr_app.sessions.get(str(pr.ref))
-        verdict = state and state.verdict_due
-        return (ApprovePR(pr=pr.ref), "Approving", "Approved") if verdict else None
+        return (ApprovePR(pr=pr.ref), "Approving", "Approved") if state.verdict_due else None
 
     @work(group="keys")
     async def action_dismiss(self) -> None:
@@ -232,9 +231,8 @@ class PRKeys(PurrView):
             await self._answer(state, False)
             return
         pr = self.selected_pr()
-        if pr is None or self.session.state(pr).doing:  # it's being done: too late
+        if pr is None or (state := self.session.state(pr)).doing:  # it's being done: too late
             return
-        state = self.session.state(pr)
         if state.merge:
             state.merge = None  # the merge box goes: m asks again
             await self.session.refresh_status()

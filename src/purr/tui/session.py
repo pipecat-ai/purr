@@ -1,17 +1,13 @@
 """The PR session pane: a Claude Code-style view of a PR's agent session."""
 
 import asyncio
-import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from rich.console import Group, RenderableType
-from rich.markdown import Markdown
-from rich.table import Table
+from rich.console import Group
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
@@ -21,7 +17,6 @@ from textual.widgets import OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
 from purr.jobs import PurrError
-from purr.merging import WORKING_OUT, check_concerns, working_out
 from purr.messages import (
     ListRepoSkills,
     MergeReadiness,
@@ -34,12 +29,9 @@ from purr.messages import (
 from purr.models import (
     PR,
     ActionKind,
-    Check,
-    CheckState,
     Depth,
     DraftComment,
     GHState,
-    MergeCheck,
     Outcome,
     PendingAction,
     PRDetails,
@@ -51,9 +43,7 @@ from purr.models import (
     ReviewPlan,
     ReviewStatus,
 )
-from purr.review.agent import INSTEAD, thought_headline
 from purr.review.skills import RepoSkill
-from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.commands import (
     PURR_NAMES,
     Command,
@@ -62,35 +52,24 @@ from purr.tui.commands import (
     render_help,
     suggestions,
 )
+from purr.tui.entries import render_entry, short
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
+from purr.tui.merge_box import SPIN_SECONDS, can_run_ci, render_merge, settling
 from purr.tui.overview import details_line, render_overview
 from purr.tui.prompt import HistorySearchScreen, PromptArea
 from purr.tui.theme import palette, theme_names
 from purr.tui.transcript import Transcript
-from purr.tui.working import Working, elapsed_text
+from purr.tui.working import Working
 from purr.workers.reviews import STOPPED
 
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
-_SEVERITY_STYLE = {"issue": "bold red", "suggestion": "yellow", "nit": "dim"}
-
 
 def number_style() -> str:
     """PR numbers' style, wherever they show."""
     return f"bold {palette().number}"
-
-
-# A background task's event: its mark, what it says, its style.
-_TASK_EVENTS = {
-    "started": ("◷", "started", "dim"),
-    "completed": ("✓", "done", "dim green"),
-    "stopped": ("◼", "stopped", "dim"),
-    "killed": ("◼", "stopped", "dim"),
-}
-# Absolute paths into a PR's worktree read better relative to it.
-_WORKTREE_PREFIX = re.compile(r"\S*/worktrees/[^/\s]+/[^/\s]+/\d+/")
 
 
 # What a does to a proposal, by its kind, as ? and the Needs you note say it.
@@ -111,7 +90,7 @@ def needs_you_for(
     the decision box asks): the agent's question, its proposal (what a does), your
     comments, replies, a failed review; else, your verdict."""
     if ask:
-        return f"Asks: {_short(ask.description, 80)}"
+        return f"Asks: {short(ask.description, 80)}"
     if proposal:
         return f"{A_DOES[proposal]}?"
     if drafted:
@@ -127,7 +106,7 @@ class SessionState:
 
     entries: list[dict] | None = None  # None until the transcript is loaded
     progress: str | None = None  # what the review's doing; None once nothing is
-    waiting: bool = False  # the review waits on you (a question)
+    waiting: bool = False  # it waits on you, or for its turn: nothing works on it yet
     since: float | None = None  # when the agent started working (monotonic)
     background: int = 0  # its tasks (agents, commands) still running in the background
     ask: PermissionRequest | None = None
@@ -136,8 +115,7 @@ class SessionState:
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
     head: str = ""  # the PR's head when last shown: a new one, and the merge box goes
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
-    proposal: ActionKind | None = None  # what the agent proposes (the oldest), as last read
-    actions: list[PendingAction] = field(default_factory=list)  # all it proposes, as last read
+    actions: list[PendingAction] = field(default_factory=list)  # what it proposes, as last read
     verdict_due: bool = False  # it waits for your verdict alone: a approves it
     quote: Quote | None = None  # the lines of the diff you're asking about, if any
     suggestion: str = ""  # what you might ask next (purr.suggest)
@@ -159,8 +137,8 @@ class SessionState:
             return ""
         if can_run_ci(self.merge):
             return "Run CI"
-        if self.proposal:
-            return A_DOES[self.proposal]
+        if self.actions:  # what the agent proposes (the oldest)
+            return A_DOES[self.actions[0].kind]
         if self.mine:
             return "Post comments"
         return "Approve PR" if self.verdict_due else ""
@@ -169,59 +147,6 @@ class SessionState:
     def working(self) -> bool:
         """The agent's at it (not waiting on you, or for its turn): the spinners spin."""
         return bool(self.progress) and self.since is not None and not self.waiting and not self.ask
-
-
-def _bullet(body: RenderableType, style: str = "") -> Table:
-    grid = Table.grid(padding=(0, 1))
-    grid.add_column(width=1)
-    grid.add_column(ratio=1)
-    grid.add_row(Text("⏺", style=style or "white"), body)
-    return grid
-
-
-def _short(value: str, width: int = 100) -> str:
-    value = _WORKTREE_PREFIX.sub("", value).replace("\n", " ⏎ ")
-    return value if len(value) <= width else value[: width - 1] + "…"
-
-
-_VERDICT = {
-    "request_changes": "Request changes",
-    "approve": "Approve",
-    "comment": "Comment",
-    "push": "Push",
-}
-
-
-def render_proposal(proposal: dict) -> RenderableType:
-    """A proposed review, in full: what would be posted if the user approves."""
-    parts: list[RenderableType] = [
-        Text(f"Proposed: {proposal.get('description', '')}", style="bold magenta")
-    ]
-    verdict = _VERDICT.get(str(proposal.get("kind")), str(proposal.get("kind", "")))
-    parts.append(Text(f"{verdict}", style="magenta"))
-    if body := str(proposal.get("body") or "").strip():
-        parts.append(Markdown(body, code_theme=palette().code))
-    elif proposal.get("kind") == "approve" and not proposal.get("comments"):
-        parts.append(Text("LGTM"))  # what an approval with nothing to say posts
-    for comment in proposal.get("comments") or []:
-        line = Text("• ")
-        line.append(f"{comment.get('path')}:{comment.get('line')}", style="cyan")
-        line.append(f"  {comment.get('body', '')}")
-        parts.append(line)
-    for reply in proposal.get("replies") or []:
-        line = Text("↳ reply in thread  ", style="dim")
-        line.append(str(reply.get("body", "")))
-        parts.append(line)
-    parts += [_commit(commit) for commit in proposal.get("commits") or []]
-    return Group(*parts)
-
-
-def _commit(commit: dict) -> Text:
-    """A commit a push would send: ``• e0b9581  Handle a digit after the degree sign``."""
-    line = Text("• ")
-    line.append(str(commit.get("sha", ""))[:7], style="cyan")
-    line.append(f"  {commit.get('subject', '')}")
-    return line
 
 
 def replied(replies: Sequence[Reply]) -> str:
@@ -238,7 +163,7 @@ def render_replies(replies: Sequence[Reply], shown: int = 3) -> Text:
         where = f" · {reply.where}" if reply.where else ""
         body = " ".join(reply.body.split())
         text.append(f"\n  {reply.author}{where}: ", style="cyan")
-        text.append(_short(body, 110))
+        text.append(short(body, 110))
     if len(replies) > shown:
         text.append(f"\n  and {len(replies) - shown} before", style="dim")
     text.append("\n[x] no reply needed", style="bold")
@@ -251,166 +176,15 @@ def outcome_mark(outcome: Outcome) -> Text:
     return Text("●", style="bold red") if outcome.found else Text("✓", style="bold green")
 
 
-@dataclass(frozen=True)
-class _RenderOptions:
-    """What the renderers are told besides the entry."""
-
-    full_thinking: bool  # thoughts in full, rather than a line each
-
-
-def render_entry(entry: dict, *, full_thinking: bool = False) -> RenderableType | None:
-    """A transcript entry as Claude Code would show it.
-
-    Subagents' own steps aren't shown, only the call that started each one and
-    what it came back with (they're recorded all the same). Each thought is a
-    line, unless ``full_thinking``.
-    """
-    if entry.get("agent"):
-        return None
-    render = _RENDERERS.get(entry.get("kind"))
-    return render(entry, _RenderOptions(full_thinking)) if render else None
-
-
-def _render_text(entry: dict, options: _RenderOptions) -> RenderableType:
-    return _bullet(Markdown(entry["text"], code_theme=palette().code))
-
-
-def _render_thinking(entry: dict, options: _RenderOptions) -> RenderableType:
-    # Like Claude Code: the reasoning, dimmed, ahead of what it leads to. In
-    # full it's ten times what the agent says, so a line each unless you ask (t).
-    text = entry["text"].strip() if options.full_thinking else thought_headline(entry["text"])
-    return _bullet(Text(text, style="dim italic"), style="dim")
-
-
-def _render_user(entry: dict, options: _RenderOptions) -> RenderableType:
-    return _you_wrote(entry["text"])
-
-
-def _you_wrote(text: str) -> Text:
-    """What you wrote, under its ``>``."""
-    indented = text.replace("\n", "\n  ")
-    return Text(f"> {indented}", style="bold")
-
-
-def _render_set_aside(entry: dict, options: _RenderOptions) -> RenderableType:
-    """A proposal you wrote instead of approving."""
-    return Text(f"  ◼ Proposal set aside: {_short(entry.get('text', ''))}", style="dim")
-
-
-# What a tool call is about: the first of these its input has (a description is
-# a subagent's task).
-_TOOL_TARGETS = ("command", "file_path", "pattern", "path", "url", "description")
-
-
-def _render_tool_use(entry: dict, options: _RenderOptions) -> RenderableType:
-    name, tool_input = entry.get("name", ""), entry.get("input") or {}
-    if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
-        return _bullet(_render_submitted_review(tool_input), style="bold green")
-    if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
-        return _bullet(render_proposal(tool_input), style="magenta")
-    line = Text(name.removeprefix(PURR_TOOL_PREFIX), style="bold")
-    target = next((tool_input[key] for key in _TOOL_TARGETS if tool_input.get(key)), "")
-    if target:
-        line.append(f"({_short(str(target))})", style="dim")
-    return _bullet(line, style="green")
-
-
-def _render_submitted_review(review: dict) -> Group:
-    """The review's summary, then its findings, numbered."""
-    findings = enumerate(review.get("findings") or [], start=1)
-    lines = [Text(review.get("summary", ""), style="bold")]
-    lines += [_render_finding(number, finding) for number, finding in findings]
-    return Group(*lines)
-
-
-def _render_finding(number: int, finding: dict) -> Text:
-    """``2. issue  src/bus.py:40  The lock is never released.``"""
-    severity = finding.get("severity", "suggestion")
-    where = finding.get("file") or ""
-    if where and finding.get("line"):
-        where += f":{finding['line']}"
-    line = Text(f"{number}. ")
-    line.append(severity, style=_SEVERITY_STYLE.get(severity, ""))
-    if where:
-        line.append(f"  {where}", style="cyan")
-    line.append(f"  {finding.get('text', '')}")
-    return line
-
-
-def _render_tool_result(entry: dict, options: _RenderOptions) -> RenderableType | None:
-    text = entry.get("text") or ""
-    if text.startswith(("Review recorded", "Proposed (action")):
-        return None  # Purr's own tools; their calls already say it all
-    if text.startswith(INSTEAD):  # you wrote instead of allowing it
-        said = text.removeprefix(INSTEAD).strip()
-        return Group(
-            Text("  ⎿ Not allowed: you wrote instead", style="dim"), Text(""), _you_wrote(said)
-        )
-    lines = text.strip().splitlines() or [""]
-    more = f" … +{len(lines) - 1} lines" if len(lines) > 1 else ""
-    style = "red" if entry.get("is_error") else "dim"
-    return Text(f"  ⎿ {_short(lines[0], 90)}{more}", style=style)
-
-
-def _render_result(entry: dict, options: _RenderOptions) -> RenderableType:
-    """The end of a turn: ``✓ done · 3 turns · $0.12``."""
-    turns, cost = entry.get("turns") or 0, entry.get("cost_usd")
-    details = [f"{turns} turn{'s' if turns != 1 else ''}"] if turns else []
-    details += [f"${cost:.2f}"] if cost else []
-    return Text("  ✓ done" + "".join(f" · {d}" for d in details), style="dim")
-
-
-def _render_error(entry: dict, options: _RenderOptions) -> RenderableType:
-    return Text(f"✗ {entry.get('text', '')}", style="red")
-
-
-def _render_stopped(entry: dict, options: _RenderOptions) -> RenderableType:
-    """You stopped the agent (esc)."""
-    return Text("◼ Stopped", style="bold yellow")
-
-
-def _render_task(entry: dict, options: _RenderOptions) -> RenderableType:
-    """A background agent (or command) starting or reporting back."""
-    # Stopped isn't failed: the agent stops what it no longer needs.
-    mark, verb, style = _TASK_EVENTS.get(entry.get("event"), ("✗", "failed", "dim red"))
-    return Text(f"  {mark} background {verb}: {_short(entry.get('text', ''), 100)}", style=style)
-
-
-def _render_permission_auto(entry: dict, options: _RenderOptions) -> RenderableType:
-    return Text(f"  ✓ allowed by your permission {entry.get('rule', '')}", style="dim green")
-
-
-# How each kind of entry shows. A new kind: its renderer, and a line here.
-_RENDERERS: dict[str, Callable[[dict, _RenderOptions], RenderableType | None]] = {
-    "text": _render_text,
-    "thinking": _render_thinking,
-    "user": _render_user,
-    "set_aside": _render_set_aside,
-    "tool_use": _render_tool_use,
-    "tool_result": _render_tool_result,
-    "result": _render_result,
-    "error": _render_error,
-    "stopped": _render_stopped,
-    "task": _render_task,
-    "permission_auto": _render_permission_auto,
-}
-
-
-def _review_status(
-    pr: PR,
-    review: Review | None,
-    outcome: Outcome,
-    actions: list[PendingAction],
-    state: SessionState,
-) -> Text:
+def _review_status(pr: PR, review: Review | None, outcome: Outcome, state: SessionState) -> Text:
     """The header's line on the review: waiting on you, at work, how it went, or not done."""
     if state.ask:
         return Text("⚠ Waiting for you to allow something", style="bold yellow")
     if pr.state == PRState.REVIEWING:
-        progress = f" · {_short(state.progress, 80)}" if state.progress else ""
+        progress = f" · {short(state.progress, 80)}" if state.progress else ""
         return Text.assemble(("⟳ Reviewing", "bold cyan"), (progress, "dim"))
     if state.progress:  # the lead is planning its review
-        return Text(f"⟳ {_short(state.progress, 80)}", style="bold cyan")
+        return Text(f"⟳ {short(state.progress, 80)}", style="bold cyan")
     if review is None:
         return _not_reviewed(pr)
     if review.status == ReviewStatus.FAILED and review.error == STOPPED:
@@ -420,7 +194,7 @@ def _review_status(
     if review.status == ReviewStatus.FINISHED:
         mark = outcome_mark(outcome)
         kind = _review_kind(review.plan)
-        pending = f" · {len(actions)} pending action" if actions else ""
+        pending = f" · {len(state.actions)} pending action" if state.actions else ""
         said = f" {kind}: {outcome.text()}"
         return Text.assemble(mark, (said, mark.style), (pending, "yellow"))
     return Text()
@@ -477,25 +251,24 @@ def _decision(pr: PR, state: SessionState, *, typing: bool = False) -> Text | No
     while the agent's at it (what it says next may change them), bar where the PR stands
     for merging, which you asked for (m). They're back once that's over.
     """
-    actions = state.actions
     if state.ask:
-        return _permission_question(pr, state, actions)
+        return _permission_question(pr, state)
     if typing or state.doing:
         return None
     if state.progress:
-        return _merge_question(pr, state, actions)
-    asked = (question(pr, state, actions) for question in _QUESTIONS)
+        return _merge_question(pr, state)
+    asked = (question(pr, state) for question in _QUESTIONS)
     return next((text for text in asked if text is not None), None)
 
 
-def _permission_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _permission_question(pr: PR, state: SessionState) -> Text | None:
     """The agent wants to do something Claude Code asks about first."""
     if not (ask := state.ask):
         return None
     always = "   [A] always…" if ask.rule else ""
     return Text.assemble(
         ("The agent wants to: ", "bold"),
-        (_short(ask.description, 120), "yellow"),
+        (short(ask.description, 120), "yellow"),
         ("\n", ""),
         (ask.reason or "Claude Code asks before this.", "dim"),
         (f"\n[a] allow once{always}   [x] deny", "bold"),
@@ -503,11 +276,11 @@ def _permission_question(pr: PR, state: SessionState, actions: list[PendingActio
     )
 
 
-def _proposal_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _proposal_question(pr: PR, state: SessionState) -> Text | None:
     """The agent proposes posting something (the oldest proposal first)."""
-    if not actions:
+    if not state.actions:
         return None
-    action = actions[0]
+    action = state.actions[0]
     if action.kind == ActionKind.PUSH:
         return _push_question(action)
     comments = len(action.payload.get("comments") or [])
@@ -533,7 +306,7 @@ def _push_question(action: PendingAction, shown: int = 3) -> Text:
     text = Text(f"{action.description}?", style="bold")
     for commit in commits[:shown]:
         text.append(f"\n  {str(commit.get('sha', ''))[:7]} ", style="cyan")
-        text.append(_short(str(commit.get("subject", "")), 110))
+        text.append(short(str(commit.get("subject", "")), 110))
     if len(commits) > shown:
         text.append(f"\n  and {len(commits) - shown} before", style="dim")
     text.append("\n[a] push   [x] dismiss", style="bold")
@@ -545,9 +318,9 @@ def _yours(mine: list[DraftComment]) -> str:
     return f"your {len(mine)} comment{'s' if len(mine) != 1 else ''}"
 
 
-def _comments_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _comments_question(pr: PR, state: SessionState) -> Text | None:
     """You wrote comments on the diff, and there's no proposal for them to go with."""
-    if not state.mine or actions:
+    if not state.mine or state.actions:
         return None
     return Text.assemble(
         (f"Post {_yours(state.mine)}?", "bold"),
@@ -556,12 +329,12 @@ def _comments_question(pr: PR, state: SessionState, actions: list[PendingAction]
     )
 
 
-def _replies_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _replies_question(pr: PR, state: SessionState) -> Text | None:
     """Others replied to you on GitHub: answer, or say no reply's needed."""
     return render_replies(pr.replies) if pr.replies else None
 
 
-def _verdict_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _verdict_question(pr: PR, state: SessionState) -> Text | None:
     """Reviewed, and nothing's proposed or said to you: it waits for your verdict alone."""
     if not state.verdict_due or state.mine:
         return None
@@ -580,12 +353,12 @@ def _verdict_due(pr: PR, review: Review | None, actions: list[PendingAction]) ->
     return pr.state == PRState.NEEDS_YOU and reviewed and alone
 
 
-def _merge_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _merge_question(pr: PR, state: SessionState) -> Text | None:
     """You pressed m: where it stands for merging, for your final decision."""
     return render_merge(pr, state.merge) if state.merge else None
 
 
-def _merge_hint(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _merge_hint(pr: PR, state: SessionState) -> Text | None:
     """You approved it as it is, and nothing else waits on you: it can be merged."""
     if pr.gh_state != GHState.OPEN or not state.approved or state.approved != pr.head_sha:
         return None
@@ -598,7 +371,7 @@ def _merge_hint(pr: PR, state: SessionState, actions: list[PendingAction]) -> Te
 
 # What the decision box can ask, most pressing first; each says None when it has
 # nothing to ask. A new question: its function, and a line here.
-_QUESTIONS: list[Callable[[PR, SessionState, list[PendingAction]], Text | None]] = [
+_QUESTIONS: list[Callable[[PR, SessionState], Text | None]] = [
     _permission_question,
     _merge_question,
     _proposal_question,
@@ -607,118 +380,6 @@ _QUESTIONS: list[Callable[[PR, SessionState, list[PendingAction]], Text | None]]
     _verdict_question,
     _merge_hint,
 ]
-
-# GitHub's names for its merge buttons, by merge method.
-_MERGE_VERBS = {"merge": "Merge", "squash": "Squash and merge", "rebase": "Rebase and merge"}
-
-
-def render_merge(pr: PR, readiness: MergeReadiness, now: datetime | None = None) -> Text:
-    """Where the PR stands for merging: what blocks it, or what you'd be merging past.
-    While it waits on GitHub (see settling), each check, as GitHub's page lists them, and
-    whether GitHub is still working out if it can be merged."""
-    if readiness.blockers:
-        text = Text(f"Can't merge #{pr.number} yet:", style="bold")
-        for blocker in readiness.blockers:
-            text.append(f"\n  ✗ {blocker}", style="red")
-        text.append("\n[m] check again", style="bold")
-        text.append("   [x] close", style="dim")
-        return text
-    check = readiness.check
-    verb = _MERGE_VERBS.get(check.method, "Merge")
-    text = Text(f"{verb} #{pr.number} into {check.base}?", style="bold")
-    text.append(f"\n  ✓ you approved it at {check.head_sha[:7]}", style="green")
-    concerns = readiness.concerns
-    if settling(readiness):
-        text.append_text(_waiting_lines(check, now or datetime.now(UTC)))
-        listed = {*check_concerns(check), WORKING_OUT}
-        concerns = [concern for concern in concerns if concern not in listed]
-    elif passed := sum(run.state == CheckState.PASSED for run in check.checks):
-        text.append(f"\n  ✓ {passed} check{'s' if passed != 1 else ''} passed", style="green")
-    for concern in concerns:
-        text.append(f"\n  ⚠ {concern}", style="yellow")
-    text.append("\n")
-    if check.waiting:  # a: GitHub's "Approve and run workflows"
-        text.append("[a] approve and run CI   ", style="bold")
-    text.append("[m] merge anyway" if readiness.concerns else "[m] merge", style="bold")
-    text.append("   [x] leave it", style="dim")
-    return text
-
-
-SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # a check still running, a frame every SPIN_SECONDS
-SPIN_SECONDS = 0.1
-MAX_CHECKS_LISTED = 12  # past these, those that passed or were skipped are a line
-_CHECK_MARKS = {
-    CheckState.PASSED: ("✓", "green"),
-    CheckState.FAILED: ("✗", "red"),
-    CheckState.SKIPPED: ("–", "dim"),
-}
-
-
-def checks_running(check: MergeCheck) -> bool:
-    return any(run.state == CheckState.RUNNING for run in check.checks)
-
-
-def settling(merge: MergeReadiness | None) -> bool:
-    """The merge box waits on GitHub: nothing blocks the merge, but a check is still
-    running, or GitHub is still working out whether it can be merged. Its spinners turn,
-    and GitHub's asked again until it isn't (PRKeys._follow_merge)."""
-    if merge is None or merge.blockers:
-        return False
-    return checks_running(merge.check) or working_out(merge.check)
-
-
-def can_run_ci(merge: MergeReadiness | None) -> bool:
-    """The merge box offers to approve the workflows GitHub holds (a): nothing blocks the
-    merge, and some wait."""
-    return bool(merge and not merge.blockers and merge.check.waiting)
-
-
-def _spinner() -> str:
-    return SPINNER[int(time.monotonic() / SPIN_SECONDS) % len(SPINNER)]
-
-
-def _waiting_lines(check: MergeCheck, now: datetime) -> Text:
-    """The checks (see _check_lines), then a spinner while GitHub works out whether it
-    can be merged, as its page says whether there are conflicts below the checks."""
-    text = _check_lines(check.checks, now)
-    if working_out(check):
-        text.append(f"\n  {_spinner()} ", style="yellow")
-        text.append("GitHub is working out whether it can be merged")
-    return text
-
-
-def _check_lines(checks: Sequence[Check], now: datetime) -> Text:
-    """Each check while CI runs, in GitHub's order: a spinner on those still running, a
-    mark on the rest, and how long each took (or has, so far)."""
-    listed = list(checks)
-    if len(listed) > MAX_CHECKS_LISTED:
-        listed = [run for run in checks if run.state in (CheckState.RUNNING, CheckState.FAILED)]
-    spinner = _spinner()
-    text = Text()
-    for run in listed:
-        running = run.state == CheckState.RUNNING
-        mark, style = (spinner, "yellow") if running else _CHECK_MARKS[run.state]
-        text.append(f"\n  {mark} ", style=style)
-        text.append(run.name, style="red" if run.state == CheckState.FAILED else "")
-        if run.required:
-            text.append(" (required)", style="dim")
-        if took := _took(run, now):
-            text.append(f"  {took}", style="dim")
-    if passed := sum(run.state == CheckState.PASSED for run in checks if run not in listed):
-        text.append(f"\n  ✓ {passed} more passed", style="green")
-    return text
-
-
-def _took(run: Check, now: datetime) -> str:
-    """How long a check took, or has so far if it's running: ``1m 12s``; "" if unknown."""
-    if not run.started or not (run.finished or run.state == CheckState.RUNNING):
-        return ""
-    try:
-        start = datetime.fromisoformat(run.started)
-        end = datetime.fromisoformat(run.finished) if run.finished else now
-    except ValueError:
-        return ""
-    return elapsed_text(max(0.0, (end - start).total_seconds()))
 
 
 def _suggestion(command: Command) -> Text:
@@ -1041,11 +702,15 @@ class PRSession(Vertical):
         store = self.purr_app.purr.store
         pr = await store.get_pr(shown.ref) or shown
         review = await store.latest_review(pr.ref)
-        outcome = Outcome.of(await store.findings(review.id)) if review else Outcome()
+        # Read only when the header says it (this runs at each step the agent takes): what
+        # a finished review found, and why a PR nobody's reviewed is up next.
+        finished = review if review and review.status == ReviewStatus.FINISHED else None
+        outcome = Outcome.of(await store.findings(finished.id)) if finished else Outcome()
         actions = await store.pending_actions(pr.ref)
         approved = await store.approved_head(pr.ref)
         mine = await store.draft_comments(pr.ref)
-        up_next = next((u.why for u in await store.up_next(pr.repo) if u.pr == pr.ref), "")
+        picks = await store.up_next(pr.repo) if review is None else []
+        up_next = next((u.why for u in picks if u.pr == pr.ref), "")
         if not self._showing(pr):
             return
         self.pr = pr
@@ -1053,11 +718,10 @@ class PRSession(Vertical):
         state.approved, state.mine, state.actions = approved, mine, actions
         if state.head != pr.head_sha:  # new commits: where it stood for merging is moot
             state.merge, state.head = None, pr.head_sha
-        state.proposal = actions[0].kind if actions else None
         state.verdict_due = _verdict_due(pr, review, actions)
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
-            self._header(pr, review, outcome, actions, state, details, up_next)
+            self._header(pr, review, outcome, state, details, up_next)
         )
         self._show_working(state)
         self._suggest_next()
@@ -1102,7 +766,6 @@ class PRSession(Vertical):
         pr: PR,
         review: Review | None,
         outcome: Outcome,
-        actions: list[PendingAction],
         state: SessionState,
         details: PRDetails | None,
         up_next: str = "",
@@ -1110,7 +773,7 @@ class PRSession(Vertical):
         """The PR's number and title; who and what (``details_line``); then where its review
         stands, and what's under way."""
         title = Text.assemble((f"#{pr.number}", number_style()), (f"  {pr.title}", "bold"))
-        text = _review_status(pr, review, outcome, actions, state)
+        text = _review_status(pr, review, outcome, state)
         if up_next and review is None:  # why the lead thinks it's worth looking at next
             text.append(f"\n➜ Up next: {up_next}", style="green")
         if pr.replies and review is not None:

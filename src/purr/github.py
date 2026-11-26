@@ -89,11 +89,15 @@ _DETAILS_FIELDS = f"""
 """
 # Who said what on a PR, for replies to you (see replies_to).
 _CONVERSATION_FIELDS = """
-    author { login } createdAt
     comments(last: 50) { nodes { author { login __typename } createdAt body url } }
-    reviews(last: 50) { nodes { author { login __typename } submittedAt state body url } }
+    reviews(last: 50) { nodes { author { login } submittedAt state body } }
     reviewThreads(last: 50) { nodes { path line
         comments(last: 30) { nodes { author { login __typename } createdAt body url } } } }
+"""
+# A PR's inline review threads, for the diff view (see review_threads).
+_THREAD_FIELDS = """
+    reviewThreads(first: 100) { nodes { id isResolved isOutdated path line diffSide
+        comments(first: 30) { nodes { id author { login } body createdAt } } } }
 """
 
 
@@ -223,14 +227,14 @@ def _remote_pr(node: dict) -> RemotePR:
         repo=node["repository"]["nameWithOwner"],
         number=node["number"],
         title=node["title"],
-        author=(node.get("author") or {}).get("login", "ghost"),
+        author=_login(node),
         url=node["url"],
         head_sha=node["headRefOid"],
         updated_at=node["updatedAt"],
         created_at=node.get("createdAt", ""),
         is_draft=node["isDraft"],
         state=GHState(node.get("state", "OPEN").lower()),
-        assignees=tuple(a["login"] for a in (node.get("assignees") or {}).get("nodes", [])),
+        assignees=tuple(a["login"] for a in _nodes(node.get("assignees"))),
         requested=tuple(
             login
             for request in _nodes(node.get("reviewRequests"))
@@ -254,7 +258,7 @@ class _Search:
     """One search's progress through its pages of results."""
 
     query: str
-    # By repo and number: a search across repos (yours, assigned to you) can find a #1 in
+    # By repo and number: a search across repos (assigned to you, say) can find a #1 in
     # each of several.
     found: dict[PRRef, RemotePR] = field(default_factory=dict)
     total: int | None = None  # how many results GitHub says there are
@@ -416,9 +420,9 @@ class GitHub:
         *,
         on_page: OnPage | None = None,
     ) -> Snapshot:
-        """Fetch watched repos, and the PRs assigned to you, asking for your review, that
-        you've taken part in or that you opened, in as few requests as possible (one per
-        page of results, all searches batched together).
+        """Fetch watched repos, and the PRs assigned to you, asking for your review or that
+        you've taken part in, in as few requests as possible (one per page of results, all
+        searches batched together).
 
         Args:
             full: Repos to fetch every listed PR of.
@@ -494,42 +498,9 @@ class GitHub:
 
     async def review_threads(self, ref: PRRef) -> list[dict]:
         """A PR's inline review threads, with their comments; ``by_user`` marks yours."""
-        owner, _, name = ref.repo.partition("/")
-        body = await self.graphql(
-            "query($owner: String!, $name: String!, $number: Int!) {"
-            " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
-            " reviewThreads(first: 100) { nodes { id isResolved isOutdated path line diffSide"
-            " comments(first: 30) { nodes { id author { login } body createdAt } } } } } } }",
-            {"owner": owner, "name": name, "number": ref.number},
-        )
+        pr = (await self._pull_requests([ref], _THREAD_FIELDS)).get(ref) or {}
         viewer = (await self.viewer_login()).lower()
-        pr = (body["data"].get("repository") or {}).get("pullRequest") or {}
-        threads = []
-        for node in (pr.get("reviewThreads") or {}).get("nodes") or []:
-            comments = []
-            for comment in (node.get("comments") or {}).get("nodes") or []:
-                login = (comment.get("author") or {}).get("login", "ghost")
-                comments.append(
-                    {
-                        "id": comment.get("id", ""),
-                        "author": login,
-                        "by_user": login.lower() == viewer,
-                        "body": _clip(comment.get("body", "")),
-                        "at": comment.get("createdAt"),
-                    }
-                )
-            threads.append(
-                {
-                    "id": node["id"],
-                    "path": node.get("path"),
-                    "line": node.get("line"),
-                    "side": node.get("diffSide") or "RIGHT",  # LEFT: on a deleted line
-                    "resolved": node.get("isResolved", False),
-                    "outdated": node.get("isOutdated", False),
-                    "comments": comments,
-                }
-            )
-        return threads
+        return [_thread(node, viewer) for node in _nodes(pr.get("reviewThreads"))]
 
     async def pr_statuses(self, refs: Iterable[PRRef]) -> dict[PRRef, PRStatus]:
         """Look up specific PRs (open, closed or merged). PRs that can't be read are left out."""
@@ -669,14 +640,32 @@ def _replies_to_me(me: str, comment: dict, after: str) -> bool:
 
 
 def _reply(comment: dict, where: str = "") -> Reply:
-    login = (comment.get("author") or {}).get("login", "ghost")
-    return Reply(
-        login,
-        _clip(comment.get("body") or "", 500),
-        comment["createdAt"],
-        comment.get("url") or "",
-        where,
-    )
+    body = _clip(comment.get("body") or "", 500)
+    return Reply(_login(comment), body, comment["createdAt"], comment.get("url") or "", where)
+
+
+def _thread(node: dict, viewer: str) -> dict:
+    """A review thread and its comments; ``viewer`` is your login, lowercase."""
+    return {
+        "id": node["id"],
+        "path": node.get("path"),
+        "line": node.get("line"),
+        "side": node.get("diffSide") or "RIGHT",  # LEFT: on a deleted line
+        "resolved": node.get("isResolved", False),
+        "outdated": node.get("isOutdated", False),
+        "comments": [_thread_comment(c, viewer) for c in _nodes(node.get("comments"))],
+    }
+
+
+def _thread_comment(comment: dict, viewer: str) -> dict:
+    login = _login(comment)
+    return {
+        "id": comment.get("id", ""),
+        "author": login,
+        "by_user": login.lower() == viewer,
+        "body": _clip(comment.get("body", "")),
+        "at": comment.get("createdAt"),
+    }
 
 
 def _involved(results: Mapping[str, list[RemotePR]]) -> list[RemotePR] | None:
@@ -764,7 +753,7 @@ def _merge_check(pr: dict) -> MergeCheck:
     checks = [_check(node) for node in _nodes((rollup or {}).get("contexts"))]
     waiting, starting = _workflows(head)
     reviews = [
-        ((review.get("author") or {}).get("login", "ghost"), review.get("state") or "")
+        (_login(review), review.get("state") or "")
         for review in _nodes(pr.get("latestOpinionatedReviews"))
     ]
     return MergeCheck(

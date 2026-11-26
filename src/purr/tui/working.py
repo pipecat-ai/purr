@@ -90,10 +90,6 @@ class Working(Static):
         self._frame = 0
         self._timer = self.set_interval(FRAME_SECONDS, self._tick, pause=True)
 
-    @property
-    def since(self) -> float | None:
-        return self._since
-
     def start(self, since: float, background: int = 0, doing: str = "") -> None:
         """Working since ``since`` (``time.monotonic()``), with ``background`` tasks out;
         or doing what you asked for (``doing``) since then."""

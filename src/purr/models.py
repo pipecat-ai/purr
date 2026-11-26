@@ -368,8 +368,7 @@ class ReviewPlan:
         priority: Where it goes in line.
         focus: What the review should look at hardest, specific to the PR.
         why: One line for the user: why this depth and priority.
-        by: ``lead`` when the lead planned it, ``default`` when it couldn't,
-            ``comments`` to answer the comments on your own PR (not a review).
+        by: ``lead`` when the lead planned it, ``default`` when it couldn't.
     """
 
     depth: Depth = Depth.FULL
