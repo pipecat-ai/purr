@@ -139,6 +139,7 @@ class _Run:
     superseded: list[PendingAction] = field(default_factory=list)  # a new review's: back if stopped
     inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue)  # what you write meanwhile
     stopped: bool = False  # by you (see ReviewWorker.stop_agent)
+    recorded: asyncio.Event = field(default_factory=asyncio.Event)  # in the store, or not
     task: asyncio.Task = field(init=False)
 
     @property
@@ -337,6 +338,9 @@ class ReviewWorker(BaseWorker):
             self._stop_ahead[request.pr] = time.monotonic() + STOP_AHEAD
             return Done()
         run.stopped = True
+        # Once it's recorded, and so cut short in its turn (see _run): stopped before,
+        # it'd never end, and the PR would stay under way till Purr restarts.
+        await run.recorded.wait()
         run.task.cancel()
         await asyncio.wait({run.task}, timeout=10)
         return Done()
@@ -600,13 +604,11 @@ class ReviewWorker(BaseWorker):
 
     async def _run(self, run: _Run) -> None:
         """Run the agent on the PR in its turn, and record what came of it."""
-        ref, review = run.ref, run.review
-        run.id = await self._store.start_run(
-            ref, kind=run.kind, review_id=review.id, session_id=review.session_id
-        )
+        ref = run.ref
         slot = stopping = False
         result: AgentResult | None = None
         try:
+            await self._record(run)
             await self._prepare(run)
             if run.queued:
                 await self._take_slot(ref, run.plan.priority)
@@ -628,6 +630,17 @@ class ReviewWorker(BaseWorker):
             if slot:
                 self._slots.release()
             self._end_run(run, stopping=stopping)
+
+    async def _record(self, run: _Run) -> None:
+        """The run in the store, with every message in it to come; you can stop it once
+        it's there (see stop_agent)."""
+        try:
+            review = run.review
+            run.id = await self._store.start_run(
+                run.ref, kind=run.kind, review_id=review.id, session_id=review.session_id
+            )
+        finally:
+            run.recorded.set()
 
     async def _prepare(self, run: _Run) -> None:
         """What a run needs before its turn: the repo's skills and, for a review, its prompt."""

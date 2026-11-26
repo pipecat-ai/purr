@@ -320,3 +320,28 @@ async def test_keys_glide_the_diff_a_page_and_move_it_a_line_at_once():
         await pilot.press("home")
         await until(pilot, lambda: view.scroll_y == 0 and view.cursor == 0)
         assert len(set(seen)) > 3
+
+
+async def test_what_you_select_is_highlighted_both_ways():
+    from rich.style import Style
+    from textual.app import App, ComposeResult
+
+    from purr.tui.diffview import DiffView
+
+    class Pane(App):
+        def compose(self) -> ComposeResult:
+            yield DiffView()
+
+    app = Pane()
+    async with app.run_test(size=(80, 20)) as pilot:
+        view = app.query_one(DiffView)
+        view.load(parse(DIFF))
+        view.show([], {0})
+        view.focus()
+        line = next(i for i, row in enumerate(view._rows) if row.line and row.line.kind == "-")
+        for key in ("shift+down", "shift+up"):
+            view._go(line)
+            await pilot.press(key)
+            # Both lines selected() takes are highlighted: where you started, too.
+            assert len(view.selected()) == 2
+            assert view._highlight(line) != Style() and view._highlight(view.cursor) != Style()

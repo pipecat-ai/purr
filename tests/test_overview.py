@@ -60,6 +60,10 @@ def test_details_line_and_overview():
     line = details_line(PR1, replace(DETAILS, checks="FAILURE", labels=("bug",))).plain
     assert line == "by alice · bob on it · main ← fix · +3 −1 in 1 file · ✗ checks fail · bug"
     assert details_line(PR1, None).plain == "by alice · bob on it"
+    from datetime import UTC, datetime
+
+    just = replace(PR1, created_at=datetime.now(UTC).isoformat())
+    assert "opened now ·" in details_line(just, None).plain + " ·"  # not "now ago"
 
     # Narrower, it wraps between its parts, never through one: where it stands (checks and
     # reviews) goes to the next line whole.
@@ -95,6 +99,9 @@ def test_where_a_change_is():
         )
         == "most in rtvi (2), evals (1), src/pipecat (1)"
     )
+    # Files at the repo's top are somewhere too.
+    top = where(("README.md", 5), ("setup.py", 1), ("src/a.py", 3), ("src/b.py", 1))
+    assert top == "most in the top (2), src (2)"
 
 
 def plain(renderable) -> str:

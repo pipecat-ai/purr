@@ -121,9 +121,25 @@ def parse(diff: str) -> tuple[File, ...]:
     return tuple(_file(lines[start:end]) for start, end in pairwise([*starts, len(lines)]))
 
 
+def unquoted(path: str) -> str:
+    """A path as git writes it: as it is, or, with characters out of the ordinary (not
+    ASCII, a quote, a tab), in quotes with C's escapes (``"caf\\303\\251.md"``)."""
+    if not (path.startswith('"') and path.endswith('"')):
+        return path
+    escaped = path[1:-1].encode()  # octal escapes, or UTF-8 (core.quotePath=false)
+    return escaped.decode("unicode_escape").encode("latin-1").decode(errors="replace")
+
+
+def _new_path(header: str) -> str:
+    """The file's path in the PR, from its ``diff --git a/x b/x`` line."""
+    if header.endswith('"'):  # quoted (see unquoted)
+        return unquoted('"' + header.rpartition(' "b/')[2])
+    return header.rpartition(" b/")[2]
+
+
 def _file(lines: list[str]) -> File:
     """A file from its part of the diff: the ``diff --git`` line, the header, the hunks."""
-    path = lines[0].rpartition(" b/")[2]
+    path = _new_path(lines[0])
     first_hunk = next((i for i, line in enumerate(lines) if line.startswith("@@")), len(lines))
     note = " · ".join(filter(None, map(_note, lines[1:first_hunk])))
     return File(path, tuple(_hunks(lines[first_hunk:])), note)
@@ -161,7 +177,7 @@ def mover(changes: str) -> Callable[[str, int], int]:
     path = ""
     for text in changes.splitlines():
         if text.startswith("diff --git "):
-            path = text.rpartition(" b/")[2]
+            path = _new_path(text)
         elif text.startswith("deleted file mode"):
             gone.add(path)
         elif span := _SPAN.match(text):  # git leaves out a length of 1
