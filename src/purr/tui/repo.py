@@ -2,6 +2,7 @@
 the right."""
 
 import asyncio
+import time
 from functools import partial
 
 from rich.text import Text
@@ -46,6 +47,7 @@ from purr.tui.theme import palette
 from purr.tui.working import FRAME_SECONDS, FRAMES
 
 NEARBY = 10  # PRs below the cursor whose details are fetched ahead
+PANE_EVERY = 0.1  # seconds: how often the PR's pane catches up with a cursor moving fast
 
 
 class SearchBox(Input):
@@ -112,6 +114,7 @@ class RepoView(PRKeys):
         self.query_one(DiffPane).display = False
         self._left = "list"  # what's on the left: the PR list, or a PR's diff
         self._zoomed_from_left = False  # z on the PR's pane was pressed from the left one
+        self._pane_shown_at = 0.0  # when the PR's pane last caught up with the cursor
         # PRs something works on (see _working): their mark spins, like the PR pane's line.
         self._spinning: set[str] = set()
         self._frame = 0
@@ -328,8 +331,19 @@ class RepoView(PRKeys):
             self.purr_app.seen(str(pr.ref))
             # A callable, not a coroutine: when moving fast, a run cancelled before
             # it starts must not leave a coroutine behind.
-            self.run_worker(partial(self.session.show, pr), exclusive=True, group="session")
+            self.run_worker(partial(self._show_in_pane, pr), exclusive=True, group="session")
             self._load_details(pr)
+
+    async def _show_in_pane(self, pr: PR) -> None:
+        """The PR in its pane: at once, but no more often than every PANE_EVERY while the
+        cursor moves fast (a key held down), each time where it's got to. Showing a PR lays
+        out the whole screen (its transcript and header are new), as long as moving the
+        cursor itself takes. A move meanwhile cancels this one (the workers' group)."""
+        wait = self._pane_shown_at + PANE_EVERY - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._pane_shown_at = time.monotonic()
+        await self.session.show(pr)
 
     @work(exclusive=True, group="details")
     async def _load_details(self, pr: PR) -> None:

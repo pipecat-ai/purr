@@ -1491,6 +1491,38 @@ async def test_a_poll_that_changes_little_redraws_only_what_changed(tmp_path):
         assert not any(new is old for new, old in zip(options.options, before, strict=False))
 
 
+async def test_the_prs_pane_catches_up_with_a_cursor_moving_fast(tmp_path):
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(i, title=f"Change {i}") for i in range(1, 9)]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 8)
+        repo = app.main.repo
+        shown: list[int] = []
+        show = repo.session.show
+
+        async def counted(pr):
+            shown.append(pr.number)
+            await show(pr)
+
+        repo.session.show = counted
+        here = lambda: repo.session.pr and repo.session.pr.ref == repo.selected_pr().ref  # noqa: E731
+        # One key, after a pause: the pane shows the PR at once.
+        await pilot.pause(0.2)
+        shown.clear()  # the first PR, shown as the list came
+        await pilot.press("down")
+        assert shown == [repo.selected_pr().number]
+        # Keys in a row (a key held down): it shows fewer PRs than the cursor passes, and
+        # ends where it stops.
+        for _ in range(5):
+            repo.query_one(OptionList).action_cursor_down()
+            await asyncio.sleep(0.01)
+        await until(pilot, here)
+        assert len(shown) < 6 and shown[-1] == repo.selected_pr().number
+
+
 async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
     from purr.models import PRRef, PRState
 

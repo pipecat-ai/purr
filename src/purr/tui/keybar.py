@@ -35,6 +35,7 @@ class KeyBar(Static):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.keys: list[tuple[str, str]] = []  # (keys, what they do), as shown
+        self._width = 0  # what it was drawn for
 
     def on_mount(self) -> None:
         self._screen = self.screen  # its own, to let go of when it goes
@@ -53,9 +54,12 @@ class KeyBar(Static):
     def _draw(self) -> None:
         if not self.is_attached:  # its screen closed (the editor) while a redraw waited
             return
-        self.keys = self._here()
-        lines = _pack([f"{keys} {what}" for keys, what in self.keys], self.content_size.width)
-        self.update(Content.from_markup("\n".join(_markup(self.keys, line) for line in lines)))
+        keys, width = self._here(), self.content_size.width
+        if (keys, width) == (self.keys, self._width):
+            return  # as it is: drawing it again would lay out the whole screen (moving the cursor)
+        self.keys, self._width = keys, width
+        lines = _pack([f"{keys} {what}" for keys, what in keys], width)
+        self.update(Content.from_markup("\n".join(_markup(keys, line) for line in lines)))
 
     def _here(self) -> list[tuple[str, str]]:
         """``(keys, what they do)`` for each key shown here, in order."""
