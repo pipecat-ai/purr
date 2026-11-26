@@ -136,7 +136,7 @@ def test_the_merge_box_lists_checks_while_ci_runs():
     from purr.merging import concerns
     from purr.messages import MergeReadiness
     from purr.models import Check, CheckState, MergeCheck
-    from purr.tui.session import render_merge
+    from purr.tui.merge_box import render_merge
 
     pr = PR("a/b", 7, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z")
     checks = (
@@ -163,7 +163,7 @@ def test_the_merge_box_waits_while_github_works_out_if_it_can_be_merged():
     from purr.merging import WORKING_OUT, concerns
     from purr.messages import MergeReadiness
     from purr.models import Check, CheckState, MergeCheck
-    from purr.tui.session import render_merge, settling
+    from purr.tui.merge_box import render_merge, settling
 
     pr = PR("a/b", 7, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z")
     check = MergeCheck(

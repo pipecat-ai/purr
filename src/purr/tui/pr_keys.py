@@ -33,7 +33,8 @@ from purr.messages import (
 from purr.models import PR, ActionKind, PRRef, ReviewStatus
 from purr.review.agent import claude_code_command
 from purr.tui.dialogs import AlwaysScreen, ConfirmScreen, NoticeScreen
-from purr.tui.session import PRSession, SessionState, can_run_ci, settling
+from purr.tui.merge_box import can_run_ci, settling
+from purr.tui.session import PRSession, SessionState
 from purr.tui.views import PurrView
 
 
