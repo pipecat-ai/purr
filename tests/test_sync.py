@@ -40,6 +40,15 @@ def test_new_pool_and_assigned_prs():
     assert sorted(changes(plan)) == [(1, PRChange.POOLED), (7, PRChange.ASSIGNED)]
 
 
+def test_a_pr_in_several_searches_is_all_they_say():
+    # Assigned to you, and you commented on it: replies to you are read, as on any PR
+    # you took part in (being assigned mustn't hide that).
+    pr = remote(7, repo="other/repo")
+    snapshot = Snapshot(open={}, assigned=[pr], requested=[pr], involved=[pr], viewer="me")
+    [upserted] = plan_sync([], snapshot, watched=WATCHED).upserts
+    assert upserted.assigned_to_me and upserted.involved and upserted.requested_from_me
+
+
 def test_first_sync_does_not_report_the_whole_pool():
     snapshot = Snapshot(open={"pipecat-ai/pipecat": [remote(1), remote(2)]}, assigned=[])
     plan = plan_sync([], snapshot, watched=WATCHED, first_sync=WATCHED)

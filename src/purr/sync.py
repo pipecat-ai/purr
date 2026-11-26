@@ -84,13 +84,18 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
     listed, _ = _updated(snapshot)
     seen = {pr.ref: pr.to_pr(me) for prs in snapshot.open.values() for pr in prs}
     seen.update((pr.ref, pr.to_pr(me)) for pr in listed)
-    for pr in snapshot.requested or []:
-        seen.setdefault(pr.ref, replace(pr.to_pr(me), requested_from_me=True))
-    for pr in snapshot.involved or []:
-        seen[pr.ref] = replace(seen.get(pr.ref) or pr.to_pr(me), involved=True)
-    for pr in snapshot.assigned or []:
-        seen[pr.ref] = replace(pr.to_pr(me), assigned_to_me=True)
+    for search, flag in _SAYS:
+        for pr in getattr(snapshot, search) or []:
+            seen[pr.ref] = replace(seen.get(pr.ref) or pr.to_pr(me), **{flag: True})
     return seen
+
+
+# What each search across repos says of a PR it finds; one in several says each.
+_SAYS = (
+    ("requested", "requested_from_me"),
+    ("involved", "involved"),
+    ("assigned", "assigned_to_me"),
+)
 
 
 # What Purr keeps of a PR that the searches don't say.
