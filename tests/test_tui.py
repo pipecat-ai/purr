@@ -2587,6 +2587,22 @@ def merge_follow_ups(app: PurrApp) -> int:
     return sum(worker.group == "merge-follow" and not worker.is_finished for worker in app.workers)
 
 
+async def test_quitting_while_the_merge_box_waits_on_github(tmp_path, monkeypatch):
+    # The follow-up is cancelled as Purr quits: its mark isn't drawn again on a screen
+    # that's gone.
+    from purr.tui.working import FRAMES
+
+    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
+    app, github = make_app(tmp_path)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await _waiting_on_ci(app, github, pilot)
+        await pilot.press("m")
+        await until(pilot, lambda: mark_of(app, 7) in FRAMES)
+        github.merge_gate = asyncio.Event()  # GitHub's being asked as Purr quits
+        calls = len(github.merge_calls)
+        await until(pilot, lambda: len(github.merge_calls) > calls)
+
+
 async def test_the_merge_box_keeps_up_with_github_once_you_move_on(tmp_path, monkeypatch):
     """Moving on from a PR whose merge box waits on GitHub leaves it going: GitHub's still
     asked, the PR's mark in the list spins, and coming back shows the box as it is."""
