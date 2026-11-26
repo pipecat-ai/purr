@@ -230,7 +230,8 @@ async def test_review_threads():
                 "line": 42,
                 "comments": {"nodes": [comment]},
             }
-            return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [thread]}}}}}
+            assert variables == {"o0": "a", "n0": "b", "k0": 1}
+            return {"data": {"t0": {"pullRequest": {"reviewThreads": {"nodes": [thread]}}}}}
 
     [thread] = await Threads().review_threads(PRRef("a/b", 1))
     assert thread["id"] == "T1" and thread["path"] == "bus.py" and not thread["resolved"]
@@ -419,8 +420,7 @@ async def test_where_you_stand_on_prs():
                 return {"data": {"viewer": {"login": "me"}}}
             assert 'reviews(last: 1, author: "me", states: [APPROVED' in query
             verdict = {"nodes": [{"state": "APPROVED", "commit": {"oid": "abc"}}]}
-            pr = {"author": {"login": "bob"}, "createdAt": "t0", "yourVerdict": verdict}
-            return {"data": {"t0": {"pullRequest": pr}}}
+            return {"data": {"t0": {"pullRequest": {"yourVerdict": verdict}}}}
 
     ref = PRRef("a/b", 1)
     assert await Conversations(gh="gh-not-used").standing([ref]) == {

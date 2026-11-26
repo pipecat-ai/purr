@@ -142,6 +142,16 @@ def _pr_refspec(number: int) -> str:
     return f"+refs/pull/{number}/head:{PR_REFS}/{number}"
 
 
+def _base_ref(branch: str) -> str:
+    """The clone's ref for a branch PRs merge into ("": the default one)."""
+    return f"{BASE_REFS}/{branch}" if branch else BASE_REF
+
+
+def _base_refspec(branch: str) -> str:
+    """Fetches a branch PRs merge into ("": the default one) into the clone's ref for it."""
+    return f"+refs/heads/{branch}:{_base_ref(branch)}" if branch else _BASE_REFSPEC
+
+
 def _command(args: tuple[str, ...]) -> str:
     """A command, as an error names it: ``git stash push``, git's own options (``-C dir``,
     ``-c key=value``) left out, which would hide what it was."""
@@ -395,8 +405,7 @@ class GitRepos:
     async def _fetch_base(self, repo: str, base: str) -> str:
         """The branch a PR merges into (``base``, or the default one), fetched now: its ref.
         If that fails, the one fetched last."""
-        ref = f"{BASE_REFS}/{base}" if base else BASE_REF
-        spec = f"+refs/heads/{base}:{ref}" if base else _BASE_REFSPEC
+        ref, spec = _base_ref(base), _base_refspec(base)
         clone = self.clone_path(repo)
         async with self._lock(repo):
             try:
@@ -428,8 +437,7 @@ class GitRepos:
     @staticmethod
     def _range(pr: PR) -> str:
         """What GitHub diffs: from where the PR branched off its base to its head."""
-        base = f"{BASE_REFS}/{pr.base}" if pr.base else BASE_REF
-        return f"{base}...{PR_REFS}/{pr.number}"
+        return f"{_base_ref(pr.base)}...{PR_REFS}/{pr.number}"
 
     async def sync(self, repo: str, prs: list[PR]) -> None:
         """Bring the repo's open PRs (``prs``) into the clone, so their diffs are local.
@@ -445,8 +453,7 @@ class GitRepos:
             if not moved and not gone and self._bases_fresh(repo):
                 return  # nothing new: no network
             bases = sorted({pr.base for pr in prs if pr.base})
-            specs = [_BASE_REFSPEC]
-            specs += [f"+refs/heads/{base}:{BASE_REFS}/{base}" for base in bases]
+            specs = [_BASE_REFSPEC, *map(_base_refspec, bases)]
             specs += [_pr_refspec(pr.number) for pr in moved]
             await self._fetch(clone, specs)
             self._bases_fetched[repo] = time.monotonic()
@@ -613,7 +620,7 @@ class GitRepos:
         tell. A rebase, or a merge, likely brings in the base's latest: it's fetched first
         (and if the clone doesn't have the base yet)."""
         clone = self.clone_path(pr.repo)
-        base = f"{BASE_REFS}/{pr.base}" if pr.base else BASE_REF
+        base = _base_ref(pr.base)
         try:
             merges = await self._git(clone, "rev-list", "--merges", f"{pr.head_sha}..{local.head}")
             if not local.commits or merges.strip() or not await self._has_ref(clone, base):
@@ -754,14 +761,10 @@ class GitRepos:
     async def _git_bytes(
         self, cwd: Path, *args: str, stdin: str | None = None, env: dict | None = None
     ) -> bytes:
-        return await self._run_bytes("git", "-C", str(cwd), *args, stdin=stdin, env=env)
-
-    @classmethod
-    async def _run(cls, *args: str) -> str:
-        return (await cls._run_bytes(*args)).decode()
+        return await self._run("git", "-C", str(cwd), *args, stdin=stdin, env=env)
 
     @staticmethod
-    async def _run_bytes(*args: str, stdin: str | None = None, env: dict | None = None) -> bytes:
+    async def _run(*args: str, stdin: str | None = None, env: dict | None = None) -> bytes:
         process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE if stdin is not None else None,
