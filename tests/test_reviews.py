@@ -367,6 +367,32 @@ async def test_esc_stops_a_follow_up_and_the_review_stands(make):
     assert await s.state() == PRState.NEEDS_YOU
 
 
+async def test_esc_as_a_follow_up_starts_still_stops_it(make):
+    s = await make()
+    await s.store.upsert_pr(make_pr())
+    await s.client.request(StartReview(pr=REF))
+    await eventually(lambda: s.client.of(ReviewFinished))
+    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
+    # esc lands before the run is even in the store.
+    recording = asyncio.Event()
+    start_run = s.store.start_run
+
+    async def slow_start(*args, **kwargs):
+        await recording.wait()
+        return await start_run(*args, **kwargs)
+
+    s.store.start_run = slow_start
+    await s.client.request(SendMessage(pr=REF, text="Dig into the whole bus"))
+    stopping = asyncio.ensure_future(s.client.request(StopAgent(pr=REF)))
+    await asyncio.sleep(0.05)
+    recording.set()
+    assert await stopping == Done()
+    # It ended, recorded as stopped: not under way till Purr restarts.
+    assert REF not in s.runner.get_worker(REVIEW_WORKER).running
+    await eventually(lambda: s.client.of(ReviewStopped))
+    assert (await s.store.runs(REF))[-1]["error"] == STOPPED
+
+
 async def test_esc_stops_a_review_again_and_brings_back_the_one_before(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
