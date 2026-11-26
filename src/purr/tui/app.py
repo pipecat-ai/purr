@@ -1,6 +1,7 @@
 """The Textual app: hosts the Purr process and handles navigation."""
 
 import asyncio
+import gc
 import os
 import time
 from functools import partial
@@ -95,6 +96,15 @@ def _claude_settings() -> Path:
 def _at_rest(state: SessionState) -> None:
     """The agent's not at work on the PR: nothing under way, nothing in the background."""
     state.progress, state.waiting, state.since, state.background = None, False, None, 0
+
+
+def _keep_what_started() -> None:
+    """What's there once Purr has started (its modules, Textual's, the first screen) stays
+    till it quits: out of the garbage collector's way. A full pass goes through every
+    object it follows, and with all of that it took about 100 ms, a freeze whenever one
+    came along (moving the cursor, paging the diff); now about 15 ms. Not collected first
+    (that's a pause of its own, 70 ms): the little that's garbage by then stays."""
+    gc.freeze()
 
 
 class PurrApp(App):
@@ -203,6 +213,7 @@ class PurrApp(App):
         await self._count_needs_you()
         if self._cwd:
             self.run_worker(self._open_checkout_repo(self._cwd))
+        self.call_after_refresh(_keep_what_started)
 
     async def _open_checkout_repo(self, cwd: Path) -> None:
         candidates = await github_repos(cwd)
@@ -659,6 +670,7 @@ class PurrApp(App):
         self.exit()
 
     async def on_unmount(self) -> None:
+        gc.unfreeze()  # as before it started (tests run many Purrs in one process)
         await self._stop_purr()
 
     async def _stop_purr(self) -> None:
