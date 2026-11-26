@@ -1079,13 +1079,11 @@ class PRSession(Vertical):
         state: SessionState,
         details: PRDetails | None,
         up_next: str = "",
-    ) -> Text:
-        text = Text()
-        text.append(f"#{pr.number}", style=number_style())
-        text.append(f"  {pr.title}\n", style="bold")
-        text.append(details_line(pr, details))
-        text.append("\n")
-        text.append(_review_status(pr, review, outcome, actions, state))
+    ) -> Group:
+        """The PR's number and title; who and what (``details_line``); then where its review
+        stands, and what's under way."""
+        title = Text.assemble((f"#{pr.number}", number_style()), (f"  {pr.title}", "bold"))
+        text = _review_status(pr, review, outcome, actions, state)
         if up_next and review is None:  # why the lead thinks it's worth looking at next
             text.append(f"\n➜ Up next: {up_next}", style="green")
         if pr.replies and review is not None:
@@ -1094,7 +1092,7 @@ class PRSession(Vertical):
             text.append(f"\n{where}", style="dim")
         if review and review.plan and pr.state == PRState.REVIEWING:
             text.append(f"\n{_plan_note(review.plan)}", style="dim")
-        return text
+        return Group(title, details_line(pr, details), text)
 
     def focus_prompt(self) -> None:
         self.query_one(PromptArea).focus()

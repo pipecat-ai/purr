@@ -1,6 +1,7 @@
 """Drive the TUI with Textual's pilot, on top of a real Purr process and a fake GitHub."""
 
 import asyncio
+import io
 import subprocess
 from collections.abc import Callable
 
@@ -195,8 +196,13 @@ def key_help(app: PurrApp) -> set[str]:
     return {what for _, rows in key_groups(app) for _, what in rows}
 
 
-def header(app: PurrApp) -> str:
-    return str(app.main.repo.session.query_one("#pr-header").render())
+def header(app: PurrApp, width: int = 200) -> str:
+    """The PR's header, as drawn ``width`` columns wide."""
+    from rich.console import Console
+
+    console = Console(width=width, record=True, file=io.StringIO())
+    console.print(app.main.repo.session.query_one("#pr-header").content)
+    return console.export_text().rstrip()
 
 
 def decision(app: PurrApp) -> str:
@@ -562,10 +568,12 @@ async def test_looking_at_a_pr_before_reviewing_it(tmp_path):
         # Then where it changes things (the diff itself is d's).
         await until(pilot, lambda: "1 file changed: src/bus.py" in transcript(app))
         assert "self.lock" not in transcript(app)
-        header = str(app.main.repo.session.query_one("#pr-header").render())
-        assert "main ← fix-bus" in header and "+22 −4 in 1 file" in header
-        assert "✓ checks pass" in header
-        assert "by alice" in header and "r to review it and take it" in header
+        shown = header(app)
+        assert "main ← fix-bus" in shown and "+22 −4 in 1 file" in shown
+        assert "✓ checks pass" in shown
+        assert "by alice" in shown and "r to review it and take it" in shown
+        # Narrow, it wraps between its parts, never through one.
+        assert any("✓ checks pass" in line for line in header(app, width=40).splitlines())
         # PRs below the cursor were fetched ahead, in one batch.
         await until(pilot, lambda: len(github.details_calls) >= 2)
         assert len(github.details_calls[-1]) > 1

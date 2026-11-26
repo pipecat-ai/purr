@@ -1,5 +1,6 @@
 """PR details: the cache in front of GitHub, and how they're shown."""
 
+import io
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -59,6 +60,16 @@ def test_details_line_and_overview():
     line = details_line(PR1, replace(DETAILS, checks="FAILURE", labels=("bug",))).plain
     assert line == "by alice · bob on it · main ← fix · +3 −1 in 1 file · ✗ checks fail · bug"
     assert details_line(PR1, None).plain == "by alice · bob on it"
+
+    # Narrower, it wraps between its parts, never through one: where it stands (checks and
+    # reviews) goes to the next line whole.
+    standing = replace(DETAILS, checks="SUCCESS", review_decision="APPROVED")
+    console = Console(width=58, record=True, file=io.StringIO())
+    console.print(details_line(PR1, standing))
+    assert console.export_text().splitlines() == [
+        "by alice · bob on it · main ← fix · +3 −1 in 1 file",
+        "✓ checks pass · approved",
+    ]
 
     files = (FileChange("src/bus.py", 3, 1),)
     overview = plain(render_overview(replace(DETAILS, files=files)))
