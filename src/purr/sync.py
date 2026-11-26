@@ -11,9 +11,9 @@ Pure functions, so the rules are easy to test without GitHub or a database:
   replies (see the GitHub worker).
 - Never your own PRs: you work on them elsewhere (in Claude Code, say).
 - The pool is a watched repo's: PRs from other repos never join or leave it.
-- A PR that drops out of both is removed if Purr never reviewed it. If Purr did,
-  it stays, and its GitHub state is looked up to tell closed/merged from
-  "drafted" or "unassigned from you elsewhere".
+- A PR that drops out of every search is removed if Purr never reviewed it. If
+  Purr did, it stays, and its GitHub state is looked up to tell closed/merged
+  from "drafted" or "unassigned from you elsewhere".
 - Between full syncs, a repo is synced incrementally: only PRs updated since
   the last sync are fetched, and each is classified as listed or not. PRs that
   weren't updated are left as they are.
