@@ -118,7 +118,7 @@ class PRKeys(PurrView):
     @work(group="keys")
     async def action_review(self) -> None:
         """Review the marked PRs, or else the selected one."""
-        targets = [self._prs[ref] for ref in self._marked if ref in self._prs]
+        targets = [pr for ref, pr in self._prs.items() if ref in self._marked]  # as listed
         if not targets and (pr := self.selected_pr()):
             targets = [pr]
         taken = [pr for pr in targets if pr.others_on_it]
