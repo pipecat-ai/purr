@@ -311,15 +311,26 @@ class PRKeys(PurrView):
         """While the merge box waits on GitHub (a check still running, or whether it can be
         merged still being worked out), it stays current: GitHub's asked again until it
         knows, or the box is gone."""
-        while settling(state.merge):
-            await asyncio.sleep(_recheck_in(state.merge))
-            if not settling(state.merge):
-                return  # merged, or you moved on, meanwhile
+        while settling(asked := state.merge):
+            await asyncio.sleep(_recheck_in(asked))
+            if self._merge_gone(pr, state, asked):
+                return
             try:
-                state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
+                fresh = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
             except PurrError:
                 return  # what it said stays; m asks again
+            if self._merge_gone(pr, state, asked):
+                return  # what GitHub said comes too late
+            state.merge = fresh
             await self.session.refresh_status()
+
+    def _merge_gone(self, pr: PR, state: SessionState, asked: MergeReadiness | None) -> bool:
+        """Whether the merge box went since ``asked``: closed, merged, m again, or you moved
+        on, which drops it (to another PR, another repo, home: m asks again next time)."""
+        here = self.display and self.session.pr is not None and self.session.pr.ref == pr.ref
+        if not here:
+            state.merge = None
+        return state.merge is not asked
 
     async def _run_ci(self, pr: PR, state: SessionState) -> None:
         """a on the merge box, with workflows GitHub holds: approve them, and follow them

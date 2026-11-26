@@ -874,14 +874,15 @@ class PRSession(Vertical):
 
         self.app.push_screen(HistorySearchScreen(asked, prompt.text), picked)
 
-    def _on_its_way(self) -> None:
+    def _on_its_way(self, pr: PR) -> None:
         """What you wrote is on its way to the agent: the spinner spins at once, and the
         decision box doesn't come back meanwhile, till the agent says what it's doing."""
-        state = self.state()
+        state = self.state(pr)
         if state.progress:  # it's at it already: it reads it as it works
             return
         state.progress, state.since = "Thinking", time.monotonic()
-        self._show_working(state)
+        if self._showing(pr):
+            self._show_working(state)
         self.purr_app.main.repo.working_changed()
 
     def _quoted(self, text: str) -> Quote | None:
@@ -892,7 +893,7 @@ class PRSession(Vertical):
     @on(PromptArea.Submitted)
     async def send(self, event: PromptArea.Submitted) -> None:
         text = event.text.strip()
-        if not text or not self.pr:
+        if not text or not (pr := self.pr):
             return
         command = parse(text)
         if command and command[0] in PURR_NAMES:
@@ -905,18 +906,19 @@ class PRSession(Vertical):
             return
         quote = self._quoted(text)
         try:
-            request = SendMessage(pr=self.pr.ref, text=text, quote=quote)
+            request = SendMessage(pr=pr.ref, text=text, quote=quote)
             sent = await self.purr_app.bus.request(request)
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
-        self._on_its_way()
-        state = self.state()
+        # The PR you wrote to, even if you've gone on to another meanwhile (ctrl+n).
+        self._on_its_way(pr)
+        state = self.state(pr)
         state.quote = None
         state.merge = None  # you moved on from where it stood for merging: m asks again
         event.prompt.clear()
         event.prompt.remember(text)
-        ref = str(self.pr.ref)
+        ref = str(pr.ref)
         for proposal in sent.set_aside:
             self.append(ref, {"kind": "set_aside", "text": proposal})
         if not sent.answered:  # if it did, it shows under the call it said no to

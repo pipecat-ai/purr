@@ -2472,6 +2472,109 @@ async def test_the_merge_box_runs_ci_that_waits_for_approval(tmp_path, monkeypat
         await until(pilot, lambda: "✓ 3 checks passed" in decision(app))
 
 
+async def test_moving_on_drops_the_merge_box_even_while_github_answers(tmp_path, monkeypatch):
+    from purr.messages import ApproveAction
+    from purr.models import Check, CheckState, MergeCheck
+
+    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, head_sha="abc"), remote(8, head_sha="def")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    github.merge_checks[ref] = MergeCheck(
+        head_sha="abc",
+        base="main",
+        method="merge",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        checks=(Check("Unit Tests", CheckState.RUNNING),),
+        assignees=("me",),
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        approval = await app.purr.store.add_pending_action(
+            ref, kind=ActionKind.APPROVE, description="LGTM"
+        )
+        await app.bus.request(ApproveAction(action_id=approval.id))
+        repo = app.main.repo
+
+        def on(number: int) -> None:
+            repo.select(f"pipecat-ai/pipecat#{number}", repo="pipecat-ai/pipecat")
+
+        def shown() -> int:
+            return repo.session.pr.number if repo.session.pr else 0
+
+        on(7)
+        await until(pilot, lambda: shown() == 7)
+        await repo.session.refresh_status()
+        await pilot.press("m")
+        await until(pilot, lambda: "Unit Tests" in decision(app))
+
+        # GitHub's slow with the next check, and you move on meanwhile: what it says
+        # then doesn't bring the box back.
+        github.merge_gate = asyncio.Event()
+        await pilot.pause(0.2)
+        on(8)
+        await until(pilot, lambda: shown() == 8)
+        github.merge_gate.set()
+        await pilot.pause(0.3)
+        assert app.sessions[str(ref)].merge is None
+        on(7)
+        await until(pilot, lambda: shown() == 7)
+        await pilot.pause(0.2)
+        assert "Unit Tests" not in decision(app)
+
+        # Going home drops it too: GitHub isn't asked again till m.
+        await pilot.press("m")
+        await until(pilot, lambda: "Unit Tests" in decision(app))
+        await app.go_home()
+        await until(pilot, lambda: app.sessions[str(ref)].merge is None)
+
+
+async def test_what_you_send_stays_with_its_pr_when_you_move_on(tmp_path):
+    from purr.messages import MessageSent, SendMessage
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7), remote(8)]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        repo = app.main.repo
+        repo.select("pipecat-ai/pipecat#7", repo="pipecat-ai/pipecat")
+        await until(pilot, lambda: repo.session.pr is not None and repo.session.pr.number == 7)
+        # The agent takes a moment to say it got it (its worker's busy starting another).
+        sent, got_it = asyncio.Event(), asyncio.Event()
+        request = app.bus.request
+
+        async def slow(job, *args, **kwargs):
+            if isinstance(job, SendMessage):
+                sent.set()
+                await got_it.wait()
+                return MessageSent()
+            return await request(job, *args, **kwargs)
+
+        app.bus.request = slow
+        await pilot.press("enter", *"why?")
+        # Not waited for: the pilot waits for the pane, which waits for the agent.
+        pressed = asyncio.ensure_future(pilot.press("enter"))
+        await asyncio.wait_for(sent.wait(), 5)
+        # Meanwhile you go on to the next PR: it's #7 that's thinking, not #8.
+        repo.select("pipecat-ai/pipecat#8", repo="pipecat-ai/pipecat")
+
+        async def on_8() -> bool:  # not until(): the pilot would wait for the pane
+            return repo.session.pr is not None and repo.session.pr.number == 8
+
+        await until_async(on_8)
+        got_it.set()
+        await pressed
+        await until(pilot, lambda: app.sessions["pipecat-ai/pipecat#7"].progress == "Thinking")
+        assert not app.sessions["pipecat-ai/pipecat#8"].progress
+
+
 async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
     from purr.messages import PRChanged
 
