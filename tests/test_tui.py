@@ -2541,14 +2541,13 @@ async def test_the_merge_box_runs_ci_that_waits_for_approval(tmp_path, monkeypat
         await until(pilot, lambda: "✓ 3 checks passed" in decision(app))
 
 
-async def test_moving_on_drops_the_merge_box_even_while_github_answers(tmp_path, monkeypatch):
+async def _waiting_on_ci(app: PurrApp, github: FakeGitHub, pilot) -> PRRef:
+    """#7 and #8 listed, #7 approved and shown, its unit tests still running on GitHub."""
     from purr.messages import ApproveAction
     from purr.models import Check, CheckState, MergeCheck
 
-    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
-    app, github = make_app(tmp_path)
-    github.open["pipecat-ai/pipecat"] = [remote(7, head_sha="abc"), remote(8, head_sha="def")]
     ref = PRRef("pipecat-ai/pipecat", 7)
+    github.open["pipecat-ai/pipecat"] = [remote(7, head_sha="abc"), remote(8, head_sha="def")]
     github.merge_checks[ref] = MergeCheck(
         head_sha="abc",
         base="main",
@@ -2558,48 +2557,133 @@ async def test_moving_on_drops_the_merge_box_even_while_github_answers(tmp_path,
         checks=(Check("Unit Tests", CheckState.RUNNING),),
         assignees=("me",),
     )
+    await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+    await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+    await pilot.press("1")
+    await until(pilot, lambda: len(pr_ids(app)) == 2)
+    store = app.purr.store
+    approval = await store.add_pending_action(ref, kind=ActionKind.APPROVE, description="LGTM")
+    await app.bus.request(ApproveAction(action_id=approval.id))
+    await go_to(app, pilot, 7)
+    await app.main.repo.session.refresh_status()
+    return ref
+
+
+async def go_to(app: PurrApp, pilot, number: int) -> None:
+    """Select pipecat's PR #number, and wait till its pane shows it."""
+    repo = app.main.repo
+    repo.select(f"pipecat-ai/pipecat#{number}", repo="pipecat-ai/pipecat")
+    await until(pilot, lambda: repo.session.pr is not None and repo.session.pr.number == number)
+
+
+def mark_of(app: PurrApp, number: int) -> str:
+    """A PR's row, as drawn: its first character ("" until drawn)."""
+    rows = [text for text in option_texts(app) if f"#{number} " in text]
+    return rows[0].strip()[0] if rows else ""
+
+
+def merge_follow_ups(app: PurrApp) -> int:
+    """How many merge boxes are followed on GitHub (PRKeys._follow_merge)."""
+    return sum(worker.group == "merge-follow" and not worker.is_finished for worker in app.workers)
+
+
+async def test_the_merge_box_keeps_up_with_github_once_you_move_on(tmp_path, monkeypatch):
+    """Moving on from a PR whose merge box waits on GitHub leaves it going: GitHub's still
+    asked, the PR's mark in the list spins, and coming back shows the box as it is."""
+    from dataclasses import replace
+
+    from purr.models import Check, CheckState
+    from purr.tui.working import FRAMES
+
+    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
+    app, github = make_app(tmp_path)
     async with app.run_test(size=(140, 45)) as pilot:
-        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
-        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
-        await pilot.press("1")
-        await until(pilot, lambda: len(pr_ids(app)) == 2)
-        approval = await app.purr.store.add_pending_action(
-            ref, kind=ActionKind.APPROVE, description="LGTM"
-        )
-        await app.bus.request(ApproveAction(action_id=approval.id))
-        repo = app.main.repo
+        ref = await _waiting_on_ci(app, github, pilot)
 
-        def on(number: int) -> None:
-            repo.select(f"pipecat-ai/pipecat#{number}", repo="pipecat-ai/pipecat")
+        def spinner() -> str:  # the box's spinner on the running check
+            line = next((line for line in decision(app).splitlines() if "Unit Tests" in line), "")
+            return line.strip()[:1]
 
-        def shown() -> int:
-            return repo.session.pr.number if repo.session.pr else 0
-
-        on(7)
-        await until(pilot, lambda: shown() == 7)
-        await repo.session.refresh_status()
         await pilot.press("m")
-        await until(pilot, lambda: "Unit Tests" in decision(app))
+        await until(pilot, lambda: spinner() != "")
+        await until(pilot, lambda: mark_of(app, 7) in FRAMES)
 
-        # GitHub's slow with the next check, and you move on meanwhile: what it says
-        # then doesn't bring the box back.
-        github.merge_gate = asyncio.Event()
-        await pilot.pause(0.2)
-        on(8)
-        await until(pilot, lambda: shown() == 8)
-        github.merge_gate.set()
-        await pilot.pause(0.3)
-        assert app.sessions[str(ref)].merge is None
-        on(7)
-        await until(pilot, lambda: shown() == 7)
-        await pilot.pause(0.2)
+        # Another PR: #7's box isn't there, but GitHub's still asked, and its mark spins.
+        await go_to(app, pilot, 8)
         assert "Unit Tests" not in decision(app)
+        calls = len(github.merge_calls)
+        await until(pilot, lambda: len(github.merge_calls) > calls + 1)
+        assert mark_of(app, 7) in FRAMES and mark_of(app, 8) not in FRAMES
+        # Home, and back: the same.
+        await app.go_home()
+        calls = len(github.merge_calls)
+        await until(pilot, lambda: len(github.merge_calls) > calls + 1)
+        await pilot.press("1")
+        await until(pilot, lambda: in_repo(app) and mark_of(app, 7) in FRAMES)
 
-        # Going home drops it too: GitHub isn't asked again till m.
+        # GitHub's slow to answer now. Back on #7, the box is there at once, as it was, its
+        # spinner turning; the follow-up going is the one m started.
+        github.merge_gate = asyncio.Event()
+        calls = len(github.merge_calls)
+        await until(pilot, lambda: len(github.merge_calls) > calls)
+        await go_to(app, pilot, 7)
+        await until(pilot, lambda: spinner() != "")
+        first = spinner()
+        await until(pilot, lambda: spinner() not in ("", first))
+        assert merge_follow_ups(app) == 1
+
+        # CI's done while you're on #8: #7's mark stops spinning, and nothing else changes.
+        await go_to(app, pilot, 8)
+        await pilot.pause(0.3)  # #8's details are in
+
+        def on_screen() -> tuple:
+            rows = [text for text in option_texts(app) if "#7 " not in text]
+            return header(app), decision(app), rows
+
+        before = on_screen()
+        passed = (Check("Unit Tests", CheckState.PASSED),)
+        github.merge_checks[ref] = replace(github.merge_checks[ref], checks=passed)
+        github.merge_gate.set()
+        await until(pilot, lambda: mark_of(app, 7) not in ("", *FRAMES))
+        assert on_screen() == before
+        # GitHub's asked no more, and the box says so when you're back.
+        assert merge_follow_ups(app) == 0
+        calls = len(github.merge_calls)
+        await pilot.pause(0.2)
+        assert len(github.merge_calls) == calls
+        await go_to(app, pilot, 7)
+        await until(pilot, lambda: "✓ 1 check passed" in decision(app))
+
+
+async def test_a_pr_has_one_merge_follow_up_at_most(tmp_path, monkeypatch):
+    """x, then m again, while the follow-up waits to ask GitHub again: the one going follows
+    what m found, rather than another starting; nor does coming back start one."""
+    from dataclasses import replace
+
+    from purr.models import Check, CheckState
+
+    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 2.0)
+    app, github = make_app(tmp_path)
+    async with app.run_test(size=(140, 45)) as pilot:
+        ref = await _waiting_on_ci(app, github, pilot)
         await pilot.press("m")
         await until(pilot, lambda: "Unit Tests" in decision(app))
-        await app.go_home()
-        await until(pilot, lambda: app.sessions[str(ref)].merge is None)
+        assert merge_follow_ups(app) == 1
+        await pilot.press("x")
+        await until(pilot, lambda: "Unit Tests" not in decision(app))
+        await pilot.press("m")
+        await until(pilot, lambda: "Unit Tests" in decision(app))
+        assert merge_follow_ups(app) == 1
+        await go_to(app, pilot, 8)
+        await go_to(app, pilot, 7)
+        assert merge_follow_ups(app) == 1
+
+        # It follows the box m found to the end.
+        monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
+        passed = (Check("Unit Tests", CheckState.PASSED),)
+        github.merge_checks[ref] = replace(github.merge_checks[ref], checks=passed)
+        await until(pilot, lambda: "✓ 1 check passed" in decision(app))
+        await until(pilot, lambda: merge_follow_ups(app) == 0)
 
 
 async def test_what_you_send_stays_with_its_pr_when_you_move_on(tmp_path):

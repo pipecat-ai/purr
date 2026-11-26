@@ -39,6 +39,7 @@ from purr.tui.lists import (
     pr_row,
     separated,
 )
+from purr.tui.merge_box import settling
 from purr.tui.pr_keys import PRKeys
 from purr.tui.session import PRSession, SessionState, needs_you_for, outcome_mark
 from purr.tui.theme import palette
@@ -111,7 +112,7 @@ class RepoView(PRKeys):
         self.query_one(DiffPane).display = False
         self._left = "list"  # what's on the left: the PR list, or a PR's diff
         self._zoomed_from_left = False  # z on the PR's pane was pressed from the left one
-        # PRs whose agent is at work: their mark spins, like the PR pane's line.
+        # PRs something works on (see _working): their mark spins, like the PR pane's line.
         self._spinning: set[str] = set()
         self._frame = 0
         self._spinner = self.set_interval(FRAME_SECONDS, self._spin, pause=True)
@@ -230,9 +231,10 @@ class RepoView(PRKeys):
         return options
 
     def _working(self, key: str) -> bool:
-        """Its agent's at work, or Purr's doing what you asked for on it (a push, a merge)."""
+        """Its agent's at work, Purr's doing what you asked for on it (a push, a merge), or
+        its merge box waits on GitHub (see settling), shown or not."""
         state = self.purr_app.sessions.get(key)
-        return bool(state and (state.working or state.doing))
+        return bool(state and (state.working or state.doing or settling(state.merge)))
 
     def working_changed(self) -> None:
         """Some review started or stopped working, or what you asked for on a PR got going
@@ -283,8 +285,8 @@ class RepoView(PRKeys):
         )
 
     def _mark(self, pr: PR) -> Text:
-        """Marked; its agent at work (spinning); needing you (⚠, or ✗ if its review failed:
-        the note says what for); what its review found; or its group's."""
+        """Marked; something at work on it (spinning: see _working); needing you (⚠, or ✗ if
+        its review failed: the note says what for); what its review found; or its group's."""
         if str(pr.ref) in self._marked:
             return Text("▪", style="bold magenta")
         if str(pr.ref) in self._spinning:
@@ -322,7 +324,6 @@ class RepoView(PRKeys):
         if pr and self.diff_shown and self.diff.pr and pr.ref != self.diff.pr.ref:
             self.close_diff()  # another PR (an alert, ctrl+p): the list, to see where
         if pr and self.repo:
-            self._leave_merge(self._selected.get(self.repo), str(pr.ref))
             self._selected[self.repo] = str(pr.ref)
             self.purr_app.seen(str(pr.ref))
             # A callable, not a coroutine: when moving fast, a run cancelled before

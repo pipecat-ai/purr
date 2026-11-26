@@ -1,0 +1,1 @@
+- The merge box (`m`) keeps following CI and GitHub when you move to another PR, another repo or home. Its PR's mark in the list spins until it's done, and when you come back the box is there, up to date.

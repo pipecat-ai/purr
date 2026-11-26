@@ -64,7 +64,8 @@ def checks_running(check: MergeCheck) -> bool:
 def settling(merge: MergeReadiness | None) -> bool:
     """The merge box waits on GitHub: nothing blocks the merge, but a check is still
     running, or GitHub is still working out whether it can be merged. Its spinners turn,
-    and GitHub's asked again until it isn't (PRKeys._follow_merge)."""
+    and the PR's mark in the list; GitHub's asked again until it isn't, whether the PR is
+    shown or not (PRKeys._follow_merge)."""
     if merge is None or merge.blockers:
         return False
     return checks_running(merge.check) or working_out(merge.check)
