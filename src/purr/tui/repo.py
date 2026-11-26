@@ -178,10 +178,12 @@ class RepoView(PRKeys):
 
     def _groups(self, prs: list[PR]) -> list[PRGroup]:
         """The PRs in their groups; empty groups left out."""
+        by_group: dict[str, list[PR]] = {}
+        for pr in prs:
+            by_group.setdefault(self._group(pr), []).append(pr)
         groups = []
         for key, icon, label, style in GROUPS:
-            members = [pr for pr in prs if self._group(pr) == key]
-            if not members:
+            if not (members := by_group.get(key)):
                 continue
             if key == UP_NEXT:  # best first
                 members.sort(key=lambda pr: self._up_next[str(pr.ref)].rank)
