@@ -12,16 +12,14 @@ read what it found, ask it questions, and decide what to post. Purr posts nothin
 It was first built to help review the pull requests sent to
 [Pipecat](https://github.com/pipecat-ai/pipecat).
 
-![Purr: your repos, a review that needs you, your own PR, what's up next and why, a question to the agent, a comment on a line of the diff, and posting the review](https://raw.githubusercontent.com/pipecat-ai/purr/main/purr.gif)
+![Purr: your repos, a review that needs you, what's up next and why, a question to the agent, a comment on a line of the diff, and posting the review](https://raw.githubusercontent.com/pipecat-ai/purr/main/purr.gif)
 
 ## ✨ What it does
 
 - Reviews the PRs assigned to you, a few at a time. Small changes get a quick review, risky
   ones a full one.
 - Suggests what to review next, from the PRs nobody has taken.
-- Helps with your own PRs: when someone comments, it checks what they said and proposes
-  what to change and what to reply.
-- Groups your PRs by what they need from you.
+- Groups PRs by what they need from you.
 - Lets you talk to the agent about each PR, and comment on lines of the diff.
 - Posts reviews, pushes changes and merges, one key each, as you.
 - Follows several repos at once.
@@ -63,7 +61,6 @@ rebase the PR, `a` force-pushes it, but only if nobody pushed to the PR since.
 | *Needs you* | Something to decide: a review to post, a question from the agent, a reply to you |
 | *To merge* | PRs you approved that are still open: `m` merges |
 | *Reviewing* | The agent is reviewing it |
-| *Your PRs* | PRs you opened |
 | *Review requested* | PRs asking for your review |
 | *Up next* | A few PRs nobody has taken, picked for you |
 | *Done* | PRs you requested changes on, and others with nothing left to do |
@@ -184,6 +181,8 @@ These work wherever you type: the prompt, a comment, a file in Purr's editor.
 
 ## 💡 Good to know
 
+- Purr is for reviewing others' PRs: the ones you opened aren't listed. Work on those in
+  Claude Code.
 - The agents can read GitHub but can't change it. Purr posts what you approve, as you.
 - Your own comments go to GitHub when you save them. Deleting one asks first.
 - Anything risky waits for your OK. `A` keeps a rule so the agent doesn't ask again.

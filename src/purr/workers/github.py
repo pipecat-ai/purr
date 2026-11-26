@@ -242,7 +242,7 @@ class GitHubWorker(BaseWorker):
 
     async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
         """Read what others said to you, and your verdict, on PRs Purr reviewed, you took
-        part in or that are yours, that changed (all of them, the first time).
+        part in, that changed (all of them, the first time).
 
         Returns the PRs with new replies, and whether any PR's replies, verdict or state
         changed.
@@ -250,7 +250,7 @@ class GitHubWorker(BaseWorker):
         followed = {
             pr.ref: pr
             for pr in await self._store.open_prs()
-            if pr.state != PRState.NOT_REVIEWED or pr.involved or pr.authored
+            if pr.state != PRState.NOT_REVIEWED or pr.involved
         }
         due = set(followed) if self._replies_due is None else self._replies_due | changed
         asked = datetime.now(UTC).isoformat(timespec="seconds")
@@ -435,8 +435,6 @@ class GitHubWorker(BaseWorker):
         pr = await self._store.get_pr(request.pr)
         if pr is None:
             raise NotFound(f"Purr doesn't know {request.pr}")
-        if pr.authored:
-            raise Invalid("GitHub doesn't let you approve your own PR")
         if await self._store.pending_actions(pr.ref):
             raise Busy("Something's proposed on it: decide that first")
         action = await self._store.add_pending_action(

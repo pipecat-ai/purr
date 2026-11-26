@@ -14,9 +14,7 @@ they report before passing it on: only real problems become findings."""
 
 
 def plan_section(plan: ReviewPlan) -> str:
-    """The plan as a system prompt section (none to answer comments: that's no review)."""
-    if plan.answers_comments:
-        return ""
+    """The plan as a system prompt section."""
     why = f" ({plan.why})" if plan.why else ""
     parts = [
         f"\n\n## How this review should go\n\nPurr's lead planned a {plan.depth} review{why}.",

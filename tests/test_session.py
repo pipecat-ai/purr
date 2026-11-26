@@ -161,7 +161,7 @@ def test_what_you_approved_and_is_still_open_is_to_merge():
     from dataclasses import replace
 
     from purr.models import PR, GHState, PRState, Verdict
-    from purr.tui.lists import TO_MERGE, YOURS, group
+    from purr.tui.lists import TO_MERGE, group
 
     pr = PR("a/b", 1, "Fix", "someone", "u", "abc", "t", state=PRState.DONE)
     approved = replace(pr, verdict=Verdict(ActionKind.APPROVE, "abc"))
@@ -170,7 +170,6 @@ def test_what_you_approved_and_is_still_open_is_to_merge():
     assert group(replace(pr, verdict=Verdict(ActionKind.REQUEST_CHANGES, "abc"))) == PRState.DONE
     assert group(replace(approved, verdict=Verdict(ActionKind.APPROVE, "old"))) == PRState.DONE
     assert group(replace(approved, gh_state=GHState.MERGED)) == PRState.DONE
-    assert group(replace(approved, authored=True)) == YOURS
 
 
 def test_review_requests_come_before_up_next():

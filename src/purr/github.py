@@ -33,10 +33,11 @@ from purr.models import (
 )
 
 # Searches are sorted by creation so that pages stay stable while PRs get updated.
+# None lists your own PRs: you work on them elsewhere (in Claude Code, say).
 # A repo's list is every open PR by other people, whoever is assigned: the
 # unassigned ones are the pool, the rest show who's on them.
 OPEN_QUERY = "is:pr is:open archived:false draft:false -author:@me sort:created-desc repo:{repo}"
-ASSIGNED_QUERY = "is:pr is:open archived:false assignee:@me sort:created-desc"
+ASSIGNED_QUERY = "is:pr is:open archived:false -author:@me assignee:@me sort:created-desc"
 # PRs asking for your review by name (not through a team), in any repo. Shown,
 # never reviewed on their own: only being assigned starts a review.
 REQUESTED_QUERY = (
@@ -50,18 +51,15 @@ COMMENTED_QUERY = (
 REVIEWED_QUERY = (
     "is:pr is:open archived:false draft:false -author:@me reviewed-by:@me sort:created-desc"
 )
-# Your own open PRs, drafts too, in any repo: what you're working on.
-MINE_QUERY = "is:pr is:open archived:false author:@me sort:created-desc"
 # Every PR in a repo touched since a time, whatever its state: used between full
 # syncs. Being assigned, closed or drafted updates a PR too.
-UPDATED_QUERY = "is:pr archived:false updated:>={since} sort:updated-desc repo:{repo}"
+UPDATED_QUERY = "is:pr archived:false -author:@me updated:>={since} sort:updated-desc repo:{repo}"
 # The searches every snapshot runs besides the watched repos', by alias.
 _ANY_REPO_SEARCHES = {
     "assigned": ASSIGNED_QUERY,
     "requested": REQUESTED_QUERY,
     "commented": COMMENTED_QUERY,
     "reviewed": REVIEWED_QUERY,
-    "mine": MINE_QUERY,
 }
 
 _PR_FIELDS = """
@@ -164,7 +162,6 @@ class RemotePR:
             assignees=self.assignees,
             assigned_to_me=me.lower() in {a.lower() for a in self.assignees},
             requested_from_me=me.lower() in {r.lower() for r in self.requested},
-            authored=self.author.lower() == me.lower(),
         )
 
 
@@ -178,14 +175,13 @@ class Snapshot:
         assigned: Every open PR assigned to you, in any repo.
         requested: Every open PR asking for your review by name, in any repo.
         involved: Every open PR by others you've commented on or reviewed, in any repo.
-        mine: Every open PR of yours, drafts too, in any repo.
         updates: Incrementally synced repos: every PR touched since the last
             sync, whatever its state. Absence means "unchanged".
         viewer: Your GitHub login.
 
     Only complete results are included: a repo whose search failed or came back
     partial is missing from ``open``/``updates``, and ``assigned`` is None if
-    that search did (``requested``, ``involved`` and ``mine`` likewise). Absence from an
+    that search did (``requested`` and ``involved`` likewise). Absence from an
     incomplete result says nothing about a PR.
     """
 
@@ -195,7 +191,6 @@ class Snapshot:
     viewer: str | None = None
     requested: list[RemotePR] | None = field(default_factory=list)
     involved: list[RemotePR] | None = field(default_factory=list)
-    mine: list[RemotePR] | None = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -445,7 +440,6 @@ class GitHub:
             viewer=viewer,
             requested=results.get("requested"),
             involved=_involved(results),
-            mine=results.get("mine"),
         )
 
     async def _search_all(
@@ -598,12 +592,9 @@ def replies_to(me: str, pr: dict) -> list[Reply]:
       your last word on the PR (a comment, or a review that says something: one
       that's only thread comments doesn't answer the other threads).
 
-    Bots don't count, and nothing does until you've said something. On your own PR,
-    opening it was your first word, every thread is said to you, and so is what
-    others' reviews say (their text, when there's some).
+    Bots don't count, and nothing does until you've said something.
     """
     me = me.lower()
-    authored = _by(me, pr)
     comments = _nodes(pr.get("comments"))
     threads = [
         (thread, _nodes(thread.get("comments"))) for thread in _nodes(pr.get("reviewThreads"))
@@ -612,16 +603,13 @@ def replies_to(me: str, pr: dict) -> list[Reply]:
     yours = [r for r in reviews if _by(me, r)]
     on_pr = [c["createdAt"] for c in comments if _by(me, c)]
     on_pr += [r["submittedAt"] for r in yours if _says_something(r)]
-    on_pr += [pr["createdAt"]] if authored and pr.get("createdAt") else []
     in_threads = [c["createdAt"] for _, nodes in threads for c in nodes if _by(me, c)]
     if not on_pr and not in_threads and not yours:
         return []
     last_word = max([*on_pr, *in_threads, *(r["submittedAt"] for r in yours)])
     replies = [_reply(c) for c in comments if _replies_to_me(me, c, last_word)]
-    if authored:
-        replies += [_review_reply(r) for r in reviews if _review_to_me(me, r, last_word)]
     for thread, nodes in threads:
-        replies += _thread_replies(me, thread, nodes, on_pr, authored=authored)
+        replies += _thread_replies(me, thread, nodes, on_pr)
     return sorted(replies, key=lambda r: r.at)
 
 
@@ -644,14 +632,12 @@ def _says_something(review: dict) -> bool:
     return bool((review.get("body") or "").strip()) or review.get("state") != "COMMENTED"
 
 
-def _thread_replies(
-    me: str, thread: dict, comments: list[dict], on_pr: list[str], *, authored: bool
-) -> list[Reply]:
-    """Replies to ``me`` in a review thread they're in (on their own PR, any thread), after
-    their last comment in it or their last word on the PR (``on_pr``: when they said
-    something there), whichever is later."""
+def _thread_replies(me: str, thread: dict, comments: list[dict], on_pr: list[str]) -> list[Reply]:
+    """Replies to ``me`` in a review thread they're in, after their last comment in it or
+    their last word on the PR (``on_pr``: when they said something there), whichever is
+    later."""
     mine = [c["createdAt"] for c in comments if _by(me, c)]
-    if not mine and not authored:
+    if not mine:
         return []
     after = max([*mine, *on_pr])
     path, line = thread.get("path") or "", thread.get("line")
@@ -670,27 +656,6 @@ def _replies_to_me(me: str, comment: dict, after: str) -> bool:
     return (
         not _by(me, comment) and author.get("__typename") != "Bot" and comment["createdAt"] > after
     )
-
-
-def _review_to_me(me: str, review: dict, after: str) -> bool:
-    """Whether someone's review of your PR says something to you, after ``after``."""
-    said = {**review, "createdAt": review["submittedAt"]}
-    return bool((review.get("body") or "").strip()) and _replies_to_me(me, said, after)
-
-
-_VERDICTS = {"APPROVED": "Approved", "CHANGES_REQUESTED": "Requested changes"}
-
-
-def _review_reply(review: dict) -> Reply:
-    """A review's text as a reply, saying what it decided if it did."""
-    verdict = _VERDICTS.get(review.get("state") or "")
-    body = (review.get("body") or "").strip()
-    said = {
-        **review,
-        "createdAt": review["submittedAt"],
-        "body": f"{verdict}: {body}" if verdict else body,
-    }
-    return _reply(said)
 
 
 def _reply(comment: dict, where: str = "") -> Reply:

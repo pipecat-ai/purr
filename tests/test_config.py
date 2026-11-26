@@ -53,6 +53,11 @@ def test_settings_from_the_file(dirs):
     assert config.review_budget_usd == 2.0
 
 
+def test_a_setting_purr_dropped_is_ignored(dirs):
+    write(dirs, "auto_answer = false\nmax_reviews = 2\n")  # from when Purr had your PRs
+    assert Config.load(config_dir=dirs).max_reviews == 2
+
+
 def test_what_the_file_cant_say(dirs):
     write(dirs, "away_aftr = 600\n")
     with pytest.raises(SettingsError, match="unknown setting 'away_aftr'"):

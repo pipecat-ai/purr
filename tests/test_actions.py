@@ -329,11 +329,6 @@ async def test_approving_with_nothing_proposed(setup):
     assert await store.approved_head(REF) == "abc"  # m can merge it
     assert (await store.get_pr(REF)).state == PRState.DONE
 
-    pr = await store.get_pr(REF)
-    await store.upsert_pr(replace(pr, authored=True))
-    with pytest.raises(Invalid, match="your own PR"):
-        await request(client, ApprovePR(pr=REF), timeout=5)
-
 
 async def test_assigning_yourself(setup):
     store, writer, client, pending = setup

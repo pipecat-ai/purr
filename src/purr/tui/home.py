@@ -20,14 +20,13 @@ from purr.tui.theme import palette
 from purr.tui.views import PurrView
 
 _REPO_COLUMNS = (
-    "", "REPO", "YOURS", "NEEDS YOU", "TO MERGE", "REVIEWING", "UP NEXT", "NOT REVIEWED",
-    "LAST ACTIVITY",
+    "", "REPO", "NEEDS YOU", "TO MERGE", "REVIEWING", "UP NEXT", "NOT REVIEWED", "LAST ACTIVITY",
 )  # fmt: skip
 
 
 def _repo_row(*cells: Text | str, header: bool = False) -> Table:
     """A row of the repo list: number, name, then counts and when, in columns."""
-    widths = [2, None, 6, 10, 9, 10, 8, 13, 14]
+    widths = [2, None, 10, 9, 10, 8, 13, 14]
     grid = Table.grid(expand=True, padding=(0, 1))
     for width in widths:
         if width is None:
@@ -64,12 +63,12 @@ class RepoList(GroupedList):
 
 
 class ReposView(PurrView):
-    """Home: the repos you watch, then those listed only because PRs there are yours.
+    """Home: the repos you watch, then those listed only because PRs there concern you.
 
     Watching a repo (``+``) shows all its open PRs; the others show only the PRs
-    that concern you: yours, and those assigned to you, which you can review all
-    the same. Alphabetical within
-    each group; ``1``-``9`` follow the order on screen.
+    that concern you: those assigned to you or asking for your review, and those
+    you took part in. Alphabetical within each group; ``1``-``9`` follow the order
+    on screen.
     """
 
     BINDINGS = [
@@ -157,7 +156,6 @@ class ReposView(PurrView):
         return [
             str(i) if i <= 9 else "",
             name,
-            _count(summary.yours),
             needs,
             merge,
             _count(summary.reviewing),
@@ -195,7 +193,7 @@ class ReposView(PurrView):
                 await self.reload()
                 self.select_repo(name)
 
-        # On a repo that's only listed for your PRs: that one, ready to watch.
+        # On a repo that's only listed for PRs that concern you: that one, ready to watch.
         selected = self.selected_repo()
         suggested = selected if selected and selected not in self._watched else ""
         self.app.push_screen(AddRepoScreen(suggested), added)
@@ -215,7 +213,7 @@ class ReposView(PurrView):
         self.app.push_screen(
             ConfirmScreen(
                 f"Stop watching [b]{repo}[/b]?",
-                "Its pool goes away. Your PRs there, and those assigned to you, stay.",
+                "Its pool goes away. The PRs there that concern you stay.",
             ),
             confirmed,
         )

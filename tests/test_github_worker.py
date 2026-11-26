@@ -177,28 +177,6 @@ async def test_adding_an_unknown_repo_is_rejected(setup):
     assert await store.list_repos() == []
 
 
-async def test_comments_on_your_own_prs_need_you(setup):
-    store, github, worker, client = setup
-    await client.next_event(Synced)
-    ref = PRRef("pipecat-ai/pipecat", 3)
-    github.mine = [remote(3, author="me")]
-    await worker.poll()
-    assert (await store.get_pr(ref)).authored
-    assert ref in github.standing_calls[-1]  # yours: its conversation is read
-
-    alice = Reply("alice", "Needs a test.", "2026-11-21T10:00:00Z")
-    github.conversations[ref] = [alice]
-    github.mine = [remote(3, author="me", updated_at="2026-11-21T10:00:00Z")]
-    await worker.poll()
-    event = await client.next_event(PRChanged)
-    assert (event.change, event.by) == (PRChange.REPLIED, "alice")
-    assert (await store.get_pr(ref)).state == PRState.NEEDS_YOU
-
-    # x: no answer needed. Back with your PRs.
-    await request(client, DismissReplies(pr=ref))
-    assert (await store.get_pr(ref)).state == PRState.NOT_REVIEWED
-
-
 async def test_replies_to_you_need_you_until_answered(setup):
     store, github, worker, client = setup
     await client.next_event(Synced)  # the first poll, with nothing reviewed

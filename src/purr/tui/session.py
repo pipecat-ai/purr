@@ -425,18 +425,12 @@ def _review_status(
 
 def _review_kind(plan: ReviewPlan | None) -> str:
     """What the review was: how deep it went (a quick look deserves less trust than a full
-    review), or a reading of the comments on your PR."""
-    if plan is None:
-        return "Review"
-    return "Comments" if plan.answers_comments else f"{plan.depth.value.capitalize()} review"
+    review)."""
+    return f"{plan.depth.value.capitalize()} review" if plan else "Review"
 
 
 def _not_reviewed(pr: PR) -> Text:
-    """Nobody's review yet, or only others': and how to start yours. Yours, it says so."""
-    if pr.authored:
-        return Text.assemble(
-            ("◆ Your PR", "bold blue"), (" · r to review it yourself · d diff", "dim")
-        )
+    """Nobody's review yet, or only others': and how to start yours."""
     text = Text()
     text.append("◌ Not reviewed by you" if pr.others_on_it else "○ Not reviewed", style="bold")
     if pr.requested_from_me:
@@ -466,8 +460,6 @@ def _about(quote: Quote) -> str:
 def _plan_note(plan: ReviewPlan) -> str:
     """What the lead planned, and why: while the review waits or runs (its place in line,
     how deep it goes)."""
-    if plan.answers_comments:
-        return "Reading what others said on your PR, to propose what to change and answer"
     line = f"Planned: a {plan.depth.value} review, {plan.priority.value} priority"
     return line + (f". {plan.why}" if plan.why else "")
 
@@ -578,11 +570,11 @@ def _verdict_question(pr: PR, state: SessionState, actions: list[PendingAction])
 
 
 def _verdict_due(pr: PR, review: Review | None, actions: list[PendingAction]) -> bool:
-    """Someone else's PR in Needs you, reviewed, with nothing proposed or said to you: it
-    waits for your verdict alone."""
+    """A PR in Needs you, reviewed, with nothing proposed or said to you: it waits for your
+    verdict alone."""
     reviewed = review is not None and review.status == ReviewStatus.FINISHED
     alone = not actions and not pr.replies
-    return pr.state == PRState.NEEDS_YOU and not pr.authored and reviewed and alone
+    return pr.state == PRState.NEEDS_YOU and reviewed and alone
 
 
 def _merge_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:

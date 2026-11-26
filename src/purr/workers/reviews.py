@@ -17,8 +17,6 @@ from purr.messages import (
     REVIEW_WORKER,
     ActionPending,
     ActionResolved,
-    AnswerComments,
-    Answering,
     AnswerPermission,
     ChooseReviewSkill,
     ListRepoSkills,
@@ -69,7 +67,6 @@ from purr.review.agent import (
     Refused,
     ReviewAgent,
     ReviewCallbacks,
-    answer_prompt,
     describe_background,
     describe_tool_use,
     quote_note,
@@ -94,10 +91,7 @@ def _repo(repo: str) -> str:
 
 
 def _follows_skill(kind: str, plan: ReviewPlan) -> bool:
-    """Whether a run follows the repo's review skill: not to answer comments, nor a quick
-    re-review."""
-    if kind == "answer":
-        return False
+    """Whether a run follows the repo's review skill: not a quick re-review."""
     return not (kind == "rereview" and plan.depth == Depth.QUICK)
 
 
@@ -309,10 +303,6 @@ class ReviewWorker(BaseWorker):
     async def handle_rereview(self, request: Rereview) -> Rereviewing:
         return Rereviewing(started=await self.rereview(request.pr, plan=request.plan))
 
-    @handles(AnswerComments)
-    async def handle_answer(self, request: AnswerComments) -> Answering:
-        return Answering(started=await self.answer(request.pr))
-
     @handles(SendMessage)
     async def send_message(self, request: SendMessage) -> MessageSent:
         quoted = quote_note(request.quote) if request.quote else ""
@@ -402,30 +392,6 @@ class ReviewWorker(BaseWorker):
         )
         await self.send_bus_message(PRListUpdated(source=self.name))
         return review
-
-    async def answer(self, ref: PRRef) -> bool:
-        """Have the agent read what others said on your own PR since your last word, and
-        propose what to change and what to answer: in the PR's conversation if it has one,
-        else in a new one. Returns whether it started (not without anything to answer, nor
-        while the agent's at work on the PR)."""
-        plan = ReviewPlan.answering()
-        async with self._start_lock:
-            pr = await self._store.get_pr(ref)
-            if pr is None or not pr.authored or not pr.replies or ref in self._running:
-                return False
-            review = await self._store.latest_review(ref)
-            prompt = answer_prompt(pr.replies)
-            if review and review.session_id:
-                await self._dismiss_pending(ref)  # it proposes again, every answer in it
-                self._launch(
-                    pr, review, prompt=prompt, resume=True, followup=True, kind="answer", plan=plan
-                )
-            else:
-                review = await self._new_conversation(pr, plan)
-                self._launch(pr, review, prompt=prompt, resume=False, kind="answer", plan=plan)
-        await self._progress(ref, "Reading the comments")
-        await self.send_bus_message(PRListUpdated(source=self.name))
-        return True
 
     async def _new_conversation(self, pr: PR, plan: ReviewPlan) -> Review:
         """A new review (a new conversation, in a new session) of the PR, under way."""
@@ -690,8 +656,7 @@ class ReviewWorker(BaseWorker):
         if run.resume and not self._agent.session_exists(session_id, worktree):
             # It never really started: begin again, under the same session ID.
             run.resume = False
-            if run.kind != "answer":
-                run.prompt = review_prompt(run.pr, run.skill)
+            run.prompt = review_prompt(run.pr, run.skill)
         await self._progress(ref, "Reviewing" if not run.followup else "Thinking")
         author = "you" if run.kind == "message" else "purr"
         await self._store.add_message(

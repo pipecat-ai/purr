@@ -61,7 +61,6 @@ def test_small_and_where_youve_worked_comes_first():
 def test_up_next_comes_from_the_pool():
     pool = pr(1)
     assert candidates([pool]) == [pool]
-    assert candidates([replace(pool, authored=True)]) == []  # yours
     assert candidates([replace(pool, assignees=("alice",))]) == []  # taken
     assert candidates([replace(pool, state=PRState.DONE)]) == []
     assert candidates([replace(pool, requested_from_me=True)]) == []  # a group of its own
