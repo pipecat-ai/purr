@@ -12,7 +12,7 @@ from functools import partial
 from textual import work
 
 from purr.claude import NO_CLAUDE_CODE, claude_cli
-from purr.jobs import PurrError
+from purr.jobs import NotFound, PurrError
 from purr.merging import working_out
 from purr.messages import (
     REVIEW_WORKER,
@@ -316,20 +316,24 @@ class PRKeys(PurrView):
 
     async def _keep_up(self, pr: PR, state: SessionState) -> None:
         """GitHub's asked again until it knows, or the box goes (x, merged, new commits)."""
-        while settling(asked := state.merge):
-            await asyncio.sleep(_recheck_in(asked))
-            if state.merge is asked:  # else it changed meanwhile (x, m): it's followed as is
-                await self._ask_again(pr, state, asked)
-        state.following = False
-        self.working_changed()  # its mark in the list stops spinning
+        try:
+            while settling(asked := state.merge):
+                await asyncio.sleep(_recheck_in(asked))
+                if state.merge is asked:  # else it changed meanwhile (x, m): followed as is
+                    await self._ask_again(pr, state, asked)
+        finally:
+            state.following = False  # whatever ended it: m can follow it again
+            self.working_changed()  # its mark in the list stops spinning
 
     async def _ask_again(self, pr: PR, state: SessionState, asked: MergeReadiness) -> None:
-        """Where the PR stands now, in its merge box. If GitHub can't say (it's closed, say),
-        the box goes: m asks again."""
+        """Where the PR stands now, in its merge box. If it's gone (closed, merged elsewhere),
+        so is the box: m asks again. If GitHub can't say just now, it's asked next time."""
         try:
             fresh = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
-        except PurrError:
+        except NotFound:
             fresh = None
+        except PurrError:
+            return
         if state.merge is not asked:
             return  # what GitHub said comes too late: m or x changed it meanwhile
         state.merge = fresh
