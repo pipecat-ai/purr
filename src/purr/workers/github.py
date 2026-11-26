@@ -92,6 +92,11 @@ def _changed(before: list[PR], plan: SyncPlan) -> set[PRRef]:
     }
 
 
+def _needs_words(body: str, what: str = "A comment") -> None:
+    if not body.strip():
+        raise Invalid(f"{what} needs some words")
+
+
 def _replied(old: PR, pr: PR) -> Change | None:
     """News of the replies ``pr`` has that ``old`` didn't, saying who replied."""
     new = [reply for reply in pr.replies if reply not in old.replies]
@@ -531,8 +536,7 @@ class GitHubWorker(BaseWorker):
 
     @handles(SaveComment)
     async def save_comment(self, request: SaveComment) -> Done:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         if request.comment_id is not None:
             await self._store.edit_comment(request.comment_id, request.body)
         else:
@@ -557,8 +561,7 @@ class GitHubWorker(BaseWorker):
 
     @handles(EditProposedComment)
     async def edit_proposed_comment(self, request: EditProposedComment) -> Done:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         action, comments = await self._proposed(request.pr, request.index)
         comments[request.index] = {**comments[request.index], "body": request.body}
         await self._propose(action, comments)
@@ -566,28 +569,19 @@ class GitHubWorker(BaseWorker):
 
     @handles(ReplyToThread)
     async def reply_to_thread(self, request: ReplyToThread) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A reply needs some words")
-        try:
-            url = await self._writer.reply_to_thread(request.thread_id, request.body)
-        except ActionError as e:
-            raise Failed(f"GitHub didn't take it: {e}") from e
-        return Posted(url=url)
+        _needs_words(request.body, "A reply")
+        return await self._posting(self._writer.reply_to_thread(request.thread_id, request.body))
 
     @handles(EditGitHubComment)
     async def edit_github_comment(self, request: EditGitHubComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
-        try:
-            url = await self._writer.edit_review_comment(request.comment_id, request.body)
-        except ActionError as e:
-            raise Failed(f"GitHub didn't take it: {e}") from e
-        return Posted(url=url)
+        _needs_words(request.body)
+        return await self._posting(
+            self._writer.edit_review_comment(request.comment_id, request.body)
+        )
 
     @handles(PostLineComment)
     async def post_line_comment(self, request: PostLineComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         comment = {"path": request.path, "line": request.line, "side": request.side,
                    "body": request.body}  # fmt: skip
         if request.start_line is not None and request.start_line != request.line:
@@ -598,14 +592,12 @@ class GitHubWorker(BaseWorker):
 
     @handles(PostPRComment)
     async def post_pr_comment(self, request: PostPRComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         return await self._posting(self._writer.post_pr_comment(request.pr, request.body))
 
     @handles(EditPRComment)
     async def edit_pr_comment(self, request: EditPRComment) -> Posted:
-        if not request.body.strip():
-            raise Invalid("A comment needs some words")
+        _needs_words(request.body)
         return await self._posting(self._writer.edit_pr_comment(request.comment_id, request.body))
 
     @handles(DeleteGitHubComment)
