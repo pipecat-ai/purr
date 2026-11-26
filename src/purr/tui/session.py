@@ -112,7 +112,8 @@ class SessionState:
     ask: PermissionRequest | None = None
     details_error: str | None = None  # why the description couldn't be loaded
     approved: str | None = None  # the commit you approved it at (your latest verdict)
-    merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
+    merge: MergeReadiness | None = None  # where it stands for merging, since you pressed m
+    following: bool = False  # GitHub's asked again till the merge box settles (PRKeys)
     head: str = ""  # the PR's head when last shown: a new one, and the merge box goes
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
     actions: list[PendingAction] = field(default_factory=list)  # what it proposes, as last read

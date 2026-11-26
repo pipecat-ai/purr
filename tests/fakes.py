@@ -37,6 +37,7 @@ class FakeGitHub:
         self.open: dict[str, list[RemotePR]] = {}
         self.details: dict = {}  # PRRef -> PRDetails
         self.merge_checks: dict = {}  # PRRef -> MergeCheck
+        self.merge_calls: list = []  # the PRs merge_check was asked about, in order
         self.details_calls: list[list] = []
         self.diffs: dict = {}  # PRRef -> unified diff
         self.diff_calls: list = []
@@ -100,6 +101,7 @@ class FakeGitHub:
 
     async def merge_check(self, ref):
         """From ``merge_checks``; set ``merge_gate`` to hold it until it's set."""
+        self.merge_calls.append(ref)
         if gate := getattr(self, "merge_gate", None):
             await gate.wait()
         return self.merge_checks.get(ref)

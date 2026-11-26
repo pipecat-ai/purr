@@ -7,6 +7,7 @@ import shutil
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 
 from textual import work
 
@@ -235,6 +236,7 @@ class PRKeys(PurrView):
             return
         if state.merge:
             state.merge = None  # the merge box goes: m asks again
+            self.working_changed()  # its mark stops spinning, if it waited on GitHub
             await self.session.refresh_status()
             return
         if state.progress:  # the agent's at it: the box waits, and so does x
@@ -279,11 +281,6 @@ class PRKeys(PurrView):
 
     # -- Merging -------------------------------------------------------------------
 
-    def _leave_merge(self, left: str | None, shown: str) -> None:
-        """Moving on from a PR drops where it stood for merging: m asks again next time."""
-        if left and left != shown and (state := self.purr_app.sessions.get(left)):
-            state.merge = None
-
     @work(group="keys")
     async def action_merge(self) -> None:
         """m: where the PR stands for merging; m again, with nothing blocking it: merge."""
@@ -306,31 +303,39 @@ class PRKeys(PurrView):
         if before and state.merge.blockers == before.blockers:
             self.notify(f"Still can't merge: {before.blockers[0]}", severity="warning")
 
-    @work(exclusive=True, group="merge-checks")
-    async def _follow_merge(self, pr: PR, state: SessionState) -> None:
+    def _follow_merge(self, pr: PR, state: SessionState) -> None:
         """While the merge box waits on GitHub (a check still running, or whether it can be
-        merged still being worked out), it stays current: GitHub's asked again until it
-        knows, or the box is gone."""
+        merged still being worked out), it stays current, shown or not: the app follows
+        it, so moving on (another PR, another repo, home) leaves it going, and the PR's
+        mark in the list spins meanwhile. One per PR: if one's going (x, then m again), it
+        follows the new box."""
+        if state.following or not settling(state.merge):
+            return
+        state.following = True
+        self.purr_app.run_worker(partial(self._keep_up, pr, state), group="merge-follow")
+
+    async def _keep_up(self, pr: PR, state: SessionState) -> None:
+        """GitHub's asked again until it knows, or the box goes (x, merged, new commits)."""
         while settling(asked := state.merge):
             await asyncio.sleep(_recheck_in(asked))
-            if self._merge_gone(pr, state, asked):
-                return
-            try:
-                fresh = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
-            except PurrError:
-                return  # what it said stays; m asks again
-            if self._merge_gone(pr, state, asked):
-                return  # what GitHub said comes too late
-            state.merge = fresh
-            await self.session.refresh_status()
+            if state.merge is asked:  # else it changed meanwhile (x, m): it's followed as is
+                await self._ask_again(pr, state, asked)
+        state.following = False
+        self.working_changed()  # its mark in the list stops spinning
 
-    def _merge_gone(self, pr: PR, state: SessionState, asked: MergeReadiness | None) -> bool:
-        """Whether the merge box went since ``asked``: closed, merged, m again, or you moved
-        on, which drops it (to another PR, another repo, home: m asks again next time)."""
-        here = self.display and self.session.pr is not None and self.session.pr.ref == pr.ref
-        if not here:
-            state.merge = None
-        return state.merge is not asked
+    async def _ask_again(self, pr: PR, state: SessionState, asked: MergeReadiness) -> None:
+        """Where the PR stands now, in its merge box. If GitHub can't say (it's closed, say),
+        the box goes: m asks again."""
+        try:
+            fresh = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))
+        except PurrError:
+            fresh = None
+        if state.merge is not asked:
+            return  # what GitHub said comes too late: m or x changed it meanwhile
+        state.merge = fresh
+        shown = self.session.pr
+        if shown and shown.ref == pr.ref:  # on another PR, only its mark in the list moves
+            await self.session.refresh_status()
 
     async def _run_ci(self, pr: PR, state: SessionState) -> None:
         """a on the merge box, with workflows GitHub holds: approve them, and follow them
@@ -384,8 +389,9 @@ class PRKeys(PurrView):
         if await self.purr_app.run_outside(claude, worktree, banner=banner) is None:
             self.app.push_screen(NoticeScreen(f"Claude Code didn't start ({cli}).", NO_CLAUDE_CODE))
             return
-        # The session may have grown in Claude Code: reload its transcript.
-        self.purr_app.sessions.pop(str(pr.ref), None)
+        # The session may have grown in Claude Code: reload its transcript. The rest stays
+        # (the merge box, and its follow-up: one per PR).
+        self.session.state(pr).entries = None
         self.session.pr = None
         await self.session.show(pr)
 
