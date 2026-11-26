@@ -489,6 +489,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - Lists are re-read from SQLite (milliseconds) when bus events say something changed, a burst coalesced into one redraw (50 ms). What comes from elsewhere is cached in memory: PR details, diffs, and transcripts.
 - Startup: the UI is usable in under a second, drawn from the last saved state. The first GitHub poll and resuming interrupted reviews happen in the background after that.
 - A PR's transcript loads (in a thread) on first open, opens at its end, and stays cached.
+- List rows are one line each and say so (`tui/rows.py`): Textual's list works out every row's height before drawing any, and a Rich table or rule has to be drawn to know it. With pipecat's 750 rows that took half a second each time the list was built (a repo opened, a poll's update) or changed width (the diff closed, `z`); now about a tenth of that.
 - Slow work (a poll, an agent turn) shows progress in place, and keys keep working meanwhile.
 
 ## Voice (planned)

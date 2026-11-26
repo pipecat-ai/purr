@@ -4,10 +4,8 @@ shows in one."""
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
 from rich.color import Color
-from rich.rule import Rule
 from rich.segment import Segment
 from rich.style import Style
-from rich.table import Table
 from rich.text import Text
 from textual._widget_navigation import find_next_enabled_no_wrap
 from textual.binding import Binding
@@ -19,6 +17,7 @@ from purr.models import PR, ActionKind, GHState, PRState
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import short_age
+from purr.tui.rows import Column, Line, Row
 from purr.tui.session import number_style
 from purr.tui.theme import palette
 
@@ -162,7 +161,7 @@ class PRList(GroupedList):
             return bool(self._repo.a_does())
         return True
 
-    def redraw_option(self, option_id: str, prompt: Table) -> None:
+    def redraw_option(self, option_id: str, prompt: Row) -> None:
         """A new look for a row of the same height."""
         try:
             option = self.get_option(option_id)
@@ -227,28 +226,21 @@ def _assignees(pr: PR) -> Text:
 GAP = 3  # spaces between the number, title, assignees and author
 
 
-def _row(*cells: Text | str, number_width: int = 5) -> Table:
+def _row(*cells: Text, number_width: int = 5) -> Row:
     """A PR list row: mark, number, title, assignees, author, opened (on the right edge).
 
-    ``number_width`` is the widest PR number's in the list (``#6934`` is 5).
+    ``number_width`` is the widest PR number's in the list (``#6934`` is 5). The title
+    takes what the others leave.
     """
     columns = [
-        {"width": 1},
-        {"width": number_width},
-        {"ratio": 1, "no_wrap": True, "overflow": "ellipsis"},
-        {"width": len("ASSIGNED"), "no_wrap": True, "overflow": "ellipsis"},
-        {"width": 14, "no_wrap": True, "overflow": "ellipsis"},
-        {"width": 6, "justify": "right"},
+        Column(1, 1),
+        Column(number_width, GAP),
+        Column(None, GAP),
+        Column(len("ASSIGNED"), GAP),
+        Column(14, 1),
+        Column(6, 1, "right"),  # the last gap keeps the date off the scrollbar
     ]
-    gaps = [1, GAP, GAP, GAP, 1, 1]  # after each; the last keeps the date off the scrollbar
-    grid = Table.grid(expand=True)
-    row: list[Text | str] = []
-    for column, cell, gap in zip(columns, cells, gaps, strict=True):
-        grid.add_column(**column)
-        grid.add_column(width=gap)
-        row += [cell, ""]
-    grid.add_row(*row)
-    return grid
+    return Row(cells, columns)
 
 
 def matches(pr: PR, search: str) -> bool:
@@ -257,7 +249,7 @@ def matches(pr: PR, search: str) -> bool:
     return all(word in text for word in search.lower().split())
 
 
-def pr_columns(number_width: int) -> Table:
+def pr_columns(number_width: int) -> Row:
     """The PR list's column headings."""
     headings = ("", "#", "TITLE", "ASSIGNED", "AUTHOR", "OPENED")
     return _row(*(Text(h, style="dim") for h in headings), number_width=number_width)
@@ -277,7 +269,7 @@ def separated(rows: list[Option]) -> list[Option]:
 
 
 def _line() -> Option:
-    return Option(Rule(style="dim"), disabled=True)
+    return Option(Line("─", "dim"), disabled=True)
 
 
 GROUP_GAP = 2  # empty lines between groups: after a group's last row, more than between rows
@@ -302,13 +294,13 @@ def heading(pr_group: PRGroup, *, folded: bool) -> Option:
     return Option(titled_line(title, pr_group.style), id=f"{HEADING}{pr_group.key}")
 
 
-def titled_line(title: Text, style: str) -> Rule:
+def titled_line(title: Text, style: str) -> Line:
     """A heading in a list: its title, then a double line in its colour to the edge (the
     rows between have a thin one)."""
-    return Rule(title, characters="═", align="left", style=style)
+    return Line("═", style, title)
 
 
-def pr_row(pr: PR, mark: Text, *, unread: bool, number_width: int, note: str = "") -> Table:
+def pr_row(pr: PR, mark: Text, *, unread: bool, number_width: int, note: str = "") -> Row:
     """A PR in the list: its mark, number, title (and ``note``, dim, after it: why it's up
     next), assignees, author and age."""
     # Something happened since you last looked: like unread mail.
