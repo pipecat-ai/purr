@@ -1618,6 +1618,8 @@ async def test_writing_instead_of_approving_says_so_in_the_thread(tmp_path):
 
 
 async def test_the_decision_box_shows_only_when_its_needed(tmp_path):
+    from purr.models import MergeCheck, PRRef
+
     app, github = make_app(tmp_path)
     agent = app.purr.agent
     github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
@@ -1646,11 +1648,18 @@ async def test_the_decision_box_shows_only_when_its_needed(tmp_path):
         await until(pilot, lambda: "No verdict yet." in decision(app))
 
         # While the agent works on what you wrote, it waits, and so does a: what the agent
-        # says may change it. Once it's done, what waits on you is back.
+        # says may change it. Once it's done, what waits on you is back. Where the PR
+        # stood for merging (m) goes for good: you moved on from it.
+        github.merge_checks[PRRef("pipecat-ai/pipecat", 1)] = MergeCheck(
+            head_sha="abc", base="main", method="merge", mergeable="CONFLICTING"
+        )
+        await pilot.press("m")
+        await until(pilot, lambda: "Can't merge #1 yet:" in decision(app))
         agent.gate = asyncio.Event()
         await pilot.press("enter", *"is the race real?", "enter")
         await until(pilot, lambda: len(agent.runs) == 2)
         assert decision(app) == "" and app.main.repo.a_does() == ""
+        assert app.main.repo.session.state().merge is None
         agent.gate.set()
         await until(pilot, lambda: "[a] request changes" in decision(app))
 
@@ -1780,7 +1789,7 @@ async def test_merging_with_m_after_approving(tmp_path):
 
 
 async def test_a_merge_it_cant_do_says_so_and_x_closes_it(tmp_path):
-    from purr.messages import ApproveAction
+    from purr.messages import ActionPending, ApproveAction
     from purr.models import ActionKind, MergeCheck, PRRef, PRState
 
     app, github = make_app(tmp_path)
@@ -1820,6 +1829,24 @@ async def test_a_merge_it_cant_do_says_so_and_x_closes_it(tmp_path):
         await pilot.press("x")
         await until(pilot, lambda: "Can't merge" not in decision(app))
         assert "You approved it." in decision(app)
+
+        # It goes too once it's moot: the agent proposes something (a push of the fix), or
+        # the PR has new commits. m asks again.
+        session = app.main.repo.session
+        await pilot.press("m")
+        await until(pilot, lambda: "Can't merge #7 yet:" in decision(app))
+        push = await store.add_pending_action(ref, kind=ActionKind.PUSH, description="Push it")
+        event = ActionPending(source="test", pr=str(ref), action_id=push.id, description="")
+        await app.bus.send_bus_message(event)
+        await until(pilot, lambda: "Push it?" in decision(app))
+        assert session.state().merge is None
+        await pilot.press("x")
+        await until(pilot, lambda: "Push it?" not in decision(app))
+        await pilot.press("m")
+        await until(pilot, lambda: "Can't merge #7 yet:" in decision(app))
+        await store.pushed(ref, "def")
+        await session.refresh_status()
+        assert "Can't merge" not in decision(app) and session.state().merge is None
 
 
 async def test_esc_zooms_out_first(tmp_path):

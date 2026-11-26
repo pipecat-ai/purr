@@ -546,7 +546,10 @@ class PurrApp(App):
 
     def _action_changed(self, event: ActionPending | ActionResolved | CommentsChanged) -> None:
         """A proposal waits for you, or was settled, or your comments changed: the decision
-        box changes, and the diff's comments."""
+        box changes, and the diff's comments. Where the PR stood for merging (m) is from
+        before what's proposed now: it goes, and m asks again."""
+        if isinstance(event, ActionPending):
+            self._session_state(event.pr).merge = None
         self.main.repo.diff_changed(event.pr)
         self._session_changed(event.pr)
 

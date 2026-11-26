@@ -130,6 +130,7 @@ class SessionState:
     details_error: str | None = None  # why the description couldn't be loaded
     approved: str | None = None  # the commit you approved it at (your latest verdict)
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
+    head: str = ""  # the PR's head when last shown: a new one, and the merge box goes
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
     proposal: ActionKind | None = None  # what the agent proposes (the oldest), as last read
     actions: list[PendingAction] = field(default_factory=list)  # all it proposes, as last read
@@ -961,6 +962,8 @@ class PRSession(Vertical):
         self.pr = pr
         state = self.state()
         state.approved, state.mine, state.actions = approved, mine, actions
+        if state.head != pr.head_sha:  # new commits: where it stood for merging is moot
+            state.merge, state.head = None, pr.head_sha
         state.proposal = actions[0].kind if actions else None
         state.verdict_due = _verdict_due(pr, review, actions)
         details = self.purr_app.details.get(pr)
@@ -1156,7 +1159,9 @@ class PRSession(Vertical):
             self.notify(str(e), severity="warning")
             return
         self._on_its_way()
-        self.state().quote = None
+        state = self.state()
+        state.quote = None
+        state.merge = None  # you moved on from where it stood for merging: m asks again
         event.prompt.clear()
         event.prompt.remember(text)
         ref = str(self.pr.ref)
