@@ -2366,6 +2366,57 @@ async def test_the_merge_box_follows_checks_still_running(tmp_path, monkeypatch)
         assert "Unit Tests" not in decision(app) and "merge anyway" not in decision(app)
 
 
+async def test_the_merge_box_waits_for_github_to_work_out_if_it_can_be_merged(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    from purr.messages import ApproveAction
+    from purr.models import ActionKind, Check, CheckState, MergeCheck, PRRef
+
+    monkeypatch.setattr("purr.tui.pr_keys.MERGEABLE_RECHECK", 0.05)
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    unknown = MergeCheck(
+        head_sha="abc",
+        base="main",
+        method="merge",
+        mergeable="UNKNOWN",
+        merge_state="UNKNOWN",
+        checks=(Check("Build", CheckState.PASSED),),
+        assignees=("me",),
+    )
+    github.merge_checks[ref] = unknown
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        approval = await app.purr.store.add_pending_action(
+            ref, kind=ActionKind.APPROVE, description="LGTM"
+        )
+        await app.bus.request(ApproveAction(action_id=approval.id))
+        await app.main.repo.session.refresh_status()
+        await until(pilot, lambda: "You approved it." in decision(app))
+
+        # GitHub hasn't worked it out yet: a spinner says so, below the checks, as on its page.
+        def spinner() -> str:
+            line = next((line for line in decision(app).splitlines() if "working out" in line), "")
+            return line.strip()[:1]
+
+        await pilot.press("m")
+        await until(pilot, lambda: spinner() != "")
+        shown = decision(app)
+        assert "✓ Build" in shown and "⚠" not in shown and "[m] merge anyway" in shown
+        first = spinner()
+        await until(pilot, lambda: spinner() not in ("", first))
+        # It has: the box says so, without pressing anything.
+        github.merge_checks[ref] = replace(unknown, mergeable="MERGEABLE", merge_state="CLEAN")
+        await until(pilot, lambda: "✓ 1 check passed" in decision(app))
+        assert "working out" not in decision(app) and "[m] merge   " in decision(app)
+
+
 async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
     from purr.messages import PRChanged
 

@@ -12,6 +12,7 @@ from textual import work
 
 from purr.claude import NO_CLAUDE_CODE, claude_cli
 from purr.jobs import PurrError
+from purr.merging import working_out
 from purr.messages import (
     REVIEW_WORKER,
     AnswerPermission,
@@ -28,10 +29,10 @@ from purr.messages import (
     PostComments,
     StopAgent,
 )
-from purr.models import PR, ActionKind, CheckState, PRRef, ReviewStatus
+from purr.models import PR, ActionKind, PRRef, ReviewStatus
 from purr.review.agent import claude_code_command
 from purr.tui.dialogs import AlwaysScreen, ConfirmScreen, NoticeScreen
-from purr.tui.session import PRSession, SessionState
+from purr.tui.session import PRSession, SessionState, settling
 from purr.tui.views import PurrView
 
 
@@ -63,13 +64,17 @@ def _shell() -> str:
 
 
 MERGE_RECHECK = 5.0  # seconds between asking GitHub again while checks run
+MERGEABLE_RECHECK = 2.0  # ... while it works out whether it can be merged (seconds)
+
+
+def _recheck_in(merge: MergeReadiness | None) -> float:
+    """How long before asking GitHub again: sooner while it works out whether the PR can be
+    merged, which takes seconds, than while checks run, which take minutes."""
+    return MERGEABLE_RECHECK if merge and working_out(merge.check) else MERGE_RECHECK
+
 
 # What the spinner says while a does what's proposed ("Posting" for the rest).
 _DOING = {ActionKind.PUSH: "Pushing", ActionKind.APPROVE: "Approving", ActionKind.MERGE: "Merging"}
-
-
-def _checks_running(merge: MergeReadiness | None) -> bool:
-    return bool(merge) and any(c.state == CheckState.RUNNING for c in merge.check.checks)
 
 
 class PRKeys(PurrView):
@@ -288,7 +293,7 @@ class PRKeys(PurrView):
             except PurrError as e:
                 state.merge = None
                 self.notify(str(e), severity="warning")
-        self._follow_checks(pr, state)
+        self._follow_merge(pr, state)
 
     async def _check_merge(self, pr: PR, state: SessionState) -> None:
         """Where it stands for merging, fresh from GitHub: if nothing changed, it says so."""
@@ -298,12 +303,13 @@ class PRKeys(PurrView):
             self.notify(f"Still can't merge: {before.blockers[0]}", severity="warning")
 
     @work(exclusive=True, group="merge-checks")
-    async def _follow_checks(self, pr: PR, state: SessionState) -> None:
-        """While the merge box says a check is still running, it stays current: GitHub's
-        asked again every MERGE_RECHECK seconds until none is, or the box is gone."""
-        while _checks_running(state.merge):
-            await asyncio.sleep(MERGE_RECHECK)
-            if not _checks_running(state.merge):
+    async def _follow_merge(self, pr: PR, state: SessionState) -> None:
+        """While the merge box waits on GitHub (a check still running, or whether it can be
+        merged still being worked out), it stays current: GitHub's asked again until it
+        knows, or the box is gone."""
+        while settling(state.merge):
+            await asyncio.sleep(_recheck_in(state.merge))
+            if not settling(state.merge):
                 return  # merged, or you moved on, meanwhile
             try:
                 state.merge = await self.purr_app.bus.request(CheckMerge(pr=pr.ref))

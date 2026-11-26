@@ -21,7 +21,7 @@ from textual.widgets import OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
 from purr.jobs import PurrError
-from purr.merging import check_concerns
+from purr.merging import WORKING_OUT, check_concerns, working_out
 from purr.messages import (
     ListRepoSkills,
     MergeReadiness,
@@ -611,7 +611,8 @@ _MERGE_VERBS = {"merge": "Merge", "squash": "Squash and merge", "rebase": "Rebas
 
 def render_merge(pr: PR, readiness: MergeReadiness, now: datetime | None = None) -> Text:
     """Where the PR stands for merging: what blocks it, or what you'd be merging past.
-    While CI runs, each check, as GitHub's page lists them (see _check_lines)."""
+    While it waits on GitHub (see settling), each check, as GitHub's page lists them, and
+    whether GitHub is still working out if it can be merged."""
     if readiness.blockers:
         text = Text(f"Can't merge #{pr.number} yet:", style="bold")
         for blocker in readiness.blockers:
@@ -624,9 +625,9 @@ def render_merge(pr: PR, readiness: MergeReadiness, now: datetime | None = None)
     text = Text(f"{verb} #{pr.number} into {check.base}?", style="bold")
     text.append(f"\n  ✓ you approved it at {check.head_sha[:7]}", style="green")
     concerns = readiness.concerns
-    if checks_running(check):
-        text.append_text(_check_lines(check.checks, now or datetime.now(UTC)))
-        listed = set(check_concerns(check))
+    if settling(readiness):
+        text.append_text(_waiting_lines(check, now or datetime.now(UTC)))
+        listed = {*check_concerns(check), WORKING_OUT}
         concerns = [concern for concern in concerns if concern not in listed]
     elif passed := sum(run.state == CheckState.PASSED for run in check.checks):
         text.append(f"\n  ✓ {passed} check{'s' if passed != 1 else ''} passed", style="green")
@@ -651,13 +652,36 @@ def checks_running(check: MergeCheck) -> bool:
     return any(run.state == CheckState.RUNNING for run in check.checks)
 
 
+def settling(merge: MergeReadiness | None) -> bool:
+    """The merge box waits on GitHub: nothing blocks the merge, but a check is still
+    running, or GitHub is still working out whether it can be merged. Its spinners turn,
+    and GitHub's asked again until it isn't (PRKeys._follow_merge)."""
+    if merge is None or merge.blockers:
+        return False
+    return checks_running(merge.check) or working_out(merge.check)
+
+
+def _spinner() -> str:
+    return SPINNER[int(time.monotonic() / SPIN_SECONDS) % len(SPINNER)]
+
+
+def _waiting_lines(check: MergeCheck, now: datetime) -> Text:
+    """The checks (see _check_lines), then a spinner while GitHub works out whether it
+    can be merged, as its page says whether there are conflicts below the checks."""
+    text = _check_lines(check.checks, now)
+    if working_out(check):
+        text.append(f"\n  {_spinner()} ", style="yellow")
+        text.append("GitHub is working out whether it can be merged")
+    return text
+
+
 def _check_lines(checks: Sequence[Check], now: datetime) -> Text:
     """Each check while CI runs, in GitHub's order: a spinner on those still running, a
     mark on the rest, and how long each took (or has, so far)."""
     listed = list(checks)
     if len(listed) > MAX_CHECKS_LISTED:
         listed = [run for run in checks if run.state in (CheckState.RUNNING, CheckState.FAILED)]
-    spinner = SPINNER[int(time.monotonic() / SPIN_SECONDS) % len(SPINNER)]
+    spinner = _spinner()
     text = Text()
     for run in listed:
         running = run.state == CheckState.RUNNING
@@ -748,7 +772,7 @@ class PRSession(Vertical):
         self.query_one("#pr-decision").display = False
         self.query_one("#suggestions").display = False
         self.query_one(PromptArea).completer = self
-        # While the merge box lists checks still running, their spinners turn.
+        # While the merge box waits on GitHub (see settling), its spinners turn.
         self._spinning = self.set_interval(SPIN_SECONDS, self._show_decision, pause=True)
         self._suggested: list[Command] = []
         self._drawn: PRRef | None = None  # the PR whose transcript is on screen
@@ -1040,8 +1064,7 @@ class PRSession(Vertical):
             box.update(decision)
         box.display = decision is not None
         merge = state.merge if decision is not None and not state.ask else None
-        spinning = bool(merge and not merge.blockers and checks_running(merge.check))
-        self._spinning.resume() if spinning else self._spinning.pause()
+        self._spinning.resume() if settling(merge) else self._spinning.pause()
 
     def show_doing(self) -> None:
         """What you asked for on the PR shown got going, or is done: the spinner says so at
