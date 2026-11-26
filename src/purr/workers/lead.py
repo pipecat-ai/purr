@@ -288,9 +288,7 @@ class LeadWorker(BaseWorker):
         except Exception as e:
             logger.warning(f"The lead couldn't plan {len(prs)} reviews: {e}")
             planned, reason = {}, f"the lead couldn't plan it ({e})"
-        plans = {
-            pr.ref: planned.get(pr.ref) or default_plan(reason, requested=requested) for pr in prs
-        }
+        plans = {pr.ref: planned.get(pr.ref) or default_plan(reason) for pr in prs}
         if requested:  # you're waiting for it
             plans = {ref: replace(plan, priority=Priority.HIGH) for ref, plan in plans.items()}
         return plans

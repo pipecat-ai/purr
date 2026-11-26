@@ -887,8 +887,13 @@ async def test_reviews_go_ahead_when_the_lead_cant_plan(make):
     await s.client.send_bus_message(Synced(source="github"))
     await eventually(lambda: s.client.of(ReviewFinished))
     plan = s.agent.runs[0]["plan"]
-    assert (plan.depth, plan.by) == ("full", "default")
+    assert (plan.depth, plan.priority, plan.by) == ("full", "normal", "default")
     assert "offline" in plan.why
+
+    # One you ask for is still high priority: you're waiting for it.
+    await s.client.request(PlanReviews(prs=[REF]))
+    await eventually(lambda: len(s.agent.runs) == 2)
+    assert s.agent.runs[1]["plan"].priority == "high"
 
 
 async def test_quick_reviews_skip_the_repo_review_skill(make, tmp_path):
