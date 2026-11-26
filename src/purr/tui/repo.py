@@ -550,11 +550,9 @@ class RepoView(PRKeys):
             return
         self._marked ^= {str(pr.ref)}
         self.refresh_bindings()  # esc: unmark, while some are
-        option_list = self.query_one(PRList)
-        index = option_list.highlighted
-        option_list.replace_option_prompt(str(pr.ref), self._prompt(pr))
-        if index is not None and index + 1 < option_list.option_count:
-            option_list.action_cursor_down()
+        prs = self.query_one(PRList)
+        prs.redraw_option(str(pr.ref), self._prompt(pr))
+        prs.action_cursor_down()  # it stops at the last PR
 
     # -- The diff, in the list's place --------------------------------------------------
 
