@@ -526,7 +526,6 @@ class PRSession(Vertical):
             log.write(Text("Say /review, /review quick or /review full.", style="yellow"))
             return
         depth = Depth(args) if args else None
-        self.purr_app.main.repo.zoom_in_on_pr()  # to follow it, as r does
         errors = (await self.purr_app.bus.request(PlanReviews(prs=[ref], depth=depth))).errors
         for error in errors.values():
             log.write(Text(error, style="yellow"))
