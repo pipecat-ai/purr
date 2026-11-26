@@ -365,6 +365,13 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await until(pilot, lambda: log.scroll_y < bottom)
         await pilot.press("ctrl+v")
         await until(pilot, lambda: log.scroll_y == bottom)
+        # The mouse wheel: a line at a time.
+        from textual.events import MouseScrollDown, MouseScrollUp
+
+        log.post_message(MouseScrollUp(log, 1, 1, 0, -1, 0, False, False, False))
+        await until(pilot, lambda: log.scroll_y == bottom - 1)
+        log.post_message(MouseScrollDown(log, 1, 1, 0, 1, 0, False, False, False))
+        await until(pilot, lambda: log.scroll_y == bottom)
         prompt.focus()
 
         # The footer has the keys for where you are: typing, the prompt's...
