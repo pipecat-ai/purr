@@ -126,6 +126,7 @@ class PurrApp(App):
 
     def __init__(self, purr: Purr, *, cwd: Path | None = None):
         super().__init__()
+        self.scroll_sensitivity_y = 1.0  # the wheel moves a line at a time (Textual's: 2)
         self._use_theme(purr.config.theme)
         self.purr = purr
         self.bus = UIWorker(self)
