@@ -933,8 +933,9 @@ class Store:
     async def record_activity(
         self, kind: str, *, pr: PRRef | None = None, data: dict | None = None
     ) -> Activity:
-        cursor = await self._db.execute(
-            "INSERT INTO activity (at, kind, repo, number, data) VALUES (?, ?, ?, ?, ?)",
+        row = await self._fetchone(
+            "INSERT INTO activity (at, kind, repo, number, data) VALUES (?, ?, ?, ?, ?)"
+            " RETURNING *",
             (
                 _now(),
                 kind,
@@ -944,7 +945,6 @@ class Store:
             ),
         )
         await self._db.commit()
-        row = await self._fetchone("SELECT * FROM activity WHERE id = ?", (cursor.lastrowid,))
         return _activity(row)
 
     async def activity(
@@ -1322,18 +1322,15 @@ class Store:
     ) -> DraftComment:
         """A new inline comment of yours, on ``line`` of ``path`` at ``head_sha`` (or from
         ``start_line`` to it)."""
-        cursor = await self._db.execute(
+        pr_id = await self._pr_id(ref)
+        row = await self._fetchone(
             "INSERT INTO draft_comments"
             " (pr_id, path, line, side, body, head_sha, created_at, start_line, start_side)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (await self._pr_id(ref), path, line, side, body, head_sha, _now(), start_line,
-             start_side),
-        )  # fmt: skip
-        await self._db.commit()
-        comment_id = cursor.lastrowid or 0
-        return DraftComment(
-            comment_id, path, line, side, body, head_sha, start_line, start_side, _now()
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+            (pr_id, path, line, side, body, head_sha, _now(), start_line, start_side),
         )
+        await self._db.commit()
+        return _draft(row)
 
     async def edit_comment(self, comment_id: int, body: str) -> None:
         sql = "UPDATE draft_comments SET body = ? WHERE id = ?"
