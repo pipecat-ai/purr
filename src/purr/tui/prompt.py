@@ -30,6 +30,7 @@ from textual.widgets.option_list import Option
 
 from purr.models import PRRef
 from purr.tui.editing import EmacsArea
+from purr.tui.switcher import short_name
 
 NEWLINE_KEYS = ("ctrl+j", "shift+enter", "alt+enter")
 PLACEHOLDER = "Ask the agent about this PR…  (/ commands, ctrl+j: new line)"
@@ -171,10 +172,6 @@ def _one_line(text: str) -> str:
     return " ⏎ ".join(line for line in text.splitlines() if line.strip())
 
 
-def short_ref(ref: PRRef) -> str:
-    return f"{ref.repo.split('/')[-1]}#{ref.number}"
-
-
 class HistorySearchScreen(ModalScreen[str | None]):
     """ctrl+r: find something you asked before, on any PR."""
 
@@ -211,7 +208,7 @@ class HistorySearchScreen(ModalScreen[str | None]):
     def _show(self, query: str) -> None:
         words = query.lower().split()
         options = [
-            Option(Text.assemble((f"{short_ref(ref):<18}", "dim"), _one_line(text)), id=str(i))
+            Option(Text.assemble((f"{short_name(ref):<18}", "dim"), _one_line(text)), id=str(i))
             for i, (ref, text) in enumerate(self._prompts)
             if all(word in text.lower() for word in words)
         ]

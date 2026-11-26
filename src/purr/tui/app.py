@@ -92,6 +92,11 @@ def _claude_settings() -> Path:
     return CLAUDE_SETTINGS
 
 
+def _at_rest(state: SessionState) -> None:
+    """The agent's not at work on the PR: nothing under way, nothing in the background."""
+    state.progress, state.waiting, state.since, state.background = None, False, None, 0
+
+
 class PurrApp(App):
     """Purr's TUI.
 
@@ -501,8 +506,7 @@ class PurrApp(App):
     def _review_started(self, event: ReviewStarted) -> None:
         state = self._session_state(event.pr)
         state.entries, state.ask = [], None  # a new session
-        state.progress, state.waiting, state.since = None, False, None
-        state.background = 0
+        _at_rest(state)
         self._session_changed(event.pr, new=True)
 
     def _review_progress(self, event: ReviewProgress) -> None:
@@ -515,11 +519,7 @@ class PurrApp(App):
             state.since = time.monotonic()  # the agent's working: the spinner's clock
         self._session_changed(event.pr)
 
-    def _review_finished(self, event: ReviewFinished) -> None:
-        self._tell(event)
-        self._review_ended(event.pr)
-
-    def _review_failed(self, event: ReviewFailed) -> None:
+    def _review_done(self, event: ReviewFinished | ReviewFailed) -> None:
         self._tell(event)
         self._review_ended(event.pr)
 
@@ -532,9 +532,7 @@ class PurrApp(App):
             self._session_changed(event.pr, new=True)
 
     def _review_ended(self, pr: str) -> None:
-        state = self._session_state(pr)
-        state.progress, state.waiting, state.since = None, False, None
-        state.background = 0
+        _at_rest(self._session_state(pr))
         self.main.repo.commits_may_have_changed(pr)
         self._session_changed(pr)
 
@@ -581,8 +579,8 @@ class PurrApp(App):
         SessionMessage: _session_message,
         ReviewStarted: _review_started,
         ReviewProgress: _review_progress,
-        ReviewFinished: _review_finished,
-        ReviewFailed: _review_failed,
+        ReviewFinished: _review_done,
+        ReviewFailed: _review_done,
         ReviewStopped: _review_stopped,
         PermissionRequest: _permission_asked,
         PermissionResolved: _permission_answered,
