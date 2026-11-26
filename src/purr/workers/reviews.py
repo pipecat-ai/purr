@@ -133,6 +133,17 @@ class _Run:
         return self.pr.ref
 
 
+@dataclass
+class _Ask:
+    """A permission request from a PR's agent, for you (or your writing) to answer."""
+
+    pr: PRRef
+    rule: str | None  # the rule "always" would keep
+    answer: asyncio.Future[PermissionAnswer] = field(
+        default_factory=lambda: asyncio.get_running_loop().create_future()
+    )
+
+
 class ReviewWorker(BaseWorker):
     """Runs reviews and follow-up turns, and records what they produce.
 
@@ -200,11 +211,9 @@ class ReviewWorker(BaseWorker):
         self._runs: dict[PRRef, _Run] = {}  # what's running, by PR
         self._start_lock = asyncio.Lock()
         self._startup_task: asyncio.Task | None = None
-        self._asks: dict[str, asyncio.Future[PermissionAnswer]] = {}
-        self._ask_prs: dict[str, PRRef] = {}  # request id -> the PR whose agent is asking
+        self._asks: dict[str, _Ask] = {}  # by request id
         # Stopped while the lead planned them: until when their start is refused.
         self._stop_ahead: dict[PRRef, float] = {}
-        self._ask_rules: dict[str, str] = {}  # request id -> the rule "always" would keep
         self._slots = Slots(max_reviews)
         # Per repo (lowercase): its review skill question, and until when reviews wait for it.
         self._skill_asks: dict[str, tuple[asyncio.Future[str | None], float]] = {}
@@ -330,13 +339,12 @@ class ReviewWorker(BaseWorker):
 
     @handles(AnswerPermission)
     async def answer_permission(self, request: AnswerPermission) -> PermissionAnswered:
-        future = self._asks.get(request.request_id)
-        if future is None or future.done():
+        ask = self._asks.get(request.request_id)
+        if ask is None or ask.answer.done():
             raise NotFound("Nothing is waiting for that")
-        rule = self._ask_rules.get(request.request_id)
-        remember = request.remember if request.allow and rule else None
-        future.set_result(PermissionAnswer(allowed=request.allow, remember=remember))
-        return PermissionAnswered(rule=rule if remember else None)
+        remember = request.remember if request.allow and ask.rule else None
+        ask.answer.set_result(PermissionAnswer(allowed=request.allow, remember=remember))
+        return PermissionAnswered(rule=ask.rule if remember else None)
 
     @handles(SetModel)
     async def set_model(self, request: SetModel) -> Done:
@@ -480,10 +488,9 @@ class ReviewWorker(BaseWorker):
 
     def _answer_instead(self, ref: PRRef, text: str) -> bool:
         """No to what the PR's agent asks to do, with what to do instead; whether it asked."""
-        for request_id, asking in self._ask_prs.items():
-            future = self._asks.get(request_id)
-            if asking == ref and future is not None and not future.done():
-                future.set_result(PermissionAnswer(allowed=False, instead=text))
+        for ask in self._asks.values():
+            if ask.pr == ref and not ask.answer.done():
+                ask.answer.set_result(PermissionAnswer(allowed=False, instead=text))
                 return True
         return False
 
@@ -923,7 +930,8 @@ class ReviewWorker(BaseWorker):
         # Claude Code itself gives up after about ten minutes, and after that
         # the session refuses everything, so Purr answers first.
         description = describe_tool_use(tool, tool_input)
-        request_id, future = self._open_ask(run.ref, rules)
+        request_id = uuid.uuid4().hex
+        self._asks[request_id] = ask = _Ask(run.ref, rule=", ".join(rules) or None)
         await self._store.set_pr_state(run.ref, PRState.NEEDS_YOU)
         asked = {"tool": tool, "input": tool_input, "description": description, "reason": reason}
         await self._store.add_message(
@@ -941,34 +949,18 @@ class ReviewWorker(BaseWorker):
             )
         )
         await self.send_bus_message(PRListUpdated(source=self.name))
-        answer = await self._wait_for_answer(request_id, future)
+        answer = await self._wait_for_answer(request_id, ask)
         await self._answered(run, request_id, description, answer)
         return answer
 
-    def _open_ask(
-        self, ref: PRRef, rules: list[str]
-    ) -> tuple[str, asyncio.Future[PermissionAnswer]]:
-        """A new permission request from the PR's agent, for you (or your writing) to answer."""
-        request_id = uuid.uuid4().hex
-        future: asyncio.Future[PermissionAnswer] = asyncio.get_running_loop().create_future()
-        self._asks[request_id] = future
-        self._ask_prs[request_id] = ref
-        if rules:
-            self._ask_rules[request_id] = ", ".join(rules)
-        return request_id, future
-
-    async def _wait_for_answer(
-        self, request_id: str, future: asyncio.Future[PermissionAnswer]
-    ) -> PermissionAnswer:
+    async def _wait_for_answer(self, request_id: str, ask: _Ask) -> PermissionAnswer:
         """Your answer to a permission request; no answer if it doesn't come in time."""
         try:
-            return await asyncio.wait_for(asyncio.shield(future), self._permission_wait)
+            return await asyncio.wait_for(asyncio.shield(ask.answer), self._permission_wait)
         except TimeoutError:
             return PermissionAnswer(allowed=None)
         finally:
             self._asks.pop(request_id, None)
-            self._ask_prs.pop(request_id, None)
-            self._ask_rules.pop(request_id, None)
 
     async def _answered(
         self, run: _Run, request_id: str, description: str, answer: PermissionAnswer
