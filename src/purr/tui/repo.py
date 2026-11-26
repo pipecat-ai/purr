@@ -115,7 +115,7 @@ class RepoView(PRKeys):
         self._spinner = self.set_interval(FRAME_SECONDS, self._spin, pause=True)
 
     def focus_main(self) -> None:
-        self.query_one(OptionList).focus()
+        self.query_one(PRList).focus()
 
     def _key(self) -> tuple:
         return (self.repo, self.purr_app.data_version)
@@ -158,7 +158,7 @@ class RepoView(PRKeys):
         else:
             options = []
 
-        option_list = self.query_one(OptionList)
+        option_list = self.query_one(PRList)
         # Where you'd scrolled to (the wheel, say), for this repo's list drawn again.
         scrolled = option_list.scroll_offset.y if self._listed == self.repo else None
         self._listed = self.repo
@@ -292,7 +292,7 @@ class RepoView(PRKeys):
         return outcome_mark(outcome) if outcome else Text(ICONS[self._group(pr)])
 
     def selected_pr(self) -> PR | None:
-        option = self.query_one(OptionList).highlighted_option
+        option = self.query_one(PRList).highlighted_option
         return self._prs.get(option.id) if option and option.id else None
 
     def select(self, pr: str, *, repo: str) -> None:
@@ -301,7 +301,7 @@ class RepoView(PRKeys):
         if repo != self.repo:
             return
         if pr in self._prs:
-            option_list = self.query_one(OptionList)
+            option_list = self.query_one(PRList)
             option_list.highlighted = option_list.get_option_index(pr)
         elif listed := next((p for p in self._all if str(p.ref) == pr), None):
             self._folded.get(repo, set()).discard(self._group(listed))  # its group opens
@@ -454,7 +454,7 @@ class RepoView(PRKeys):
         """Back to the list. The search stays, shown above it, until you clear it."""
         self._set_search(self._search.strip())
         self.query_one("#search").display = bool(self._search)
-        self.query_one(OptionList).focus()
+        self.query_one(PRList).focus()
 
     def action_search(self) -> None:
         search = self.query_one("#search", Input)
@@ -550,7 +550,7 @@ class RepoView(PRKeys):
             return
         self._marked ^= {str(pr.ref)}
         self.refresh_bindings()  # esc: unmark, while some are
-        option_list = self.query_one(OptionList)
+        option_list = self.query_one(PRList)
         index = option_list.highlighted
         option_list.replace_option_prompt(str(pr.ref), self._prompt(pr))
         if index is not None and index + 1 < option_list.option_count:
