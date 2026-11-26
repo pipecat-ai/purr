@@ -169,6 +169,13 @@ def moved_reviewed(current: Iterable[PR], snapshot: Snapshot) -> list[PRRef]:
     ]
 
 
+def not_open(current: Iterable[PR], snapshot: Snapshot) -> list[PRRef]:
+    """PRs the searches list that aren't among the store's open ones: new ones, or ones the
+    store has as merged or closed (see ``plan_sync``'s ``closed``)."""
+    open_refs = {pr.ref for pr in current}
+    return [ref for ref in _seen(snapshot) if ref not in open_refs]
+
+
 def plan_sync(
     current: Iterable[PR],
     snapshot: Snapshot,
@@ -176,6 +183,7 @@ def plan_sync(
     watched: Iterable[str],
     first_sync: Iterable[str] = (),
     statuses: Mapping[PRRef, PRStatus] | None = None,
+    closed: Iterable[PRRef] = (),
 ) -> SyncPlan:
     """Work out how the store should change after a poll.
 
@@ -185,15 +193,21 @@ def plan_sync(
         watched: Watched repo names.
         first_sync: Watched repos never synced before; their pool isn't reported as new.
         statuses: GitHub status of the PRs ``missing_reviewed()`` and
-            ``moved_reviewed()`` returned.
+            ``moved_reviewed()`` returned, and of those in ``closed``.
+        closed: PRs the searches list that the store has as merged or closed. GitHub's
+            search lags: it can list a PR as open for a while after it's merged (by you,
+            a moment ago). Only its status says it's open again (reopened).
     """
     watched, first_sync, statuses = set(watched), set(first_sync), statuses or {}
+    closed = set(closed)
     plan = SyncPlan()
     current_by_ref = {pr.ref: pr for pr in current}
     seen = _seen(snapshot)
     for ref, new in seen.items():
         old = current_by_ref.get(ref)
-        if old is None:
+        if ref in closed:
+            _plan_reopened(plan, new, statuses.get(ref))
+        elif old is None:
             plan.upserts.append(new)
             change = _new_pr_change(new, ref.repo in first_sync, ref.repo in watched)
             plan.report(ref, change, new.title)
@@ -204,6 +218,13 @@ def plan_sync(
         if ref not in seen and _covered(ref, snapshot, watched):
             _plan_gone(plan, old, statuses.get(ref), me=me, watched=ref.repo in watched)
     return plan
+
+
+def _plan_reopened(plan: SyncPlan, new: PR, status: PRStatus | None) -> None:
+    """A PR the store has as merged or closed, listed again: open again only if its status
+    says so (reopened), its head as the status has it. Not news."""
+    if status is not None and status.state == GHState.OPEN:
+        plan.upserts.append(replace(new, head_sha=status.head_sha))
 
 
 def _plan_found_again(
