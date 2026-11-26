@@ -308,6 +308,16 @@ class RepoView(PRKeys):
         option = self.query_one(PRList).highlighted_option
         return self._prs.get(option.id) if option and option.id else None
 
+    def next_for_you(self, done: PR) -> tuple[PR, str] | None:
+        """What's next once you're done with ``done`` (merged it, requested changes): the
+        first PR to merge, else the first that needs you, as listed; and which it is."""
+        shown = [pr for pr in self._all if pr.ref != done.ref and matches(pr, self._search)]
+        groups = {group.key: group.prs for group in self._groups(shown)}
+        for key, why in ((TO_MERGE, "to merge"), (PRState.NEEDS_YOU, "needs you")):
+            if groups.get(key):
+                return groups[key][0], why
+        return None
+
     def select(self, pr: str, *, repo: str) -> None:
         """Select a PR, now if its repo is showing, or when it next is."""
         self._selected[repo] = pr
