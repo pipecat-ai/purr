@@ -277,7 +277,6 @@ class AgentResult:
     error: str | None = None
     cost_usd: float | None = None
     turns: int = 0
-    denials: list[str] = field(default_factory=list)
     duration_ms: int | None = None
     api_duration_ms: int | None = None
     model: str | None = None
@@ -716,7 +715,6 @@ def _agent_result(message: ResultMessage) -> AgentResult:
         error=message.result if message.is_error else None,
         cost_usd=message.total_cost_usd,
         turns=message.num_turns,
-        denials=[json.dumps(denial, default=str) for denial in message.permission_denials or []],
         duration_ms=message.duration_ms,
         api_duration_ms=message.duration_api_ms,
         model=_models(message),
