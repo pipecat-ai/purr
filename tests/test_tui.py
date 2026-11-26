@@ -2417,6 +2417,61 @@ async def test_the_merge_box_waits_for_github_to_work_out_if_it_can_be_merged(
         assert "working out" not in decision(app) and "[m] merge   " in decision(app)
 
 
+async def test_the_merge_box_runs_ci_that_waits_for_approval(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from purr.messages import ApproveAction
+    from purr.models import ActionKind, Check, CheckState, MergeCheck, PRRef, WaitingRun
+
+    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    # A first-time contributor's PR, from a fork: only readthedocs ran.
+    github.merge_checks[ref] = MergeCheck(
+        head_sha="abc",
+        base="main",
+        method="merge",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        checks=(Check("docs/readthedocs", CheckState.PASSED),),
+        assignees=("me",),
+        waiting=(WaitingRun(11, "tests"), WaitingRun(12, "build")),
+    )
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        approval = await app.purr.store.add_pending_action(
+            ref, kind=ActionKind.APPROVE, description="LGTM"
+        )
+        await app.bus.request(ApproveAction(action_id=approval.id))
+        await app.main.repo.session.refresh_status()
+        await until(pilot, lambda: "You approved it." in decision(app))
+
+        # One check passed, but CI hasn't run: the box says so, and a runs it.
+        await pilot.press("m")
+        await until(pilot, lambda: "CI hasn't run" in decision(app))
+        shown = decision(app)
+        assert "⚠ CI hasn't run: 2 workflows wait for approval (tests, build)" in shown
+        assert "[a] approve and run CI   [m] merge anyway" in shown
+        assert app.main.repo.a_does() == "Run CI"
+        await pilot.press("a")
+        writer = app.purr._writer
+        await until(pilot, lambda: len(writer.approved_runs) == 2)
+        assert sorted(run for _, run in writer.approved_runs) == [11, 12]
+        # They run: the box follows them, as any check running, and a has nothing to run.
+        await until(pilot, lambda: "CI hasn't run" not in decision(app))
+        shown = decision(app)
+        assert "tests\n" in shown and "build\n" in shown and "[a]" not in shown
+        assert app.main.repo.a_does() == ""
+        check = github.merge_checks[ref]
+        done = tuple(replace(run, state=CheckState.PASSED) for run in check.checks)
+        github.merge_checks[ref] = replace(check, checks=done)
+        await until(pilot, lambda: "✓ 3 checks passed" in decision(app))
+
+
 async def test_replies_and_requests_are_news_as_they_happen(tmp_path):
     from purr.messages import PRChanged
 

@@ -327,6 +327,7 @@ class FakeWriter:
         self.pr_comments: list[tuple] = []  # (ref, body)
         self.pr_edits: list[tuple] = []  # (comment_id, body)
         self.deleted: list[tuple] = []  # (comment_id, on_line)
+        self.approved_runs: list[tuple] = []  # (repo, run_id)
 
     async def submit_review(self, ref, *, event, body, comments, commit_id):
         from purr.actions import ActionError
@@ -357,6 +358,24 @@ class FakeWriter:
         if self.fail_with:
             raise ActionError(self.fail_with.pop(0))
         self.merges.append((ref, method, sha))
+
+    async def approve_run(self, repo, run_id):
+        """As GitHub does: the run starts, so the merge check has it running."""
+        from dataclasses import replace
+
+        from purr.actions import ActionError
+        from purr.models import Check, CheckState
+
+        if self.fail_with:
+            raise ActionError(self.fail_with.pop(0))
+        self.approved_runs.append((repo, run_id))
+        checks = self.github.merge_checks if self.github else {}
+        for ref, check in list(checks.items()):
+            run = next((run for run in check.waiting if run.id == run_id), None)
+            if ref.repo == repo and run:
+                waiting = tuple(other for other in check.waiting if other != run)
+                started = (*check.checks, Check(run.workflow, CheckState.RUNNING))
+                checks[ref] = replace(check, waiting=waiting, checks=started)
 
     async def post_line_comment(self, ref, comment, *, commit_id):
         self._failing()

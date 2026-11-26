@@ -28,6 +28,7 @@ from purr.models import (
     PRRef,
     Reply,
     Verdict,
+    WaitingRun,
 )
 
 
@@ -292,6 +293,24 @@ async def test_pr_details():
     }
 
 
+def test_the_header_says_when_ci_waits_for_approval():
+    from purr.github import _ci
+
+    def head(state, *suites):
+        return {"statusCheckRollup": {"state": state}, "checkSuites": {"nodes": list(suites)}}
+
+    waiting = {"conclusion": "ACTION_REQUIRED", "workflowRun": {"databaseId": 1}}
+    queued = {"status": "QUEUED", "checkRuns": {"totalCount": 0}}
+    starting = {**queued, "workflowRun": {"databaseId": 2}}
+    elsewhere = {**queued, "workflowRun": None}
+    # readthedocs passed, but the workflows haven't run: CI isn't passing.
+    assert _ci(head("SUCCESS", waiting)) == "ACTION_REQUIRED"
+    assert _ci(head("SUCCESS", starting)) == "PENDING"  # no job of it yet, but it runs
+    assert _ci(head(None, starting)) == "PENDING"
+    assert _ci(head("FAILURE", starting)) == "FAILURE"  # a failure says more
+    assert _ci(head("SUCCESS", elsewhere)) == "SUCCESS"  # another app's, queued forever
+
+
 async def test_pr_diff(tmp_path):
     gh = tmp_path / "gh"
     gh.write_text(
@@ -458,6 +477,25 @@ async def test_merge_check():
                 {"context": "docs/readthedocs", "state": "ERROR", "createdAt": "x"},
                 {"context": "deploy", "state": "PENDING", "createdAt": "2026-11-25T10:00:09Z"},
             ]
+
+            # The head's workflows: one waits for approval, one's starting (no check run
+            # yet), one ran (its check runs are in the rollup); another app's suite, queued
+            # forever, isn't one.
+            def suite(status, conclusion, runs, run_id=None, name=""):
+                run = {"databaseId": run_id, "workflow": {"name": name}} if run_id else None
+                return {
+                    "status": status,
+                    "conclusion": conclusion,
+                    "checkRuns": {"totalCount": runs},
+                    "workflowRun": run,
+                }
+
+            suites = [
+                suite("COMPLETED", "ACTION_REQUIRED", 0, 11, "tests"),
+                suite("QUEUED", None, 0, 12, "coverage"),
+                suite("COMPLETED", "SUCCESS", 2, 13, "build"),
+                suite("QUEUED", None, 0),
+            ]
             pr = {
                 "headRefOid": "abc",
                 "baseRefName": "main",
@@ -469,7 +507,14 @@ async def test_merge_check():
                     "nodes": [{"author": {"login": "me"}, "state": "APPROVED"}]
                 },
                 "commits": {
-                    "nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}}]
+                    "nodes": [
+                        {
+                            "commit": {
+                                "statusCheckRollup": {"contexts": {"nodes": contexts}},
+                                "checkSuites": {"nodes": suites},
+                            }
+                        }
+                    ]
                 },
             }
             return {"data": {"t0": {"pullRequest": pr}}}
@@ -493,7 +538,9 @@ async def test_merge_check():
             Check("Build", CheckState.FAILED, required=True),
             Check("docs/readthedocs", CheckState.FAILED),  # a status: when it said so last
             Check("deploy", CheckState.RUNNING, started="2026-11-25T10:00:09Z"),
+            Check("coverage", CheckState.RUNNING),  # starting: GitHub has no job of it yet
         ),
         assignees=("me", "alice"),
         reviews=(("me", "APPROVED"),),
+        waiting=(WaitingRun(11, "tests"),),
     )

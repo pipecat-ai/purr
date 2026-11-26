@@ -151,11 +151,14 @@ class SessionState:
 
     def a_does(self) -> str:
         """What a does now, as its key says it ("" for nothing): allow what the agent asks,
-        do what it proposes, or post your comments."""
+        run the CI the merge box says GitHub holds, do what the agent proposes, or post
+        your comments."""
         if self.ask:
             return "Allow once"
         if self.doing or self.progress:  # being done, or the agent's still at it: wait
             return ""
+        if can_run_ci(self.merge):
+            return "Run CI"
         if self.proposal:
             return A_DOES[self.proposal]
         if self.mine:
@@ -633,7 +636,10 @@ def render_merge(pr: PR, readiness: MergeReadiness, now: datetime | None = None)
         text.append(f"\n  ✓ {passed} check{'s' if passed != 1 else ''} passed", style="green")
     for concern in concerns:
         text.append(f"\n  ⚠ {concern}", style="yellow")
-    text.append("\n[m] merge anyway" if readiness.concerns else "\n[m] merge", style="bold")
+    text.append("\n")
+    if check.waiting:  # a: GitHub's "Approve and run workflows"
+        text.append("[a] approve and run CI   ", style="bold")
+    text.append("[m] merge anyway" if readiness.concerns else "[m] merge", style="bold")
     text.append("   [x] leave it", style="dim")
     return text
 
@@ -659,6 +665,12 @@ def settling(merge: MergeReadiness | None) -> bool:
     if merge is None or merge.blockers:
         return False
     return checks_running(merge.check) or working_out(merge.check)
+
+
+def can_run_ci(merge: MergeReadiness | None) -> bool:
+    """The merge box offers to approve the workflows GitHub holds (a): nothing blocks the
+    merge, and some wait."""
+    return bool(merge and not merge.blockers and merge.check.waiting)
 
 
 def _spinner() -> str:

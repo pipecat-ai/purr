@@ -48,6 +48,8 @@ class GitHubWriter(Protocol):
 
     async def merge(self, ref: PRRef, *, method: str, sha: str) -> None: ...
 
+    async def approve_run(self, repo: str, run_id: int) -> None: ...
+
 
 @dataclass
 class Posted:
@@ -257,6 +259,11 @@ class GhWriter:
         """Merge the PR (``method``: merge, squash or rebase), only if its head is ``sha``."""
         request = {"merge_method": method, "sha": sha}
         await self._api(f"repos/{ref.repo}/pulls/{ref.number}/merge", request, http="PUT")
+
+    async def approve_run(self, repo: str, run_id: int) -> None:
+        """Let a workflow run GitHub holds for approval go ahead (a fork's PR, by a
+        first-time contributor)."""
+        await self._api(f"repos/{repo}/actions/runs/{run_id}/approve", {})
 
     async def _api(self, path: str, request: dict, *, http: str = "POST") -> dict:
         process = await asyncio.create_subprocess_exec(

@@ -301,6 +301,16 @@ class MergePR(Request[Merged]):
 
 
 @dataclass(kw_only=True)
+class ApproveRuns(Request[Done]):
+    """Let GitHub run the workflows it holds for approval on the PR (``a`` on the merge
+    box): ``runs`` are their ids (MergeCheck.waiting)."""
+
+    worker: ClassVar[str] = GITHUB_WORKER
+    pr: PRRef
+    runs: list[int]
+
+
+@dataclass(kw_only=True)
 class AssignMe(Request[Done]):
     worker: ClassVar[str] = GITHUB_WORKER
     pr: PRRef

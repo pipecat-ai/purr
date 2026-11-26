@@ -34,6 +34,7 @@ _CHECKS = {
     "ERROR": ("✗ checks fail", "red"),
     "PENDING": ("⟳ checks running", "yellow"),
     "EXPECTED": ("⟳ checks running", "yellow"),
+    "ACTION_REQUIRED": ("⏸ CI needs approval", "yellow"),  # workflows GitHub holds
 }
 _DECISIONS = {
     "APPROVED": ("approved", "green"),
