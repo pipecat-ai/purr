@@ -34,16 +34,20 @@ class Transcript(RichLog):
 
     def write(self, *args, **kwargs) -> "Transcript":
         # Hidden (the diff zoomed in its place), it has no width, and RichLog wraps what's
-        # written then at its minimum (78), however wide it is when it shows again. Before
+        # written then at its least width, however wide it is when it shows again. Before
         # its first size, RichLog keeps what's written for later on its own.
         if self._size_known and not self.scrollable_content_region.width:
             self._hidden_writes = True
         return super().write(*args, **kwargs)
 
-    def on_show(self) -> None:
-        if self._hidden_writes:
+    def _rewrap_hidden_writes(self) -> None:
+        """Drawn again with a width, what was written without one is written again. Not on
+        Show: Textual doesn't always send it when a hidden pane comes back as it was."""
+        if self._hidden_writes and self.scrollable_content_region.width:
             self._hidden_writes = False
-            self.post_message(self.Rewrap())
+            # Not mid-draw: a message made then has the screen as its sender, and doesn't
+            # bubble past it.
+            self.call_later(lambda: self.post_message(self.Rewrap()))
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
@@ -97,6 +101,7 @@ class Transcript(RichLog):
         return super().clear()
 
     def render_line(self, y: int) -> Strip:
+        self._rewrap_hidden_writes()
         scroll_x, scroll_y = self.scroll_offset
         index = scroll_y + y
         strip = super().render_line(y)
