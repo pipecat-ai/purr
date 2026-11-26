@@ -2320,6 +2320,7 @@ async def test_the_prs_pane_fills_its_width_after_the_diff_had_the_screen(tmp_pa
         assert widest() > 78
         await pilot.press("d")
         await until(pilot, lambda: repo.diff_shown and not repo.session.display)
+        await until(pilot, lambda: not log.scrollable_content_region.width)  # laid out so
         await repo.session.details_changed()  # its overview, written again meanwhile
         assert widest() <= 20  # wrapped for the pane's least width
         await pilot.press("escape")  # both panes
@@ -2651,6 +2652,22 @@ def mark_of(app: PurrApp, number: int) -> str:
 def merge_follow_ups(app: PurrApp) -> int:
     """How many merge boxes are followed on GitHub (PRKeys._follow_merge)."""
     return sum(worker.group == "merge-follow" and not worker.is_finished for worker in app.workers)
+
+
+async def test_quitting_while_the_merge_box_waits_on_github(tmp_path, monkeypatch):
+    # The follow-up is cancelled as Purr quits: its mark isn't drawn again on a screen
+    # that's gone.
+    from purr.tui.working import FRAMES
+
+    monkeypatch.setattr("purr.tui.pr_keys.MERGE_RECHECK", 0.05)
+    app, github = make_app(tmp_path)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await _waiting_on_ci(app, github, pilot)
+        await pilot.press("m")
+        await until(pilot, lambda: mark_of(app, 7) in FRAMES)
+        github.merge_gate = asyncio.Event()  # GitHub's being asked as Purr quits
+        calls = len(github.merge_calls)
+        await until(pilot, lambda: len(github.merge_calls) > calls)
 
 
 async def test_the_merge_box_keeps_up_with_github_once_you_move_on(tmp_path, monkeypatch):
