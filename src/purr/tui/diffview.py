@@ -57,7 +57,7 @@ from purr.messages import (
     ReplyToThread,
     SaveComment,
 )
-from purr.models import PR, DraftComment, Quote
+from purr.models import PR, DraftComment, PRRef, Quote
 from purr.tui.boxes import BOX_WIDTH
 from purr.tui.dialogs import ConfirmScreen
 from purr.tui.diffrows import CONVERSATION, INDENT, Row, Said, first_opened, moved, rows, said
@@ -430,10 +430,9 @@ class DiffView(ScrollView, can_focus=True):
         first, last = self._here  # the cursor's row, or its box
         if first <= index <= last:
             return self._background("diff-view--cursor")
-        if (
-            self.anchor is not None
-            and min(self.anchor, self.cursor) < index < max(self.anchor, self.cursor) + 1
-        ):
+        if self.anchor is not None and min(self.anchor, self.cursor) <= index <= max(
+            self.anchor, self.cursor
+        ):  # what selected() takes: from where you started to the cursor, both in
             return self._background("diff-view--selected")
         return Style()
 
@@ -613,16 +612,25 @@ class DiffPane(Vertical):
         """The PR's review threads on GitHub (a request away): their files open as they come,
         unless all of them are resolved."""
         assert self.pr is not None
+        ref = self.pr.ref
         try:
-            reply = await self.purr_app.bus.request(GetReviewThreads(pr=self.pr.ref))
+            reply = await self.purr_app.bus.request(GetReviewThreads(pr=ref))
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
+        if not self._still(ref):
+            return  # another PR's diff now: these aren't its threads
         self._threads = reply.threads
         comments = await self._comments()
+        if not self._still(ref):
+            return
         open_on = {c.path for c in comments if c.source == "github" and not c.resolved}
         on = {i for i, file in enumerate(self._files) if file.path in open_on}
         self.view.show(comments, self.view.opened | on)
+
+    def _still(self, ref: PRRef) -> bool:
+        """Whether it's still this PR's diff: an answer can come after you've moved on."""
+        return self.pr is not None and self.pr.ref == ref
 
     async def _comments(self) -> list[Said]:
         """Yours on this commit, those the agent proposes posting, the PR's threads, and

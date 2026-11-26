@@ -166,7 +166,7 @@ def details_line(pr: PR, details: PRDetails | None) -> Parts:
     together)."""
     parts = [Text(f"by {pr.author}", style="dim")]
     if pr.created_at:
-        parts.append(Text(f"opened {short_age(pr.created_at)} ago", style="dim"))
+        parts.append(Text(f"opened {ago(pr.created_at)}", style="dim"))  # or "opened now"
     if pr.assigned_to_me:
         parts.append(Text("assigned to you", style="magenta"))
     elif pr.assignees:
@@ -209,9 +209,12 @@ def where_it_changes(details: PRDetails) -> str:
 
 
 def _shorter(folder: str, common: str) -> str:
-    """A folder without what all of them share (``src/pipecat/``), unless that's all it is."""
+    """A folder without what all of them share (``src/pipecat/``), unless that's all it is;
+    the files at the repo's top, "the top"."""
+    if not folder:
+        return "the top"
     rest = posixpath.relpath(folder, common) if common else folder
-    return folder or "." if rest == "." else rest
+    return folder if rest == "." else rest
 
 
 def render_overview(details: PRDetails | None, error: str | None = None) -> RenderableType:
