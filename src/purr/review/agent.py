@@ -285,7 +285,9 @@ class AgentResult:
 
 
 class ReviewAgent(Protocol):
-    def session_exists(self, session_id: str, worktree: Path) -> bool: ...
+    def session_exists(self, session_id: str, worktree: Path) -> bool:
+        """Whether the session has a transcript to resume (blocking: reads files)."""
+        ...
 
     def history(self, session_id: str, worktree: Path) -> list[dict]:
         """The session's transcript so far, as entries (blocking: reads a file)."""

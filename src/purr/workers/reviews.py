@@ -646,7 +646,8 @@ class ReviewWorker(BaseWorker):
         await self._progress(ref, "Checking out the PR")
         worktree = await self._repos.checkout(ref, run.pr.head_sha)
         assert session_id
-        if run.resume and not self._agent.session_exists(session_id, worktree):
+        exists = partial(self._agent.session_exists, session_id, worktree)  # reads files
+        if run.resume and not await asyncio.to_thread(exists):
             # It never really started: begin again, under the same session ID.
             run.resume = False
             run.prompt = review_prompt(run.pr, run.skill)
