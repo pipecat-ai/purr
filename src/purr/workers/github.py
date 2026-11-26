@@ -176,6 +176,7 @@ class GitHubWorker(BaseWorker):
         """Fetch from GitHub, update the store and broadcast what changed."""
         async with self._lock:
             before, plan = await self._sync()
+        await self._back_to_you(plan)
         replied, replies_changed = await self._read_replies(_changed(before, plan))
         for change in [*plan.changes, *replied]:
             await self.send_bus_message(
@@ -312,6 +313,17 @@ class GitHubWorker(BaseWorker):
                     source=self.name, pr=str(action.pr), action_id=action_id, approved=False
                 )
             )
+
+    async def _back_to_you(self, plan: SyncPlan) -> None:
+        """New commits on a PR you'd finished (approved, or requested changes): your verdict
+        was of what it was, so it needs you again. With auto-review, the lead re-reviews it
+        too."""
+        for change in plan.changes:
+            if change.change != PRChange.NEW_COMMITS:
+                continue
+            pr = await self._store.get_pr(change.pr)
+            if pr and pr.state == PRState.DONE:
+                await self._store.set_pr_state(pr.ref, PRState.NEEDS_YOU)
 
     async def _needs_you_if_replied(self, pr: PR) -> None:
         """A PR with replies to you needs you; once none are left, it settles back."""

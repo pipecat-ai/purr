@@ -97,7 +97,10 @@ def needs_you_for(
         return "Post your comments?"
     if pr.replies:
         return replied(pr.replies)
-    return "Review failed" if failed else "No verdict yet"
+    if failed:
+        return "Review failed"
+    moved_on = pr.verdict is not None and pr.verdict.head != pr.head_sha
+    return "New commits since your verdict" if moved_on else "No verdict yet"
 
 
 @dataclass

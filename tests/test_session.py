@@ -207,3 +207,16 @@ def test_review_requests_come_before_up_next():
     # Someone asked you (a teammate, mostly, whose PRs come first): before Purr's picks.
     keys = [key for key, *_ in GROUPS]
     assert keys.index(REQUESTED) < keys.index(UP_NEXT)
+
+
+def test_back_in_needs_you_with_new_commits_says_so():
+    from dataclasses import replace
+
+    from purr.models import PR, PRState, Verdict
+    from purr.tui.session import needs_you_for
+
+    pr = PR("a/b", 1, "Fix", "someone", "u", "f00", "t", state=PRState.NEEDS_YOU)
+    note = lambda pr: needs_you_for(pr, None, None, drafted=False, failed=False)  # noqa: E731
+    assert note(pr) == "No verdict yet"
+    changes = Verdict(ActionKind.REQUEST_CHANGES, "abc")
+    assert note(replace(pr, verdict=changes)) == "New commits since your verdict"
