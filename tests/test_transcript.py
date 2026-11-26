@@ -56,3 +56,39 @@ async def test_where_you_scrolled_to_stays_when_it_gets_shorter():
         await until(pilot, lambda: log.size.height < 20)
         await pilot.pause(0.1)  # a few refreshes: if it were to scroll, it would have
         assert log.scroll_y == 3
+
+
+async def test_keys_glide_far_and_move_a_line_at_once():
+    import time
+
+    from purr.tui.scrolling import GLIDE_SECONDS, page_lines
+
+    app = Pane()
+    async with app.run_test(size=(40, 20)) as pilot:
+        log = app.query_one(Transcript)
+        for n in range(100):
+            log.write(f"line {n}")
+        await until(pilot, lambda: log.max_scroll_y > 0 and log.scroll_y == log.max_scroll_y)
+        log.focus()
+        seen: list[float] = []
+        log.watch(log, "scroll_y", lambda y: seen.append(y), init=False)
+        # To the top: it glides there, through the lines between, in GLIDE_SECONDS
+        # (Textual's own takes a second).
+        start = time.monotonic()
+        await pilot.press("home")
+        await until(pilot, lambda: log.scroll_y == 0)
+        assert time.monotonic() - start < GLIDE_SECONDS + 0.3
+        assert len(set(seen)) > 3
+        # A line: at once.
+        seen.clear()
+        await pilot.press("down")
+        await until(pilot, lambda: log.scroll_y == 1)
+        assert seen == [1]
+        # Pages glide; another on the way goes on from where the first was going.
+        seen.clear()
+        log.page(1)
+        log.page(1)
+        await until(pilot, lambda: log.scroll_y == 1 + 2 * page_lines(log))
+        assert len(set(seen)) > 3
+        await pilot.press("end")
+        await until(pilot, lambda: log.scroll_y == log.max_scroll_y)

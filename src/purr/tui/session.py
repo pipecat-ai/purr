@@ -1198,8 +1198,7 @@ class PRSession(Vertical):
         self.focus_prompt()
 
     def action_page(self, step: int) -> None:
-        log = self.query_one(RichLog)
-        log.scroll_page_down() if step > 0 else log.scroll_page_up()
+        self.query_one(Transcript).page(step)
 
     async def action_search_history(self) -> None:
         prompt = self.query_one(PromptArea)
