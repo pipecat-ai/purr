@@ -15,7 +15,7 @@ from textual.strip import Strip
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
-from purr.models import PR, PRState
+from purr.models import PR, ActionKind, GHState, PRState
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import short_age
@@ -29,7 +29,9 @@ OTHERS = "others"
 REQUESTED = "requested"
 YOURS = "yours"
 UP_NEXT = "upnext"
-# What's yours first: what needs you, what's under way, your own PRs (when someone
+TO_MERGE = "tomerge"
+# What's yours first: what needs you, what you approved and is still open (merging's
+# next, and in Done it'd be missed), what's under way, your own PRs (when someone
 # comments on one, it needs you), what's up next (the pool's PRs worth looking at
 # next, best first), PRs asking for your review (someone's waiting on you), and
 # what you finished lately (the latest few; search finds the rest). Then what
@@ -37,6 +39,7 @@ UP_NEXT = "upnext"
 # repo).
 GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
+    (TO_MERGE, "⇡", "TO MERGE", "bold green"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
     (YOURS, "◆", "YOUR PRS", "bold blue"),
     (UP_NEXT, "➜", "UP NEXT", "bold green"),
@@ -170,15 +173,26 @@ class PRList(GroupedList):
 
 def group(pr: PR) -> str:
     """Where a PR goes in the list: its review state; or "yours" if you opened it and
-    nothing's happening; or, not reviewed, "requested" if it asks for your review,
-    "others" if someone else took it."""
+    nothing's happening; or, done, "to merge" if you approved it and it's still open;
+    or, not reviewed, "requested" if it asks for your review, "others" if someone else
+    took it."""
     if pr.authored and pr.state in (PRState.NOT_REVIEWED, PRState.DONE):
         return YOURS
+    if to_merge(pr):
+        return TO_MERGE
     if pr.state == PRState.NOT_REVIEWED and pr.requested_from_me and not pr.assigned_to_me:
         return REQUESTED
     if pr.state == PRState.NOT_REVIEWED and pr.others_on_it:
         return OTHERS
     return pr.state
+
+
+def to_merge(pr: PR) -> bool:
+    """You approved it as it is, and it's open: merging's next (m), by you or not."""
+    verdict = pr.verdict
+    approved = verdict is not None and verdict.kind == ActionKind.APPROVE
+    as_it_is = approved and verdict is not None and verdict.head == pr.head_sha
+    return pr.state == PRState.DONE and pr.gh_state == GHState.OPEN and as_it_is
 
 
 def _assignees(pr: PR) -> Text:

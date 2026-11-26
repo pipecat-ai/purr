@@ -61,11 +61,12 @@ rebase the PR, `a` force-pushes it, but only if nobody pushed to the PR since.
 | Group | What's in it |
 |---|---|
 | *Needs you* | Something to decide: a review to post, a question from the agent, a reply to you |
+| *To merge* | PRs you approved that are still open: `m` merges |
 | *Reviewing* | The agent is reviewing it |
 | *Your PRs* | PRs you opened |
 | *Up next* | A few PRs nobody has taken, picked for you |
 | *Review requested* | PRs asking for your review |
-| *Done* | PRs you approved or requested changes on |
+| *Done* | PRs you requested changes on, and others with nothing left to do |
 | *Others reviewing* | PRs someone else has taken |
 | *Not reviewed* | The other open PRs |
 

@@ -155,3 +155,19 @@ def test_the_merge_box_lists_checks_while_ci_runs():
     # Listed, they aren't concerns again; the rest are.
     assert "Docs failed" not in shown and "still running" not in shown
     assert "⚠ alice hasn't approved" in shown
+
+
+def test_what_you_approved_and_is_still_open_is_to_merge():
+    from dataclasses import replace
+
+    from purr.models import PR, GHState, PRState, Verdict
+    from purr.tui.lists import TO_MERGE, YOURS, group
+
+    pr = PR("a/b", 1, "Fix", "someone", "u", "abc", "t", state=PRState.DONE)
+    approved = replace(pr, verdict=Verdict(ActionKind.APPROVE, "abc"))
+    assert group(approved) == TO_MERGE  # merging's next: in Done, it'd be missed
+    assert group(pr) == PRState.DONE  # done without a verdict (a comment)
+    assert group(replace(pr, verdict=Verdict(ActionKind.REQUEST_CHANGES, "abc"))) == PRState.DONE
+    assert group(replace(approved, verdict=Verdict(ActionKind.APPROVE, "old"))) == PRState.DONE
+    assert group(replace(approved, gh_state=GHState.MERGED)) == PRState.DONE
+    assert group(replace(approved, authored=True)) == YOURS

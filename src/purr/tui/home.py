@@ -20,13 +20,14 @@ from purr.tui.theme import palette
 from purr.tui.views import PurrView
 
 _REPO_COLUMNS = (
-    "", "REPO", "YOURS", "NEEDS YOU", "REVIEWING", "UP NEXT", "NOT REVIEWED", "LAST ACTIVITY",
+    "", "REPO", "YOURS", "NEEDS YOU", "TO MERGE", "REVIEWING", "UP NEXT", "NOT REVIEWED",
+    "LAST ACTIVITY",
 )  # fmt: skip
 
 
 def _repo_row(*cells: Text | str, header: bool = False) -> Table:
     """A row of the repo list: number, name, then counts and when, in columns."""
-    widths = [2, None, 6, 10, 10, 8, 13, 14]
+    widths = [2, None, 6, 10, 9, 10, 8, 13, 14]
     grid = Table.grid(expand=True, padding=(0, 1))
     for width in widths:
         if width is None:
@@ -152,11 +153,13 @@ class ReposView(PurrView):
         if alerted:
             name.append(" ●", style="bold yellow")
         needs = Text(_count(summary.needs_you), style="bold yellow" if summary.needs_you else "")
+        merge = Text(_count(summary.to_merge), style="bold green" if summary.to_merge else "")
         return [
             str(i) if i <= 9 else "",
             name,
             _count(summary.yours),
             needs,
+            merge,
             _count(summary.reviewing),
             Text(_count(summary.up_next), style="green" if summary.up_next else ""),
             _count(summary.not_reviewed),

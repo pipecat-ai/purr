@@ -370,11 +370,15 @@ async def test_repo_summaries(store):
     await store.upsert_pr(elsewhere)
     await store.record_activity("pr.changed", pr=needs.ref)
 
+    approved = await store.upsert_pr(make_pr(4))  # approved as it is: to merge
+    await give_verdict(store, approved.ref, head=approved.head_sha)
+    await store.set_pr_state(approved.ref, PRState.DONE)
+
     summaries = await store.repo_summaries()
-    assert [(s.name, s.watched, s.needs_you, s.not_reviewed) for s in summaries] == [
-        ("daily-co/daily-x", False, 0, 1),
-        ("pipecat-ai/pipecat", True, 1, 1),
-        ("pipecat-ai/whisker", True, 0, 0),
+    assert [(s.name, s.watched, s.needs_you, s.to_merge, s.not_reviewed) for s in summaries] == [
+        ("daily-co/daily-x", False, 0, 0, 1),
+        ("pipecat-ai/pipecat", True, 1, 1, 1),
+        ("pipecat-ai/whisker", True, 0, 0, 0),
     ]
     assert summaries[1].last_activity is not None
     assert summaries[2].last_activity is None
@@ -383,6 +387,7 @@ async def test_repo_summaries(store):
     ] == [
         2,
         1,
+        4,
     ]
 
 
