@@ -353,6 +353,10 @@ _STATE_ORDER = """
     END
 """
 
+# The actions that are your verdict on a PR, for SQL: kind IN ({_VERDICT_MARKS}).
+_VERDICTS = tuple(kind for kind in ActionKind if kind.verdict)
+_VERDICT_MARKS = ", ".join("?" * len(_VERDICTS))
+
 
 def _draft(row: aiosqlite.Row) -> DraftComment:
     return DraftComment(
@@ -656,17 +660,15 @@ class Store:
         dismissed), or as Purr just posted it. ``read_at``: when GitHub was asked; a verdict
         Purr posted since is newer than what it said, and stays."""
         kind, head = (verdict.kind, verdict.head) if verdict else (None, None)
-        verdicts = [kind for kind in ActionKind if kind.verdict]
-        kinds = ", ".join("?" * len(verdicts))
         await self._db.execute(
             f"""
             UPDATE prs SET verdict = ?, verdict_head = ? WHERE repo = ? AND number = ?
             AND NOT EXISTS (
                 SELECT 1 FROM pending_actions WHERE pr_id = prs.id AND status = ?
-                AND kind IN ({kinds}) AND resolved_at >= ?
+                AND kind IN ({_VERDICT_MARKS}) AND resolved_at >= ?
             )
             """,
-            (kind, head, ref.repo, ref.number, ActionStatus.EXECUTED, *verdicts, read_at),
+            (kind, head, ref.repo, ref.number, ActionStatus.EXECUTED, *_VERDICTS, read_at),
         )
         await self._db.commit()
 
@@ -692,13 +694,11 @@ class Store:
         if pr and pr.verdict and pr.verdict.head == pr.head_sha:
             return True
         # Posted through Purr, even if a read of GitHub that began before says otherwise.
-        verdicts = [kind for kind in ActionKind if kind.verdict]
-        kinds = ", ".join("?" * len(verdicts))
         row = await self._fetchone(
             f"{self._ACTION_SELECT} WHERE prs.repo = ? AND prs.number = ?"
-            f" AND pending_actions.status = ? AND pending_actions.kind IN ({kinds})"
+            f" AND pending_actions.status = ? AND pending_actions.kind IN ({_VERDICT_MARKS})"
             " AND pending_actions.posted_head = prs.head_sha LIMIT 1",
-            (ref.repo, ref.number, ActionStatus.EXECUTED, *verdicts),
+            (ref.repo, ref.number, ActionStatus.EXECUTED, *_VERDICTS),
         )
         return row is not None
 
