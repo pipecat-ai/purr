@@ -702,11 +702,15 @@ class PRSession(Vertical):
         store = self.purr_app.purr.store
         pr = await store.get_pr(shown.ref) or shown
         review = await store.latest_review(pr.ref)
-        outcome = Outcome.of(await store.findings(review.id)) if review else Outcome()
+        # Read only when the header says it (this runs at each step the agent takes): what
+        # a finished review found, and why a PR nobody's reviewed is up next.
+        finished = review if review and review.status == ReviewStatus.FINISHED else None
+        outcome = Outcome.of(await store.findings(finished.id)) if finished else Outcome()
         actions = await store.pending_actions(pr.ref)
         approved = await store.approved_head(pr.ref)
         mine = await store.draft_comments(pr.ref)
-        up_next = next((u.why for u in await store.up_next(pr.repo) if u.pr == pr.ref), "")
+        picks = await store.up_next(pr.repo) if review is None else []
+        up_next = next((u.why for u in picks if u.pr == pr.ref), "")
         if not self._showing(pr):
             return
         self.pr = pr
