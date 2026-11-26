@@ -93,7 +93,7 @@ class RepoView(PRKeys):
         self._failed: set = set()  # PRRefs whose latest review failed
         self._up_next: dict[str, UpNext] = {}  # what's up next in the repo, by PR
         self._listed: str | None = None  # the repo whose PRs the list has
-        self._folded: dict[str, set[str]] = {}  # repo -> its groups folded (←)
+        self._folded: dict[str, set[str]] = {}  # repo -> its groups folded (tab)
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):

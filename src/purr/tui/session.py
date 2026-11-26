@@ -106,7 +106,7 @@ class SessionState:
 
     entries: list[dict] | None = None  # None until the transcript is loaded
     progress: str | None = None  # what the review's doing; None once nothing is
-    waiting: bool = False  # the review waits on you (a question)
+    waiting: bool = False  # it waits on you, or for its turn: nothing works on it yet
     since: float | None = None  # when the agent started working (monotonic)
     background: int = 0  # its tasks (agents, commands) still running in the background
     ask: PermissionRequest | None = None
