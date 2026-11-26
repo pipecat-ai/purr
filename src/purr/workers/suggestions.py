@@ -35,8 +35,8 @@ class SuggestionWorker(BaseWorker):
 
     @handles(SuggestPrompt)
     async def suggest(self, request: SuggestPrompt) -> Suggestion:
-        notes = await self._notes(request)
-        if not notes or not self._suggester:
+        # Off: no need to read the conversation.
+        if not self._suggester or not (notes := await self._notes(request)):
             return Suggestion(text="")
         try:
             return Suggestion(text=await self._suggester.suggest(notes))
