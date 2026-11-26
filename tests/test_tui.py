@@ -2254,6 +2254,7 @@ async def test_the_prs_pane_fills_its_width_after_the_diff_had_the_screen(tmp_pa
         assert widest() > 78
         await pilot.press("d")
         await until(pilot, lambda: repo.diff_shown and not repo.session.display)
+        await until(pilot, lambda: not log.scrollable_content_region.width)  # laid out so
         await repo.session.details_changed()  # its overview, written again meanwhile
         assert widest() <= 20  # wrapped for the pane's least width
         await pilot.press("escape")  # both panes
