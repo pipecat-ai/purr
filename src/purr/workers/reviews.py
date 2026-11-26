@@ -124,6 +124,9 @@ class _Run:
     plugin: Path | None = None  # the repo's skills and agents, if they loaded
     submitted: dict = field(default_factory=dict)  # the agent's summary and findings
     superseded: list[PendingAction] = field(default_factory=list)  # a new review's: back if stopped
+    inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue)  # what you write meanwhile
+    stopped: bool = False  # by you (see ReviewWorker.stop_agent)
+    task: asyncio.Task = field(init=False)
 
     @property
     def ref(self) -> PRRef:
@@ -194,15 +197,11 @@ class ReviewWorker(BaseWorker):
         self._github = github
         self._permission_wait = permission_wait
         self._quick_model = quick_model
-        self._running: dict[PRRef, asyncio.Task] = {}
+        self._runs: dict[PRRef, _Run] = {}  # what's running, by PR
         self._start_lock = asyncio.Lock()
         self._startup_task: asyncio.Task | None = None
         self._asks: dict[str, asyncio.Future[PermissionAnswer]] = {}
         self._ask_prs: dict[str, PRRef] = {}  # request id -> the PR whose agent is asking
-        # What you write to a PR's agent while it works, for it to take up as it goes.
-        self._inboxes: dict[PRRef, asyncio.Queue[str]] = {}
-        self._run_ids: dict[PRRef, int] = {}
-        self._stopped: set[PRRef] = set()  # runs you stopped, as they stop
         # Stopped while the lead planned them: until when their start is refused.
         self._stop_ahead: dict[PRRef, float] = {}
         self._ask_rules: dict[str, str] = {}  # request id -> the rule "always" would keep
@@ -216,15 +215,15 @@ class ReviewWorker(BaseWorker):
         self._startup_task = self.create_task(self._startup(), f"{self}::startup")
 
     async def stop(self) -> None:
-        tasks = [t for t in [self._startup_task, *self._running.values()] if t]
+        tasks = [t for t in [self._startup_task, *(run.task for run in self._runs.values())] if t]
         for task in tasks:
             await self.cancel_task(task, timeout=5)
-        self._running.clear()
+        self._runs.clear()
         await super().stop()
 
     @property
     def running(self) -> set[PRRef]:
-        return set(self._running)
+        return set(self._runs)
 
     async def _startup(self) -> None:
         await self._store.interrupt_runs()  # cut short by the last shutdown
@@ -246,7 +245,7 @@ class ReviewWorker(BaseWorker):
             if pr is None or pr.gh_state != GHState.OPEN:
                 await self._store.fail_review(review.id, error="The PR is no longer open.")
                 continue
-            if pr.ref not in self._running:
+            if pr.ref not in self._runs:
                 logger.info(f"Resuming the review of {pr.ref}")
                 self._launch(pr, review, prompt=RESUME_PROMPT, resume=True, kind="resume")
 
@@ -266,7 +265,7 @@ class ReviewWorker(BaseWorker):
             review = await self._store.latest_review(ref)
             if (
                 self._stopped_ahead(ref)
-                or ref in self._running
+                or ref in self._runs
                 or pr is None
                 or not pr.assigned_to_me
                 or review is None
@@ -320,13 +319,13 @@ class ReviewWorker(BaseWorker):
         by itself (r does). Stopped before it starts (the lead's still planning it), it
         doesn't.
         """
-        task = self._running.get(request.pr)
-        if task is None:
+        run = self._runs.get(request.pr)
+        if run is None:
             self._stop_ahead[request.pr] = time.monotonic() + STOP_AHEAD
             return Done()
-        self._stopped.add(request.pr)
-        task.cancel()
-        await asyncio.wait({task}, timeout=10)
+        run.stopped = True
+        run.task.cancel()
+        await asyncio.wait({run.task}, timeout=10)
         return Done()
 
     @handles(AnswerPermission)
@@ -377,7 +376,7 @@ class ReviewWorker(BaseWorker):
         async with self._start_lock:
             if self._stopped_ahead(ref):
                 raise Invalid(f"You stopped {ref}'s review before it started")
-            if ref in self._running:
+            if ref in self._runs:
                 raise Busy(f"{ref} is already being reviewed")
             pr = await self._store.get_pr(ref)
             if pr is None:
@@ -424,22 +423,21 @@ class ReviewWorker(BaseWorker):
             raise Invalid("Nothing to send")
         command = text.lstrip().startswith("/")  # /compact, a skill: not a reply
         async with self._start_lock:
-            if ref in self._running:
-                return await self._write_while_working(ref, text, command=command)
+            if run := self._runs.get(ref):
+                return await self._write_while_working(run, text, command=command)
             return await self._write_new_turn(ref, text, command=command)
 
-    async def _write_while_working(self, ref: PRRef, text: str, *, command: bool) -> MessageSent:
+    async def _write_while_working(self, run: _Run, text: str, *, command: bool) -> MessageSent:
         """To the agent at work: a no to what it asks, with what to do instead, or a message
         it takes up at its next step. A command has to wait until it's done."""
-        if command or ref not in self._inboxes:
-            raise Busy(f"The agent is still working on {ref}")
-        if self._answer_instead(ref, text):
+        if command:
+            raise Busy(f"The agent is still working on {run.ref}")
+        if self._answer_instead(run.ref, text):
             return MessageSent(answered=True)
-        self._inboxes[ref].put_nowait(text)
-        if (run_id := self._run_ids.get(ref)) is not None:
-            await self._store.add_message(
-                run_id, ref, {"kind": "prompt", "text": text}, author="you"
-            )
+        run.inbox.put_nowait(text)
+        if run.id:  # recorded
+            entry = {"kind": "prompt", "text": text}
+            await self._store.add_message(run.id, run.ref, entry, author="you")
         return MessageSent(while_working=True)
 
     async def _write_new_turn(self, ref: PRRef, text: str, *, command: bool) -> MessageSent:
@@ -522,8 +520,8 @@ class ReviewWorker(BaseWorker):
             skill=skill,
             superseded=list(superseded),
         )
-        self._inboxes[pr.ref] = asyncio.Queue()
-        self._running[pr.ref] = self.create_task(self._run(run), f"{self}::review::{pr.ref}")
+        run.task = self.create_task(self._run(run), f"{self}::review::{pr.ref}")
+        self._runs[pr.ref] = run
 
     async def _take_slot(self, ref: PRRef, priority: Priority) -> None:
         """Wait for one of the ``max_reviews`` slots, in line by priority, then arrival."""
@@ -605,7 +603,6 @@ class ReviewWorker(BaseWorker):
         run.id = await self._store.start_run(
             ref, kind=run.kind, review_id=review.id, session_id=review.session_id
         )
-        self._run_ids[ref] = run.id
         slot = stopping = False
         result: AgentResult | None = None
         try:
@@ -619,7 +616,7 @@ class ReviewWorker(BaseWorker):
             await self._finished(run, result)
         except asyncio.CancelledError:
             stopping = True  # either way, what you wrote that it didn't read isn't sent
-            if ref not in self._stopped:
+            if not run.stopped:
                 raise  # Purr is stopping; the review stays "running" and resumes next time
             asyncio.current_task().uncancel()  # you stopped it: it ends here, recorded
             await self._stopped_by_you(run)
@@ -627,10 +624,9 @@ class ReviewWorker(BaseWorker):
             logger.exception(f"Review of {ref} failed")
             await self._failed(run, e, result)
         finally:
-            self._stopped.discard(ref)
             if slot:
                 self._slots.release()
-            self._end_run(ref, stopping=stopping)
+            self._end_run(run, stopping=stopping)
 
     async def _prepare(self, run: _Run) -> None:
         """What a run needs before its turn: the repo's skills and, for a review, its prompt."""
@@ -674,7 +670,7 @@ class ReviewWorker(BaseWorker):
             skill=run.skill,
             plan=run.plan,
             model=await self._model(ref, run.plan, run.kind),
-            inbox=self._inboxes.get(ref),
+            inbox=run.inbox,
         )
 
     async def _finished(self, run: _Run, result: AgentResult) -> None:
@@ -761,18 +757,16 @@ class ReviewWorker(BaseWorker):
                 )
         return True
 
-    def _end_run(self, ref: PRRef, *, stopping: bool) -> None:
+    def _end_run(self, run: _Run, *, stopping: bool) -> None:
         """Forget the PR's run. What you wrote that its agent didn't read goes in a new
         turn, unless Purr is stopping."""
-        self._running.pop(ref, None)
-        self._run_ids.pop(ref, None)
-        inbox = self._inboxes.pop(ref, None)
+        self._runs.pop(run.ref, None)
         unread = []
-        while inbox is not None and not inbox.empty():
-            unread.append(inbox.get_nowait())
+        while not run.inbox.empty():
+            unread.append(run.inbox.get_nowait())
         if unread and not stopping:
             # Written as it finished, or to a CLI that can't take it mid-run.
-            self.create_task(self._send_after(ref, "\n\n".join(unread)))
+            self.create_task(self._send_after(run.ref, "\n\n".join(unread)))
 
     async def _model(self, ref: PRRef, plan: ReviewPlan, kind: str) -> str | None:
         """The model for a run: yours for the PR (/model), else the cheaper one for quick
