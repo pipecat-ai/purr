@@ -224,9 +224,12 @@ class PRKeys(PurrView):
         pr = self.selected_pr()
         if pr is None or self.session.state(pr).doing:  # it's being done: too late
             return
-        if (merging := self.purr_app.sessions.get(str(pr.ref))) and merging.merge:
-            merging.merge = None  # the merge box goes: m asks again
+        state = self.session.state(pr)
+        if state.merge:
+            state.merge = None  # the merge box goes: m asks again
             await self.session.refresh_status()
+            return
+        if state.progress:  # the agent's at it: the box waits, and so does x
             return
         store = self.purr_app.purr.store
         actions = await store.pending_actions(pr.ref)

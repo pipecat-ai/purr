@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -131,6 +132,7 @@ class SessionState:
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
     proposal: ActionKind | None = None  # what the agent proposes (the oldest), as last read
+    actions: list[PendingAction] = field(default_factory=list)  # all it proposes, as last read
     verdict_due: bool = False  # it waits for your verdict alone: a approves it
     quote: Quote | None = None  # the lines of the diff you're asking about, if any
     suggestion: str = ""  # what you might ask next (purr.suggest)
@@ -147,7 +149,7 @@ class SessionState:
         do what it proposes, or post your comments."""
         if self.ask:
             return "Allow once"
-        if self.doing:  # it's being done
+        if self.doing or self.progress:  # being done, or the agent's still at it: wait
             return ""
         if self.proposal:
             return A_DOES[self.proposal]
@@ -465,11 +467,23 @@ def _plan_note(plan: ReviewPlan) -> str:
     return line + (f". {plan.why}" if plan.why else "")
 
 
-def _decision(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
-    """What waits on you, above the prompt: the first of the questions that has something.
-    While what you asked for is under way, the spinner says so, and only the agent asks."""
-    if state.doing:
+def _decision(pr: PR, state: SessionState, *, typing: bool = False) -> Text | None:
+    """What waits on you, above the prompt, only when it's needed: the first of the
+    questions that has something.
+
+    The agent's question always shows: it can't go on till you answer, and what you type
+    may be the answer. The rest wait while you type (a and x type there, and sending sets
+    a proposal aside), while what you asked for is under way (the spinner says so), and
+    while the agent's at it (what it says next may change them), bar where the PR stands
+    for merging, which you asked for (m). They're back once that's over.
+    """
+    actions = state.actions
+    if state.ask:
         return _permission_question(pr, state, actions)
+    if typing or state.doing:
+        return None
+    if state.progress:
+        return _merge_question(pr, state, actions)
     asked = (question(pr, state, actions) for question in _QUESTIONS)
     return next((text for text in asked if text is not None), None)
 
@@ -711,6 +725,10 @@ class PRSession(Vertical):
         return self.purr_app.repo_skills[repo]
 
     @on(TextArea.Changed, "#prompt")
+    def _typed(self) -> None:
+        self._suggest()
+        self._show_decision()
+
     def _suggest(self) -> None:
         box = self.query_one("#suggestions", OptionList)
         self._suggested = suggestions(self.query_one(PromptArea).text, self._skills())
@@ -942,7 +960,7 @@ class PRSession(Vertical):
             return
         self.pr = pr
         state = self.state()
-        state.approved, state.mine = approved, mine
+        state.approved, state.mine, state.actions = approved, mine, actions
         state.proposal = actions[0].kind if actions else None
         state.verdict_due = _verdict_due(pr, review, actions)
         details = self.purr_app.details.get(pr)
@@ -951,8 +969,17 @@ class PRSession(Vertical):
         )
         self._show_working(state)
         self._suggest_next()
+        self._show_decision()
+
+    def _show_decision(self) -> None:
+        """The decision box, if something waits on you that's needed now (see _decision):
+        again as you type, and as you go in and out of the prompt."""
+        if not self.pr:
+            return
+        prompt = self.query_one(PromptArea)
+        typing = prompt.has_focus and bool(prompt.text.strip())
         box = self.query_one("#pr-decision", Static)
-        if (decision := _decision(pr, state, actions)) is not None:
+        if (decision := _decision(self.pr, self.state(), typing=typing)) is not None:
             box.update(decision)
         box.display = decision is not None
 
@@ -962,10 +989,8 @@ class PRSession(Vertical):
         says what's next."""
         if not self.pr:
             return
-        state = self.state()
-        self._show_working(state)
-        if state.doing and not state.ask:
-            self.query_one("#pr-decision").display = False
+        self._show_working(self.state())
+        self._show_decision()
 
     def _show_working(self, state: SessionState) -> None:
         working = self.query_one(Working)
@@ -1013,6 +1038,10 @@ class PRSession(Vertical):
 
     def on_descendant_focus(self) -> None:
         self._suggest_next()
+        self._show_decision()
+
+    def on_descendant_blur(self) -> None:
+        self._show_decision()
 
     def _suggest_next(self) -> None:
         """Show the suggestion for where the PR's conversation is, asking for one if
@@ -1090,6 +1119,16 @@ class PRSession(Vertical):
 
         self.app.push_screen(HistorySearchScreen(asked, prompt.text), picked)
 
+    def _on_its_way(self) -> None:
+        """What you wrote is on its way to the agent: the spinner spins at once, and the
+        decision box doesn't come back meanwhile, till the agent says what it's doing."""
+        state = self.state()
+        if state.progress:  # it's at it already: it reads it as it works
+            return
+        state.progress, state.since = "Thinking", time.monotonic()
+        self._show_working(state)
+        self.purr_app.main.repo.working_changed()
+
     def _quoted(self, text: str) -> Quote | None:
         """The lines you asked about, if what you wrote still starts with them."""
         quote = self.state().quote
@@ -1116,6 +1155,7 @@ class PRSession(Vertical):
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
+        self._on_its_way()
         self.state().quote = None
         event.prompt.clear()
         event.prompt.remember(text)

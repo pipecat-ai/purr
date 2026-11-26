@@ -1617,6 +1617,54 @@ async def test_writing_instead_of_approving_says_so_in_the_thread(tmp_path):
         assert lines[aside + 2].startswith("> is the race real?")  # then what you wrote
 
 
+async def test_the_decision_box_shows_only_when_its_needed(tmp_path):
+    app, github = make_app(tmp_path)
+    agent = app.purr.agent
+    github.open["pipecat-ai/pipecat"] = [remote(1, title="Message bus")]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        await pilot.press("r")
+        await until(pilot, lambda: "[a] request changes" in decision(app))
+        await until(pilot, lambda: not app.purr.runner.get_worker("reviews").running)
+
+        # Typing hides it (a and x type there); an empty prompt, or leaving it, brings it
+        # back, since a and x work again.
+        await pilot.press("escape", "enter")
+        assert focused(app) == "prompt" and "[a] request changes" in decision(app)
+        await pilot.press("w")
+        assert decision(app) == ""
+        await pilot.press("backspace")
+        assert "[a] request changes" in decision(app)
+        await pilot.press("w", "escape")
+        assert focused(app) == "transcript" and "[a] request changes" in decision(app)
+        await pilot.press("enter")
+        assert decision(app) == ""
+        await pilot.press("backspace", "escape", "x")  # dismissed: your verdict's next
+        await until(pilot, lambda: "No verdict yet." in decision(app))
+
+        # While the agent works on what you wrote, it waits, and so does a: what the agent
+        # says may change it. Once it's done, what waits on you is back.
+        agent.gate = asyncio.Event()
+        await pilot.press("enter", *"is the race real?", "enter")
+        await until(pilot, lambda: len(agent.runs) == 2)
+        assert decision(app) == "" and app.main.repo.a_does() == ""
+        agent.gate.set()
+        await until(pilot, lambda: "[a] request changes" in decision(app))
+
+        # The agent's question stays as you type: what you write is the answer to it.
+        agent.ask = ("Bash", {"command": "uv run pytest"}, "not pre-approved")
+        agent.gate = None
+        await pilot.press(*"run the tests", "enter")
+        await until(pilot, lambda: "[a] allow" in decision(app))
+        await pilot.press(*"use uv run pytest -x")
+        assert "[a] allow" in decision(app)
+        await pilot.press("enter")
+        await until(pilot, lambda: agent.insteads == ["use uv run pytest -x"])
+
+
 async def test_requests_for_your_review_and_replies_to_you(tmp_path):
     from purr.models import PRRef, PRState, Reply
 
