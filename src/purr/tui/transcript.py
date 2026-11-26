@@ -1,4 +1,4 @@
-"""The PR's pane (description, diff, conversation): a log you can select text in."""
+"""The PR's pane (its description, the conversation): a log you can select text in."""
 
 from rich.cells import cell_len
 from rich.segment import Segment
