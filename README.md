@@ -64,8 +64,8 @@ rebase the PR, `a` force-pushes it, but only if nobody pushed to the PR since.
 | *To merge* | PRs you approved that are still open: `m` merges |
 | *Reviewing* | The agent is reviewing it |
 | *Your PRs* | PRs you opened |
-| *Up next* | A few PRs nobody has taken, picked for you |
 | *Review requested* | PRs asking for your review |
+| *Up next* | A few PRs nobody has taken, picked for you |
 | *Done* | PRs you requested changes on, and others with nothing left to do |
 | *Others reviewing* | PRs someone else has taken |
 | *Not reviewed* | The other open PRs |

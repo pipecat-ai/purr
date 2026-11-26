@@ -171,3 +171,11 @@ def test_what_you_approved_and_is_still_open_is_to_merge():
     assert group(replace(approved, verdict=Verdict(ActionKind.APPROVE, "old"))) == PRState.DONE
     assert group(replace(approved, gh_state=GHState.MERGED)) == PRState.DONE
     assert group(replace(approved, authored=True)) == YOURS
+
+
+def test_review_requests_come_before_up_next():
+    from purr.tui.lists import GROUPS, REQUESTED, UP_NEXT
+
+    # Someone asked you (a teammate, mostly, whose PRs come first): before Purr's picks.
+    keys = [key for key, *_ in GROUPS]
+    assert keys.index(REQUESTED) < keys.index(UP_NEXT)

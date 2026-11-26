@@ -32,18 +32,18 @@ UP_NEXT = "upnext"
 TO_MERGE = "tomerge"
 # What's yours first: what needs you, what you approved and is still open (merging's
 # next, and in Done it'd be missed), what's under way, your own PRs (when someone
-# comments on one, it needs you), what's up next (the pool's PRs worth looking at
-# next, best first), PRs asking for your review (someone's waiting on you), and
-# what you finished lately (the latest few; search finds the rest). Then what
-# others are reviewing, and last the pool of unreviewed PRs (hundreds, in a big
-# repo).
+# comments on one, it needs you), PRs asking for your review (someone's waiting on
+# you: a teammate, mostly, whose PRs come first), what's up next (the pool's PRs
+# worth looking at next, best first), and what you finished lately (the latest few;
+# search finds the rest). Then what others are reviewing, and last the pool of
+# unreviewed PRs (hundreds, in a big repo).
 GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (TO_MERGE, "⇡", "TO MERGE", "bold green"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
     (YOURS, "◆", "YOUR PRS", "bold blue"),
-    (UP_NEXT, "➜", "UP NEXT", "bold green"),
     (REQUESTED, "◇", "REVIEW REQUESTED", "bold magenta"),
+    (UP_NEXT, "➜", "UP NEXT", "bold green"),
     (PRState.DONE, "✓", "DONE", "bold green"),
     (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
     (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
