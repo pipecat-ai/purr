@@ -1500,6 +1500,51 @@ async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
         await until(pilot, lambda: numbers() == [7, 6, 5, 4, 3, 2, 9, 8])
 
 
+async def test_waiting_on_its_author_then_done_once_merged(tmp_path):
+    from purr.models import GHState, PRRef, PRState, Verdict
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [
+        remote(1, title="Change alpha"),
+        remote(2, title="Change bravo"),
+        remote(3, title="Change charlie"),
+    ]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        store, repo = app.purr.store, app.main.repo
+        one, two, three = (PRRef("pipecat-ai/pipecat", n) for n in (1, 2, 3))
+        # You requested changes on #1 as it is: it's the author's turn, not done.
+        await store.set_pr_state(one, PRState.DONE)
+        await store.set_verdict(one, Verdict(ActionKind.REQUEST_CHANGES, "abc"))
+        # #2 you approved, then it merged; #3 merged with a proposal still waiting on you.
+        await store.set_pr_state(two, PRState.DONE)
+        await store.set_verdict(two, Verdict(ActionKind.APPROVE, "abc"))
+        await store.set_pr_state(three, PRState.NEEDS_YOU)
+        await store.add_pending_action(three, kind=ActionKind.APPROVE, description="LGTM")
+        await store.apply_sync(gh_states={two: GHState.MERGED, three: GHState.MERGED})
+        await repo.reload()
+
+        text = lambda: "\n".join(option_texts(app))  # noqa: E731
+        await until(pilot, lambda: "WAITING ON AUTHOR (1)" in text() and "DONE (2)" in text())
+        assert text().index("Change alpha") < text().index("DONE (2)")
+        assert "NEEDS YOU" not in text()  # merged: what waited on you is moot
+        assert any("↩" in row and "Change alpha" in row for row in option_texts(app))
+
+        # On a merged PR, there's nothing to decide, and nothing to review.
+        app.main.repo.select(str(three), repo="pipecat-ai/pipecat")
+        await repo.reload()
+        await until(pilot, lambda: repo.session.pr is not None and repo.session.pr.ref == three)
+        await repo.session.refresh_status()
+        assert decision(app) == "" and repo.a_does() == ""
+        await pilot.press("r")
+        await pilot.pause(0.2)
+        assert app.purr.agent.runs == []
+        assert (await store.get_pr(three)).state == PRState.NEEDS_YOU
+
+
 async def test_selecting_text_in_the_pr_pane_copies_it(tmp_path, monkeypatch):
     """Drag over the PR's description or conversation: it's selected, and copied, as
     terminals do. ctrl+c copies too, and never quits."""

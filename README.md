@@ -63,7 +63,8 @@ rebase the PR, `a` force-pushes it, but only if nobody pushed to the PR since.
 | *Reviewing* | The agent is reviewing it |
 | *Review requested* | PRs asking for your review |
 | *Up next* | A few PRs nobody has taken, picked for you |
-| *Done* | PRs you requested changes on, and others with nothing left to do |
+| *Waiting on author* | PRs you requested changes on: the author's turn |
+| *Done* | PRs you reviewed that were merged or closed, the latest first |
 | *Others reviewing* | PRs someone else has taken |
 | *Not reviewed* | The other open PRs |
 

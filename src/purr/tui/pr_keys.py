@@ -30,7 +30,7 @@ from purr.messages import (
     PostComments,
     StopAgent,
 )
-from purr.models import PR, ActionKind, PRRef, ReviewStatus
+from purr.models import PR, ActionKind, GHState, PRRef, ReviewStatus
 from purr.review.agent import claude_code_command
 from purr.tui.dialogs import AlwaysScreen, ConfirmScreen, NoticeScreen
 from purr.tui.merge_box import can_run_ci, settling
@@ -46,9 +46,14 @@ def _review_anyway(taken: list[PR]) -> ConfirmScreen:
     )
 
 
+def _which(prs: list[PR]) -> str:
+    """'#7', '#7 and #9', or '5 PRs'."""
+    return " and ".join(f"#{pr.number}" for pr in prs) if len(prs) < 4 else f"{len(prs)} PRs"
+
+
 def _review_again(done: list[PR]) -> ConfirmScreen:
     """Ask before reviewing PRs again from the start."""
-    which = " and ".join(f"#{pr.number}" for pr in done) if len(done) < 4 else f"{len(done)} PRs"
+    which = _which(done)
     were = "was" if len(done) == 1 else "were"
     return ConfirmScreen(
         f"{which} {were} reviewed already. Review again, from the start?",
@@ -121,6 +126,9 @@ class PRKeys(PurrView):
         targets = [pr for ref, pr in self._prs.items() if ref in self._marked]  # as listed
         if not targets and (pr := self.selected_pr()):
             targets = [pr]
+        if gone := [pr for pr in targets if pr.gh_state != GHState.OPEN]:
+            self.notify(f"{_which(gone)}: merged or closed, nothing to review")
+            targets = [pr for pr in targets if pr.gh_state == GHState.OPEN]
         taken = [pr for pr in targets if pr.others_on_it]
         if taken and not await self.app.push_screen_wait(_review_anyway(taken)):
             return

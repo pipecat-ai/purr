@@ -765,8 +765,16 @@ class Store:
                 [(ref.repo, ref.number) for ref in deletes],
             )
             await self._db.executemany(
-                "UPDATE prs SET gh_state = ? WHERE repo = ? AND number = ?",
-                [(state, ref.repo, ref.number) for ref, state in (gh_states or {}).items()],
+                # Merged or closed, it's done now: the latest done come first in its list.
+                """
+                UPDATE prs SET state_at = CASE WHEN gh_state = ? THEN state_at ELSE ? END,
+                    gh_state = ?
+                WHERE repo = ? AND number = ?
+                """,
+                [
+                    (state, _now_ms(), state, ref.repo, ref.number)
+                    for ref, state in (gh_states or {}).items()
+                ],
             )
         except BaseException:
             await self._db.rollback()

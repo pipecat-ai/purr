@@ -156,7 +156,8 @@ class PR:
     state: PRState = PRState.NOT_REVIEWED
     gh_state: GHState = GHState.OPEN
     model: str | None = None  # you chose it for the PR's conversation (/model)
-    state_at: str | None = None  # when it got to its state (done: when you finished)
+    state_at: str | None = None  # when it got to its state (done: when you finished, or
+    # it was merged or closed)
     # Replies to you you haven't answered (or said need no answer), oldest first.
     replies: tuple[Reply, ...] = ()
     verdict: Verdict | None = None  # your latest on GitHub, as Purr last knew

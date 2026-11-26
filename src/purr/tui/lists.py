@@ -30,24 +30,28 @@ OTHERS = "others"
 REQUESTED = "requested"
 UP_NEXT = "upnext"
 TO_MERGE = "tomerge"
+WAITING = "waiting"
 # What's yours first: what needs you, what you approved and is still open (merging's
 # next, and in Done it'd be missed), what's under way, PRs asking for your review
 # (someone's waiting on you: a teammate, mostly, whose PRs come first), what's up next
-# (the pool's PRs worth looking at next, best first), and what you finished lately (the
-# latest few; search finds the rest). Then what others are reviewing, and last the pool
-# of unreviewed PRs (hundreds, in a big repo).
+# (the pool's PRs worth looking at next, best first), what waits on its author (you
+# requested changes), and what you finished lately (the latest few; search finds the
+# rest). Then what others are reviewing, and last the pool of unreviewed PRs (hundreds,
+# in a big repo).
 GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (TO_MERGE, "⇡", "TO MERGE", "bold green"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
     (REQUESTED, "◇", "REVIEW REQUESTED", "bold magenta"),
     (UP_NEXT, "➜", "UP NEXT", "bold green"),
+    (WAITING, "↩", "WAITING ON AUTHOR", "bold blue"),
     (PRState.DONE, "✓", "DONE", "bold green"),
     (OTHERS, "◌", "OTHERS REVIEWING", "bold"),
     (PRState.NOT_REVIEWED, "○", "NOT REVIEWED", "bold"),
 ]
 DONE_SHOWN = 5
 ICONS = {key: icon for key, icon, *_ in GROUPS}
+STYLES = {key: style for key, _, _, style in GROUPS}
 
 
 class GroupedList(OptionList):
@@ -174,11 +178,16 @@ class PRList(GroupedList):
 
 
 def group(pr: PR) -> str:
-    """Where a PR goes in the list: its review state; or, done, "to merge" if you approved
-    it and it's still open; or, not reviewed, "requested" if it asks for your review,
-    "others" if someone else took it."""
+    """Where a PR goes in the list: done, once merged or closed (whatever waited on you);
+    else its review state; or, done, "to merge" if you approved it as it is, "waiting" if
+    you requested changes on it as it is; or, not reviewed, "requested" if it asks for
+    your review, "others" if someone else took it."""
+    if pr.gh_state != GHState.OPEN:
+        return PRState.DONE
     if to_merge(pr):
         return TO_MERGE
+    if waiting_on_author(pr):
+        return WAITING
     if pr.state == PRState.NOT_REVIEWED and pr.requested_from_me and not pr.assigned_to_me:
         return REQUESTED
     if pr.state == PRState.NOT_REVIEWED and pr.others_on_it:
@@ -188,9 +197,19 @@ def group(pr: PR) -> str:
 
 def to_merge(pr: PR) -> bool:
     """You approved it as it is, and it's open: merging's next (m), by you or not."""
+    return _open_with_verdict(pr, ActionKind.APPROVE)
+
+
+def waiting_on_author(pr: PR) -> bool:
+    """You requested changes on it as it is, and it's open: it's the author's turn. New
+    commits or a reply bring it back to you."""
+    return _open_with_verdict(pr, ActionKind.REQUEST_CHANGES)
+
+
+def _open_with_verdict(pr: PR, kind: ActionKind) -> bool:
+    """Done and still open, your verdict ``kind``, given on its current head."""
     verdict = pr.verdict
-    approved = verdict is not None and verdict.kind == ActionKind.APPROVE
-    as_it_is = approved and verdict is not None and verdict.head == pr.head_sha
+    as_it_is = verdict is not None and verdict.kind == kind and verdict.head == pr.head_sha
     return pr.state == PRState.DONE and pr.gh_state == GHState.OPEN and as_it_is
 
 
