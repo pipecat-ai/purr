@@ -947,18 +947,9 @@ class Store:
         await self._db.commit()
         return _activity(row)
 
-    async def activity(
-        self, *, since: str | None = None, pr: PRRef | None = None
-    ) -> list[Activity]:
-        """Activity entries, oldest first; optionally only after ``since`` or for one PR."""
-        clauses, params = [], []
-        if since:
-            clauses.append("at > ?")
-            params.append(since)
-        if pr:
-            clauses += ["repo = ?", "number = ?"]
-            params += [pr.repo, pr.number]
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    async def activity(self, *, pr: PRRef | None = None) -> list[Activity]:
+        """Activity entries, oldest first: all, or one PR's."""
+        where, params = ("WHERE repo = ? AND number = ?", [pr.repo, pr.number]) if pr else ("", [])
         rows = await self._fetchall(f"SELECT * FROM activity {where} ORDER BY id", params)
         return [_activity(row) for row in rows]
 

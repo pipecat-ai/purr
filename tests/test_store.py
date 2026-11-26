@@ -372,7 +372,6 @@ async def test_activity_log(store):
     ]
     assert entries[0].data == {"change": "pooled"}
     assert [a.id for a in await store.activity(pr=ref)] == [first.id]
-    assert await store.activity(since="2999-01-01") == []
 
 
 async def test_repo_summaries(store):
