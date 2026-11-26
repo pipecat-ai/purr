@@ -2192,6 +2192,36 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert await app.purr.store.draft_comments(ref) == []
 
 
+async def test_the_prs_pane_fills_its_width_after_the_diff_had_the_screen(tmp_path):
+    # Hidden behind the diff, the PR's pane has no width: what's written to it meanwhile
+    # (its details arriving, the agent at work) is written again when it shows.
+    from purr.tui.transcript import Transcript
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    github.details[ref] = PRDetails(body="Fixes the bus. " * 20)
+    github.diffs[ref] = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n"
+    async with app.run_test(size=(240, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: "Fixes the bus." in transcript(app))
+        repo, log = app.main.repo, app.main.repo.session.query_one(Transcript)
+
+        def widest() -> int:
+            return max(line.cell_length for line in log.lines)
+
+        assert widest() > 78
+        await pilot.press("d")
+        await until(pilot, lambda: repo.diff_shown and not repo.session.display)
+        await repo.session.details_changed()  # its overview, written again meanwhile
+        assert widest() <= 20  # wrapped for the pane's least width
+        await pilot.press("escape")  # both panes
+        await until(pilot, lambda: repo.session.display)
+        await until(pilot, lambda: widest() > 78)
+
+
 async def test_the_diff_follows_what_the_agent_commits(tmp_path):
     from purr.git import Local
     from purr.messages import SendMessage

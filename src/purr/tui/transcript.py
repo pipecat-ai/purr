@@ -30,6 +30,20 @@ class Transcript(RichLog):
     _width: int | None = None
     _rewrap: Timer | None = None
     _at_end = True  # scrolled to the end, where it stays when it gets shorter
+    _hidden_writes = False  # written to while hidden: wrapped for no width
+
+    def write(self, *args, **kwargs) -> "Transcript":
+        # Hidden (the diff zoomed in its place), it has no width, and RichLog wraps what's
+        # written then at its minimum (78), however wide it is when it shows again. Before
+        # its first size, RichLog keeps what's written for later on its own.
+        if self._size_known and not self.scrollable_content_region.width:
+            self._hidden_writes = True
+        return super().write(*args, **kwargs)
+
+    def on_show(self) -> None:
+        if self._hidden_writes:
+            self._hidden_writes = False
+            self.post_message(self.Rewrap())
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
