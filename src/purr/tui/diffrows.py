@@ -5,6 +5,7 @@ hunks, and what's said on each line, in a box (see purr.tui.boxes).
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import NamedTuple
 
 from rich.text import Text
@@ -14,7 +15,7 @@ from purr.models import DraftComment, PRComment
 from purr.tui.boxes import BOX_WIDTH, comment_box
 from purr.tui.code import code, colored_source, highlighted
 from purr.tui.overview import VERDICTS, short_age
-from purr.tui.theme import palette
+from purr.tui.theme import Palette, palette
 
 SHORT_DIFF = 60  # a diff this short starts with its files opened
 
@@ -207,14 +208,17 @@ def _file_rows(
     if file.generated:
         return [Row("note", Text("  generated, not shown", style="dim"), index)]
     out: list[Row] = []
-    colored = highlighted(file, palette().code)
+    numbered = _numbered_lines(file, palette())
     left_out = {gap.at: gap for gap in gaps(file)}
-    for at, (line, words) in enumerate(zip(file.lines, colored, strict=True)):
+    under: dict[tuple[int, str], list[Said]] = {}
+    for comment in comments:
+        under.setdefault((comment.line, comment.side), []).append(comment)
+    for at, line in enumerate(file.lines):
         if gap := left_out.get(at):  # its header: the gap's row, its lines above it
             out += _gap_rows(index, file, gap, line, around)
         else:
-            out.append(Row("line", _numbered(line, words), index, line))
-        for comment in (c for c in comments if (c.line, c.side) == line.target()):
+            out.append(Row("line", numbered[at], index, line))
+        for comment in under.get(line.target(), ()):
             out += _said_rows(index, comment, shut, width)
     if end := left_out.get(len(file.lines)):  # after the last hunk: its row, then its lines
         out += _gap_rows(index, file, end, None, around)
@@ -255,6 +259,14 @@ def _gap_text(gap: Gap, header: Line | None, opened: bool, size: int | None) -> 
     if header:
         text.append("  ").append(header.text.expandtabs(4), LINE_STYLES["@@"])
     return text
+
+
+@lru_cache(maxsize=64)
+def _numbered_lines(file: File, colors: Palette) -> tuple[Text, ...]:
+    """Each of the file's lines numbered and colored: made once for each file and theme,
+    not each time the rows are laid out again (a comment, a file or a gap opened)."""
+    colored = highlighted(file, colors.code)
+    return tuple(_numbered(line, words) for line, words in zip(file.lines, colored, strict=True))
 
 
 def _numbered(line: Line, words: Text | None = None) -> Text:
