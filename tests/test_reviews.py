@@ -290,7 +290,8 @@ async def test_follow_up_continues_the_session(make):
     s = await make()
     await s.store.upsert_pr(make_pr())
     await s.client.request(StartReview(pr=REF))
-    await eventually(lambda: s.client.of(ReviewFinished))
+    # Finished, and its run over (it says so before it settles the PR).
+    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
 
     [proposal] = await s.store.pending_actions(REF)
     s.agent.gate = asyncio.Event()
@@ -307,11 +308,11 @@ async def test_follow_up_continues_the_session(make):
     # It proposes again (the fake always does), and the PR needs you again.
     s.agent.gate.set()
     await eventually(lambda: len(s.client.of(ReviewFinished)) == 2)
+    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
     assert len(await s.store.pending_actions(REF)) == 1
     assert await s.state() == PRState.NEEDS_YOU
 
     # A slash command isn't a reply: the proposal stays.
-    await eventually(lambda: REF not in s.runner.get_worker(REVIEW_WORKER).running)
     await s.client.request(SendMessage(pr=REF, text="/compact"))
     await eventually(lambda: len(s.agent.runs) == 3)
     assert s.agent.runs[2]["prompt"] == "/compact"
