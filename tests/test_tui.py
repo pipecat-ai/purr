@@ -2655,10 +2655,12 @@ async def _waiting_on_ci(app: PurrApp, github: FakeGitHub, pilot) -> PRRef:
 
 
 async def go_to(app: PurrApp, pilot, number: int) -> None:
-    """Select pipecat's PR #number, and wait till its pane shows it."""
+    """Select pipecat's PR #number, and wait till its pane shows it: drawn, its decision
+    box with it (the pane starts on it a moment before)."""
     repo = app.main.repo
     repo.select(f"pipecat-ai/pipecat#{number}", repo="pipecat-ai/pipecat")
-    await until(pilot, lambda: repo.session.pr is not None and repo.session.pr.number == number)
+    drawn = lambda: repo.session._drawn  # noqa: E731
+    await until(pilot, lambda: drawn() is not None and drawn().number == number)
 
 
 def mark_of(app: PurrApp, number: int) -> str:
