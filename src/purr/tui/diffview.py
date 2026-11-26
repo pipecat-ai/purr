@@ -7,15 +7,15 @@ comments on them, if not): ``tab`` opens or closes the one the cursor's in, ``e`
 all of them, ``n``/``p`` go to the next or previous change (a file, or an opened
 file's hunk). ``shift+↑``/``shift+↓`` (or ``ctrl+space`` and moving) select lines;
 ``enter`` asks the agent about them (or the line under the cursor), in the PR's
-conversation. ``c`` writes a comment
-on them, or rewrites yours under the cursor, and ``x`` removes it.
+conversation. ``c`` writes a comment on them, or rewrites yours under the cursor,
+and ``x`` removes it.
 
 Yours go to GitHub as you save them. The comments the agent proposes show too,
 and the PR's review threads on GitHub: each in a box under its line, which ``tab``
 closes to a line (resolved threads start that way) and opens again.
 
 Lines added and removed have a green or red background, under their code in its
-language's colors (see purr.tui.code).
+language's colors (see purr.tui.code). The rows are laid out in purr.tui.diffrows.
 
 What the diff leaves out around its hunks (see purr.diff.gaps) is a row each, the
 hunk's header (or a row after the last hunk): ``tab`` there shows those lines, from the
@@ -219,19 +219,22 @@ class DiffView(ScrollView, can_focus=True):
     def reveal(self, file: int, at: int) -> None:
         """Show the gap's lines, or hide them, its row staying where it is on the screen:
         lines above a hunk's header come in above it, those after the last hunk below."""
-        where = next((i for i, r in enumerate(self._rows) if r.gap and r.gap.at == at
-                      and r.file == file), self.cursor)  # fmt: skip
-        on_screen = where - round(self.scroll_offset.y)
+        where = self._gap_row(file, at)
+        on_screen = (self.cursor if where is None else where) - round(self.scroll_offset.y)
         self.revealed ^= {(file, at)}
         self.show(self.comments)
-        now = next((i for i, r in enumerate(self._rows) if r.gap and r.gap.at == at
-                    and r.file == file), None)  # fmt: skip
+        now = self._gap_row(file, at)
         if now is None:  # read, the file ends with the last hunk
             self.notify("That's the end of the file.")
             return
         self._place(now)
         # Once the view's taken its new height (until then, it can't scroll that far).
         self.call_after_refresh(self.scroll_to, y=max(now - on_screen, 0), animate=False)
+
+    def _gap_row(self, file: int, at: int) -> int | None:
+        """Where a gap's row is, if it has one."""
+        found = (i for i, r in enumerate(self._rows) if r.gap and (r.file, r.gap.at) == (file, at))
+        return next(found, None)
 
     def toggle_said(self, said: Said) -> None:
         self.shut ^= {said.key}
@@ -556,7 +559,7 @@ class DiffPane(Vertical):
         self.view.load(self._files)
         comments = await self._comments()
         self.view.show(comments, first_opened(self._files, diff.diff, comments))
-        self.run_worker(self._load_threads(), group="threads", exclusive=True)
+        self._read_threads()
 
     async def update(self, pr: PR, diff: PRDiff) -> None:
         """The PR's diff again, if it changed (the agent committed, or pushed): the same
@@ -602,6 +605,10 @@ class DiffPane(Vertical):
         if self.pr:
             self.view.show(await self._comments())
 
+    def _read_threads(self) -> None:
+        """The PR's review threads on GitHub, read (again) in the background."""
+        self.run_worker(self._load_threads(), group="threads", exclusive=True)
+
     async def _load_threads(self) -> None:
         """The PR's review threads on GitHub (a request away): their files open as they come,
         unless all of them are resolved."""
@@ -637,9 +644,9 @@ class DiffPane(Vertical):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if parameters == ("unzoom",):
-            return cast("PurrApp", self.app).main.repo.zoomed
+            return self.purr_app.main.repo.zoomed
         if parameters == ("approve",):
-            return bool(cast("PurrApp", self.app).main.repo.a_does())
+            return bool(self.purr_app.main.repo.a_does())
         if action == "reply":  # on a comment on GitHub; elsewhere r reviews (the repo's)
             row = self.view.current()
             return bool(row and row.said and row.said.source == "github")
@@ -681,20 +688,14 @@ class DiffPane(Vertical):
             self.notify("Ask about lines of the diff: move to one (shift+↑/↓ select several).")
 
     def _write_on(self, said: Said) -> None:
-        """The editor, on what's said here, with its words to change: yours (rewritten),
-        the agent's proposed comment (rewritten: approving posts yours), or a thread on
-        GitHub: the last comment, if it's yours (changed there when you save it), else your
-        reply (posted there when you save it)."""
+        """The editor, on what's said here (see _editing): yours, rewritten; the agent's
+        proposed comment, rewritten (approving posts yours); one on GitHub, changed there
+        if it's yours, else answered (in its thread, or on the PR) when you save it."""
         if said.key in self.view.shut:
             self.view.toggle_said(said)
             return
         heading, body, save = self._editing(said)
-
-        async def saved(text: str | None) -> None:
-            if text:
-                await save(said, text)
-
-        self.app.push_screen(CommentScreen(heading, body), saved)
+        self._write(CommentScreen(heading, body), partial(save, said))
 
     def _editing(self, said: Said) -> tuple[str, str, Callable[[Said, str], Awaitable[None]]]:
         """What the editor says, what it starts with, and what saving it does."""
@@ -714,7 +715,12 @@ class DiffPane(Vertical):
         return f"Your reply on GitHub, to {said.who} on {where}", "", self._reply
 
     async def _rewrite_mine(self, said: Said, text: str) -> None:
-        await self._save(text, None, said.mine)
+        """One of yours from before comments went as you saved them, rewritten."""
+        assert self.pr is not None and said.mine is not None
+        mine = said.mine
+        job = SaveComment(pr=self.pr.ref, path=mine.path, line=mine.line, side=mine.side,
+                          body=text, head_sha=self.pr.head_sha, comment_id=mine.id)  # fmt: skip
+        await self._request(job)
 
     async def _rewrite_proposed(self, said: Said, text: str) -> None:
         assert self.pr is not None
@@ -725,7 +731,7 @@ class DiffPane(Vertical):
         assert self.pr is not None
         await self._request(EditGitHubComment(pr=self.pr.ref, comment_id=said.id, body=text))
         self.notify("Changed on GitHub")
-        self.run_worker(self._load_threads(), group="threads", exclusive=True)
+        self._read_threads()
 
     async def _edit_pr_comment(self, said: Said, text: str) -> None:
         assert self.pr is not None
@@ -750,41 +756,41 @@ class DiffPane(Vertical):
         assert self.pr is not None
         await self._request(ReplyToThread(pr=self.pr.ref, thread_id=said.thread, body=text))
         self.notify("Replied on GitHub")
-        self.run_worker(self._load_threads(), group="threads", exclusive=True)
+        self._read_threads()
 
     def action_comment(self) -> None:
         """On the conversation, a comment on the PR; else one on the lines selected (or the
         one under the cursor, or someone's comment's): posted on GitHub when you save it.
-        On a comment of yours not posted yet (from before), it rewritten."""
+        On a comment of yours not posted yet (from before), it's rewritten."""
         row = self.view.current()
+        said = row.said if row else None
         if row and not self.view.files[row.file].path:
             self._write(CommentScreen("Your comment on the PR (posted when you save it)"),
                         partial(self._on_pr, None))  # fmt: skip
-            return
-        if self._diff.unpushed and not (row and row.said and row.said.mine):
-            self.notify(
+        elif why := self._no_comments_here(said):
+            self.notify(why)
+        elif said and said.mine:
+            screen = CommentScreen(f"Your comment on {_mine_text(said.mine)}", said.mine.body)
+            self._write(screen, partial(self._rewrite_mine, said))
+        elif quote := self._quoted(row):
+            heading = f"Your comment on {_where_text(quote)} (posted when you save it)"
+            self._write(CommentScreen(heading), partial(self._post_on_lines, quote))
+        else:
+            self.notify("Comments go on lines of the diff (or the conversation, at the top).")
+
+    def _no_comments_here(self, said: Said | None) -> str:
+        """Why GitHub won't take a comment on what's selected, if it won't."""
+        if self._diff.unpushed and not (said and said.mine):
+            return (
                 "This diff has commits that aren't pushed yet, and GitHub takes comments only "
                 "on lines it has. Push them first (a), or ask the agent about these (enter)."
             )
-            return
         if self.view.outside_selected():
-            self.notify(
+            return (
                 "GitHub takes comments only on the diff's lines, not those shown around "
                 "them. enter asks the agent about them."
             )
-            return
-        mine = row.said.mine if row and row.said else None
-        quote = None if mine else self._quoted(row)
-        if mine is None and quote is None:
-            self.notify("Comments go on lines of the diff (or the conversation, at the top).")
-            return
-        if mine:
-            screen = CommentScreen(f"Your comment on {_mine_text(mine)}", mine.body)
-            self._write(screen, lambda body: self._save(body, None, mine))
-            return
-        assert quote is not None
-        heading = f"Your comment on {_where_text(quote)} (posted when you save it)"
-        self._write(CommentScreen(heading), lambda body: self._post_on_lines(body, quote))
+        return ""
 
     def _write(self, screen: "CommentScreen", save: Callable[[str], Awaitable[None]]) -> None:
         """The comment editor; what saving it does, with what was written."""
@@ -795,7 +801,7 @@ class DiffPane(Vertical):
 
         self.app.push_screen(screen, saved)
 
-    async def _post_on_lines(self, body: str, quote: Quote) -> None:
+    async def _post_on_lines(self, quote: Quote, body: str) -> None:
         assert self.pr is not None
         job = PostLineComment(
             pr=self.pr.ref, path=quote.path, line=quote.end, side=quote.side,
@@ -804,7 +810,7 @@ class DiffPane(Vertical):
         )  # fmt: skip
         if await self._request(job):
             self.notify("Posted on GitHub")
-        self.run_worker(self._load_threads(), group="threads", exclusive=True)
+        self._read_threads()
 
     def _quoted(self, row: Row | None) -> Quote | None:
         """What a comment would be on: the selection, or the line of the comment under the
@@ -813,18 +819,6 @@ class DiffPane(Vertical):
             line, side = row.said.line, row.said.side
             return Quote(row.said.path, line, side, line, side, "")
         return self.view.quote()
-
-    async def _save(self, body: str, quote: Quote | None, mine: DraftComment | None) -> None:
-        assert self.pr is not None
-        if mine:
-            spot = dict(path=mine.path, line=mine.line, side=mine.side, comment_id=mine.id)
-        else:
-            assert quote is not None
-            spot = dict(path=quote.path, line=quote.end, side=quote.side,
-                        start_line=quote.start, start_side=quote.start_side)  # fmt: skip
-        await self._request(
-            SaveComment(pr=self.pr.ref, body=body, head_sha=self.pr.head_sha, **spot)
-        )
 
     async def action_remove(self) -> None:
         """x on a comment: yours on GitHub deleted there (once you've said so), one the
@@ -854,7 +848,7 @@ class DiffPane(Vertical):
             if await self._request(job):
                 self.notify("Deleted on GitHub")
             if said.path:
-                self.run_worker(self._load_threads(), group="threads", exclusive=True)
+                self._read_threads()
             else:
                 await self._reread_conversation()
 
@@ -886,8 +880,7 @@ def _where_text(quote: Quote) -> str:
     return f"{quote.path}:{lines}{deleted}"
 
 
-def _mine_text(mine: DraftComment | None) -> str:
-    assert mine is not None
+def _mine_text(mine: DraftComment) -> str:
     first = mine.start_line or mine.line
     lines = f"{first}–{mine.line}" if first != mine.line else str(mine.line)
     return f"{mine.path}:{lines}"
