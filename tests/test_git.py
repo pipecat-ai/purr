@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from purr.git import GitError, GitRepos, Unpushed, push_url
+from purr.diff import mover
+from purr.git import GitError, GitRepos, Local, Unpushed, push_url
 from purr.models import PR, PRRef
 
 
@@ -407,6 +408,49 @@ async def test_pushing_a_rebased_pr(tmp_path, upstream):
     git(upstream, "update-ref", "refs/heads/feature", head)
     await repos.push(ref, rebased, repo="a/b", branch="feature", onto=head)
     assert git(upstream, "rev-parse", "feature") == rebased
+
+
+async def test_the_diff_has_what_the_agent_committed(tmp_path, upstream):
+    """What the agent committed in the worktree and isn't pushed yet is in the PR's diff:
+    commits on top of the PR, or the PR rebased (main's latest isn't in it)."""
+    repos = GitRepos(tmp_path / "data", clone_command=local_clone(upstream))
+    head = git(upstream, "rev-parse", "feature")
+    pr = open_pr(7, head)
+    path = await repos.checkout(pr.ref, head)
+    assert await repos.local(pr) is None  # nothing committed there
+
+    me = ("-c", "user.name=T", "-c", "user.email=t@example.com")
+    (path / "a.txt").write_text("zero\ntwo\n")
+    git(path, *me, "commit", "-qam", "Fix it")
+    fix = git(path, "rev-parse", "HEAD")
+    local = await repos.local(pr)
+    assert local == Local(fix, 1)
+    diff = await repos.local_diff(pr, local)
+    assert diff and "-one" in diff and "+zero" in diff and "+two" in diff
+    assert await repos.file_at(pr, "a.txt", fix) == "zero\ntwo\n"
+    assert await repos.file_at(pr, "a.txt") == "two\n"  # the PR's head, as on GitHub
+    where = mover(await repos.moved(pr, local))
+    assert where("a.txt", 1) == 2  # "two": a line down, under the one it added
+    assert where("b.txt", 1) == 1
+
+    # Rebased onto main's latest: the PR rewritten, its diff without main's new commits.
+    (upstream / "main.txt").write_text("main\n")
+    git(upstream, "add", "main.txt")
+    git(upstream, "commit", "-qm", "main moved")
+    git(path, "fetch", "-q", str(upstream), "main")
+    git(path, *me, "rebase", "-q", "FETCH_HEAD")
+    rebased = git(path, "rev-parse", "HEAD")
+    assert await repos.local(pr) == Local(rebased, 0)
+    diff = await repos.local_diff(pr, Local(rebased, 0))
+    assert diff and "+zero" in diff and "main.txt" not in diff
+
+    # The PR moved on (someone pushed): the worktree's of an older head, not its new one.
+    git(upstream, "checkout", "-q", "feature")
+    (upstream / "c.txt").write_text("c\n")
+    git(upstream, "add", "c.txt")
+    git(upstream, "commit", "-qm", "theirs")
+    git(upstream, "checkout", "-q", "main")
+    assert await repos.local(open_pr(7, git(upstream, "rev-parse", "feature"))) is None
 
 
 async def test_pushing_the_commits_made_in_a_worktree(tmp_path, upstream):

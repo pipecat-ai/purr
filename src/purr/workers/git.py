@@ -38,7 +38,9 @@ class GitWorker(BaseWorker):
     It syncs on start and whenever the PR list changes (a poll found new or
     updated PRs, mostly), after a short pause so a burst of changes is one
     sync. ``GetDiff`` answers from the clone, and from GitHub for a PR that
-    isn't synced yet (a repo still being cloned, a push since the last sync).
+    isn't synced yet (a repo still being cloned, a push since the last sync). What
+    the agent committed in the PR's worktree and isn't pushed yet is in it: the diff
+    is the PR as it'll be once it is.
 
     A PR's worktree is removed once it's not needed: when you approve the PR
     through Purr, and when it's merged or closed; after the first poll, any
@@ -154,6 +156,8 @@ class GitWorker(BaseWorker):
     async def get_diff(self, request: GetDiff) -> PRDiff:
         ref = request.pr
         pr = await self._store.get_pr(ref)
+        if pr and (unpushed := await self._unpushed_diff(pr)):
+            return unpushed
         diff = await self._repos.diff(pr) if pr else None
         if diff is None:
             try:
@@ -162,13 +166,26 @@ class GitWorker(BaseWorker):
                 raise Failed(f"Couldn't read the diff from GitHub: {e}") from e
         return PRDiff(diff=diff[:MAX_DIFF_CHARS])
 
+    async def _unpushed_diff(self, pr: PR) -> PRDiff | None:
+        """The PR's diff with what the agent committed that isn't pushed yet, if anything."""
+        if not (local := await self._repos.local(pr)):
+            return None
+        if (diff := await self._repos.local_diff(pr, local)) is None:
+            return None
+        moved = await self._repos.moved(pr, local)
+        return PRDiff(
+            diff=diff[:MAX_DIFF_CHARS], unpushed=local.head, commits=local.commits, moved=moved
+        )
+
     @handles(GetFile)
     async def get_file(self, request: GetFile) -> FileText:
         """A file at the PR's head: from the clone, or from GitHub if it isn't synced."""
         pr = await self._store.get_pr(request.pr)
         if pr is None:
             raise NotFound(f"Purr doesn't know {request.pr}")
-        text = await self._repos.file_at(pr, request.path)
+        text = await self._repos.file_at(pr, request.path, request.commit)
+        if text is None and request.commit:
+            raise NotFound(f"{request.path} isn't in {request.commit[:7]}")
         if text is None:
             try:
                 text = await self._github.file_at(pr.repo, request.path, pr.head_sha)

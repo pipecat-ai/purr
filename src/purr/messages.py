@@ -332,12 +332,28 @@ class FetchDetails(Request[FetchedDetails]):
 
 @dataclass(kw_only=True)
 class PRDiff:
+    """A PR's diff: as on GitHub or, if the agent committed in its worktree and that's not
+    pushed yet, as it'll be once it is.
+
+    Attributes:
+        unpushed: The commit it goes up to, when that's not on GitHub yet ("": it's the PR
+            as on GitHub).
+        commits: How many commits that is on top of the PR (0 with ``unpushed``: the agent
+            rewrote it, a rebase say).
+        moved: How those commits changed the PR's files (a diff with no context), to move
+            what's said on lines of the PR as on GitHub to where they are now.
+    """
+
     diff: str
+    unpushed: str = ""
+    commits: int = 0
+    moved: str = ""
 
 
 @dataclass(kw_only=True)
 class GetDiff(Request[PRDiff]):
-    """A PR's unified diff, as `gh pr diff` shows it."""
+    """A PR's unified diff, as `gh pr diff` shows it, with what the agent committed that's
+    not pushed yet."""
 
     worker: ClassVar[str] = GIT_WORKER
     pr: PRRef
@@ -350,11 +366,13 @@ class FileText:
 
 @dataclass(kw_only=True)
 class GetFile(Request[FileText]):
-    """A file as it is in the PR (at its head): for the diff's lines around the changes."""
+    """A file as it is in the PR (at its head, or ``commit``): for the diff's lines around
+    the changes."""
 
     worker: ClassVar[str] = GIT_WORKER
     pr: PRRef
     path: str
+    commit: str = ""
 
 
 @dataclass(kw_only=True)

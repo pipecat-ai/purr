@@ -53,8 +53,8 @@ To look around without starting reviews, run `purr --no-auto-review`.
    the agent works.
 
 You can also ask the agent to change the PR. It commits the change and proposes a push, and
-`a` pushes it. If you ask it to rebase the PR, `a` force-pushes it, but only if nobody pushed
-to the PR since.
+`a` pushes it. Until then, the diff (`d`) shows the PR with the change. If you ask it to
+rebase the PR, `a` force-pushes it, but only if nobody pushed to the PR since.
 
 ### The PR list
 

@@ -24,7 +24,7 @@ on: GitHub takes comments only on the diff's lines.
 """
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, NamedTuple, cast
 
@@ -41,7 +41,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Label
 
-from purr.diff import File, Gap, Line, gaps, parse
+from purr.diff import File, Gap, Line, gaps, mover, parse
 from purr.jobs import PurrError, Request
 from purr.messages import (
     DeleteGitHubComment,
@@ -53,6 +53,7 @@ from purr.messages import (
     GetReviewThreads,
     PostLineComment,
     PostPRComment,
+    PRDiff,
     RemoveComment,
     ReplyToThread,
     SaveComment,
@@ -171,6 +172,22 @@ def said(
     ]  # fmt: skip
     on_github = [said for thread in threads if thread.get("path") for said in _thread(thread)]
     return yours + theirs + on_github + [_on_pr(comment) for comment in conversation]
+
+
+def moved(comments: Sequence[Said], changes: str) -> list[Said]:
+    """What's said on lines of the PR as on GitHub, on those lines where they are after the
+    commits not pushed yet (``changes``, a diff with no context): on none (outdated) if the
+    commits changed them. Those on the base's lines (LEFT) stay put."""
+    where = mover(changes)
+
+    def move(said: Said) -> Said:
+        if not said.path or said.side != "RIGHT" or not said.line:
+            return said
+        line = where(said.path, said.line)
+        start = where(said.path, said.start) if said.start and line else 0
+        return replace(said, line=line, start=start or None)
+
+    return [move(said) for said in comments]
 
 
 def _on_pr(comment: PRComment) -> Said:
@@ -374,6 +391,16 @@ def _box(said: Said, where: bool, width: int) -> list[Text]:
 def _indent(said: Said) -> str:
     """On a line, under the code (a reply too: its title says so); on the PR, none."""
     return _INDENT if said.path else ""
+
+
+def _diff_title(pr: PR, diff: PRDiff) -> str:
+    """``Diff #6756``, and what's in it that isn't on GitHub yet, if anything."""
+    if not diff.unpushed:
+        return f"Diff #{pr.number}"
+    if not diff.commits:
+        return f"Diff #{pr.number} · rebased, not pushed yet"
+    commits = f"{diff.commits} commit{'s' * (diff.commits != 1)}"
+    return f"Diff #{pr.number} · with {commits} not pushed yet"
 
 
 def first_opened(files: Sequence[File], diff: str, comments: Sequence[Said]) -> set[int]:
@@ -615,6 +642,12 @@ class DiffView(ScrollView, can_focus=True):
         self.anchor, self.marking = None, False
         self.refresh()
 
+    def to_file(self, path: str) -> None:
+        """The cursor on a file's line, in view, if the diff has it."""
+        index = next((i for i, file in enumerate(self.files) if file.path == path), None)
+        if index is not None:
+            self._go(self._file_row(index))
+
     def _go(self, index: int) -> None:
         """Move, letting a selection go, unless it's from a mark."""
         if not self.marking:
@@ -823,7 +856,7 @@ class DiffPane(Vertical):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.pr: PR | None = None
-        self._diff = ""
+        self._diff = PRDiff(diff="")
         self._files: tuple[File, ...] = ()
         self._threads: list[dict] = []  # the PR's review threads on GitHub, once read
 
@@ -838,16 +871,36 @@ class DiffPane(Vertical):
     def view(self) -> DiffView:
         return self.query_one(DiffView)
 
-    async def show(self, pr: PR, diff: str) -> None:
-        """The PR's diff at its head, with what's been said on it: first, on the PR itself
-        (the conversation), then file by file."""
+    async def show(self, pr: PR, diff: PRDiff) -> None:
+        """The PR's diff at its head (with what the agent committed that's not pushed yet),
+        with what's been said on it: first, on the PR itself (the conversation), then file
+        by file."""
         self.pr, self._diff, self._threads = pr, diff, []
-        self._files = (CONVERSATION, *parse(diff))
-        self.border_title = f"Diff #{pr.number}"
+        self._files = (CONVERSATION, *parse(diff.diff))
+        self.border_title = _diff_title(pr, diff)
         self.view.load(self._files)
         comments = await self._comments()
-        self.view.show(comments, first_opened(self._files, diff, comments))
+        self.view.show(comments, first_opened(self._files, diff.diff, comments))
         self.run_worker(self._load_threads(), group="threads", exclusive=True)
+
+    async def update(self, pr: PR, diff: PRDiff) -> None:
+        """The PR's diff again, if it changed (the agent committed, or pushed): the same
+        files open, the cursor on the file it was in."""
+        if self.pr is None or pr.ref != self.pr.ref or diff == self._diff:
+            return
+        self.pr, self._diff = pr, diff
+        comments = await self._comments()  # first: what follows happens at once
+        if self._diff is not diff:
+            return  # another came meanwhile
+        view = self.view
+        opened = {file.path for i, file in enumerate(view.files) if i in view.opened}
+        here = view.current()
+        path = view.files[here.file].path if here else ""
+        self._files = (CONVERSATION, *parse(diff.diff))
+        self.border_title = _diff_title(pr, diff)
+        view.load(self._files)
+        view.show(comments, {i for i, file in enumerate(self._files) if file.path in opened})
+        view.to_file(path)
 
     @on(DiffView.NeedsFile)
     def _needs_file(self, event: DiffView.NeedsFile) -> None:
@@ -860,7 +913,8 @@ class DiffPane(Vertical):
             return
         path = files[file].path
         try:
-            text = (await self.purr_app.bus.request(GetFile(pr=pr.ref, path=path))).text
+            request = GetFile(pr=pr.ref, path=path, commit=self._diff.unpushed)
+            text = (await self.purr_app.bus.request(request)).text
         except PurrError as e:
             self.notify(str(e), severity="warning")
             return
@@ -900,7 +954,8 @@ class DiffPane(Vertical):
         at = actions[0].created_at if actions else ""
         details = self.purr_app.details.get(self.pr)
         conversation = details.conversation if details else ()
-        return said(mine, proposed, self._threads, at, conversation)
+        found = said(mine, proposed, self._threads, at, conversation)
+        return moved(found, self._diff.moved) if self._diff.moved else found
 
     async def action_repo(self, action: str) -> None:
         await self.purr_app.main.repo.run_action(action)
@@ -1030,6 +1085,12 @@ class DiffPane(Vertical):
         if row and not self.view.files[row.file].path:
             self._write(CommentScreen("Your comment on the PR (posted when you save it)"),
                         partial(self._on_pr, None))  # fmt: skip
+            return
+        if self._diff.unpushed and not (row and row.said and row.said.mine):
+            self.notify(
+                "This diff has commits that aren't pushed yet, and GitHub takes comments only "
+                "on lines it has. Push them first (a), or ask the agent about these (enter)."
+            )
             return
         if self.view.outside_selected():
             self.notify(

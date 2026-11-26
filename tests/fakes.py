@@ -141,7 +141,18 @@ class FakeRepos:
     async def diff(self, pr):
         return getattr(self, "diffs", {}).get(pr.ref)
 
-    async def file_at(self, pr, path):
+    async def local(self, pr):
+        """From ``locals``: PRRef -> Local (what the agent committed, not pushed)."""
+        return getattr(self, "locals", {}).get(pr.ref)
+
+    async def local_diff(self, pr, local):
+        """From ``local_diffs``: PRRef -> the diff with what's local."""
+        return getattr(self, "local_diffs", {}).get(pr.ref)
+
+    async def moved(self, pr, local):
+        return getattr(self, "moves", {}).get(pr.ref, "")
+
+    async def file_at(self, pr, path, commit=""):
         return getattr(self, "files", {}).get((pr.ref, path))
 
     async def numstat(self, pr):
