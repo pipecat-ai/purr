@@ -1773,7 +1773,8 @@ async def test_merging_with_m_after_approving(tmp_path):
         # In the list, it's to merge: in Done, it'd be missed.
         rows = lambda: option_texts_of(app.main.repo)  # noqa: E731
         await until(pilot, lambda: any("TO MERGE (1)" in row for row in rows()))
-        assert any("⇡" in row and "approved · m merges" in row for row in rows())
+        assert any("⇡" in row and "Fix the bus" in row for row in rows())
+        assert not any("approved" in row for row in rows())  # the group says so
         assert not any("DONE" in row for row in rows())
 
         # m: where it stands. The docs build failed and alice hasn't approved: your call.

@@ -264,8 +264,6 @@ class RepoView(PRKeys):
         key = str(pr.ref)
         if self._group(pr) == UP_NEXT:
             return self._up_next[key].why
-        if self._group(pr) == TO_MERGE:
-            return "approved · m merges"
         if pr.state != PRState.NEEDS_YOU:
             return ""
         state = self.purr_app.sessions.get(key)
