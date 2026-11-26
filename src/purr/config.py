@@ -41,13 +41,10 @@ def _xdg_data_dir() -> Path:
     return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "purr"
 
 
-def _setting(
-    default: Any = MISSING, *, about: str, factory: Any = MISSING, choices: Any = None
-) -> Any:
+def _setting(default: Any = MISSING, *, about: str, choices: Any = None) -> Any:
     """A setting, with what it does (for the starter ``settings.toml`` and the docs), and,
     for one that's one of a few, a function that says which."""
-    metadata = {"about": about, "choices": choices}
-    return field(default=default, default_factory=factory, metadata=metadata)
+    return field(default=default, metadata={"about": about, "choices": choices})
 
 
 def _themes() -> list[str]:
@@ -146,10 +143,6 @@ class Config:
     @property
     def log_path(self) -> Path:
         return self.data_dir / "purr.log"
-
-    @property
-    def worktrees_dir(self) -> Path:
-        return self.data_dir / "worktrees"
 
 
 # What settings.toml can set: everything but where it is itself.
