@@ -342,6 +342,8 @@ class RepoView(PRKeys):
         wait = self._pane_shown_at + PANE_EVERY - time.monotonic()
         if wait > 0:
             await asyncio.sleep(wait)
+            if not (self.is_attached and self.app.is_running):
+                return  # Purr quit meanwhile: the pane may be gone already
         self._pane_shown_at = time.monotonic()
         await self.session.show(pr)
 

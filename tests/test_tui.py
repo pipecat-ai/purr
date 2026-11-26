@@ -1523,6 +1523,24 @@ async def test_the_prs_pane_catches_up_with_a_cursor_moving_fast(tmp_path):
         assert len(shown) < 6 and shown[-1] == repo.selected_pr().number
 
 
+async def test_a_pane_update_that_wakes_after_quitting_does_nothing(tmp_path):
+    import time
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1), remote(2)]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 2)
+        repo = app.main.repo
+        pr = repo.selected_pr()
+    # Purr has quit, its panes gone. A pane update waiting its turn (the cursor moved
+    # fast) wakes now: it leaves them be.
+    repo._pane_shown_at = time.monotonic()
+    await repo._show_in_pane(pr)
+
+
 async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
     from purr.models import PRRef, PRState
 
