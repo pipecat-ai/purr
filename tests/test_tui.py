@@ -1457,6 +1457,40 @@ async def test_up_next_in_the_list_the_pr_and_at_home(tmp_path):
         assert [pr.number for pr in skipped] == [2]
 
 
+async def test_a_poll_that_changes_little_redraws_only_what_changed(tmp_path):
+    from purr.models import PRRef
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(i, title=f"Change {i}") for i in (1, 2, 3)]
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 3)
+        repo = app.main.repo
+        options = repo.query_one(OptionList)
+        await pilot.press("down")
+        cursor, before = options.highlighted, list(options.options)
+
+        def kept() -> list[bool]:  # each row: the same one as before, not built again
+            return [new is old for new, old in zip(options.options, before, strict=True)]
+
+        # Nothing changed: the same rows, the cursor where it was.
+        await repo.reload()
+        assert all(kept()) and options.highlighted == cursor
+        # Something happened on #2 (bold, like unread mail): only its row is drawn again.
+        prompt = lambda i: options.get_option(str(PRRef("pipecat-ai/pipecat", i))).prompt  # noqa: E731
+        was = prompt(2)
+        app.alerts[str(PRRef("pipecat-ai/pipecat", 2))] = "alice replied"
+        await repo.reload()
+        assert all(kept()) and prompt(2) is not was and "bold" in str(prompt(2).cells[2].style)
+        # A new PR: the list is built again.
+        await app.purr.store.upsert_pr(remote(4, title="Change 4").to_pr("me"))
+        await repo.reload()
+        assert len(pr_ids(app)) == 4
+        assert not any(new is old for new, old in zip(options.options, before, strict=False))
+
+
 async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
     from purr.models import PRRef, PRState
 

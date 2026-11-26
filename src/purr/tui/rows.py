@@ -8,6 +8,7 @@ they're one line high, and are drawn only when shown, at the list's width.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Literal
 
 from rich.console import Console, ConsoleOptions, RenderResult
@@ -35,6 +36,12 @@ class OneLine(Visual):
     def line(self, width: int) -> Text:
         raise NotImplementedError
 
+    @cached_property
+    def looks(self) -> tuple:
+        """What it shows, to tell whether it looks the same as another (Text's own == leaves
+        out its style). Worked out once: a row doesn't change."""
+        raise NotImplementedError
+
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         yield self.line(options.max_width)
 
@@ -58,6 +65,10 @@ class Row(OneLine):
         self.cells, self._columns = cells, columns
         self._fixed = sum((column.width or 0) + column.gap for column in columns)
 
+    @cached_property
+    def looks(self) -> tuple:
+        return tuple(looks(cell) for cell in self.cells), tuple(self._columns)
+
     def line(self, width: int) -> Text:
         line = Text(end="", no_wrap=True)
         for cell, column in zip(self.cells, self._columns, strict=True):
@@ -74,6 +85,10 @@ class Line(OneLine):
     def __init__(self, char: str, style: str, title: Text | None = None):
         self._char, self._style, self.title = char, style, title
 
+    @cached_property
+    def looks(self) -> tuple:
+        return self._char, self._style, looks(self.title)
+
     def line(self, width: int) -> Text:
         if self.title is None:
             return Text(self._char * width, style=self._style, end="")
@@ -84,6 +99,16 @@ class Line(OneLine):
         line.append(" ")
         line.append(self._char * (width - line.cell_len), self._style)
         return line
+
+
+def looks(prompt: object) -> object:
+    """What a list's row shows, comparable with ``==``: a row's :meth:`OneLine.looks`, a
+    text's characters and styles, or the row itself (a string)."""
+    if isinstance(prompt, OneLine):
+        return prompt.looks
+    if isinstance(prompt, Text):
+        return prompt.plain, str(prompt.style), tuple(prompt.spans)
+    return prompt
 
 
 def _fit(cell: Text, width: int, justify: Literal["left", "right"]) -> Text:

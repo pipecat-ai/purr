@@ -17,7 +17,7 @@ from purr.models import PR, ActionKind, GHState, PRState
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import short_age
-from purr.tui.rows import Column, Line, Row
+from purr.tui.rows import Column, Line, Row, looks
 from purr.tui.session import number_style
 from purr.tui.theme import palette
 
@@ -160,6 +160,31 @@ class PRList(GroupedList):
         if parameters == ("approve",):
             return bool(self._repo.a_does())
         return True
+
+    def show_options(self, options: list[Option]) -> bool:
+        """Show ``options``. The same rows as now, in the same order (a poll that changed
+        little): only those that look different are drawn again, and the cursor and the
+        scroll stay put. Else the list is built again. Returns whether it was."""
+        if not self._same_rows(options):
+            self.set_options(options)
+            return True
+        for new, old in zip(options, self.options, strict=True):
+            if new.id and looks(new.prompt) != looks(old.prompt):
+                self.redraw_option(new.id, new.prompt)
+        return False
+
+    def _same_rows(self, options: list[Option]) -> bool:
+        """The same rows as shown: the same ids in the same order, and those with none (a
+        gap, a line, the column headings) the same to look at, since only rows with an id
+        can be drawn again on their own."""
+        if len(options) != self.option_count:
+            return False
+        return all(
+            new.id == old.id
+            and new.disabled == old.disabled
+            and (new.id is not None or looks(new.prompt) == looks(old.prompt))
+            for new, old in zip(options, self.options, strict=True)
+        )
 
     def redraw_option(self, option_id: str, prompt: Row) -> None:
         """A new look for a row of the same height."""

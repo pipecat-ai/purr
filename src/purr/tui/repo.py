@@ -165,13 +165,13 @@ class RepoView(PRKeys):
         # Where you'd scrolled to (the wheel, say), for this repo's list drawn again.
         scrolled = option_list.scroll_offset.y if self._listed == self.repo else None
         self._listed = self.repo
-        option_list.set_options(options)
+        rebuilt = option_list.show_options(options)
         selected = self._selected.get(self.repo)
         if not at:  # the selected PR, or the heading of the group it's folded away in
             at = selected if selected in self._prs else self._fold_of(selected)
         if at:
             option_list.highlighted = option_list.get_option_index(at)
-            if scrolled is not None:
+            if rebuilt and scrolled is not None:
                 option_list.scroll_to(y=scrolled, animate=False, immediate=True)  # stays put
         else:
             pr = next((i for i, o in enumerate(options) if o.id in self._prs), None)
