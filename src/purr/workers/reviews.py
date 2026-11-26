@@ -499,7 +499,7 @@ class ReviewWorker(BaseWorker):
     ):
         """Run the agent on ``pr`` in the background, following ``plan`` (default: the review's).
 
-        ``kind`` (review, resume, rereview, message, answer) is what the run is
+        ``kind`` (review, resume, rereview or message) is what the run is
         recorded as, with every message in it (see Store.start_run). A new
         review (``review``) makes its own prompt.
         """
