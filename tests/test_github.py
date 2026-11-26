@@ -450,16 +450,27 @@ async def test_merge_check():
                 return {"data": {"viewer": {"login": "me"}}}
             assert "isRequired(pullRequestNumber: 7)" in query
             contexts = [
-                {"name": "Unit Tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
-                {"name": "Lint", "status": "IN_PROGRESS", "conclusion": None},
+                {
+                    "name": "Unit Tests",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-25T10:00:00Z",
+                    "completedAt": "2026-11-25T10:01:30Z",
+                },
+                {
+                    "name": "Lint",
+                    "status": "IN_PROGRESS",
+                    "conclusion": None,
+                    "startedAt": "2026-11-25T10:00:05Z",
+                },
                 {
                     "name": "Build",
                     "status": "COMPLETED",
                     "conclusion": "FAILURE",
                     "isRequired": True,
                 },
-                {"context": "docs/readthedocs", "state": "ERROR"},
-                {"context": "deploy", "state": "PENDING"},
+                {"context": "docs/readthedocs", "state": "ERROR", "createdAt": "x"},
+                {"context": "deploy", "state": "PENDING", "createdAt": "2026-11-25T10:00:09Z"},
             ]
             pr = {
                 "headRefOid": "abc",
@@ -485,11 +496,17 @@ async def test_merge_check():
         mergeable="MERGEABLE",
         merge_state="UNSTABLE",
         checks=(
-            Check("Unit Tests", CheckState.PASSED),
-            Check("Lint", CheckState.RUNNING),
+            # When each started and finished, to say how long it took (or has, so far).
+            Check(
+                "Unit Tests",
+                CheckState.PASSED,
+                started="2026-11-25T10:00:00Z",
+                finished="2026-11-25T10:01:30Z",
+            ),
+            Check("Lint", CheckState.RUNNING, started="2026-11-25T10:00:05Z"),
             Check("Build", CheckState.FAILED, required=True),
-            Check("docs/readthedocs", CheckState.FAILED),
-            Check("deploy", CheckState.RUNNING),
+            Check("docs/readthedocs", CheckState.FAILED),  # a status: when it said so last
+            Check("deploy", CheckState.RUNNING, started="2026-11-25T10:00:09Z"),
         ),
         assignees=("me", "alice"),
         reviews=(("me", "APPROVED"),),

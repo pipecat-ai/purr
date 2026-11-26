@@ -128,3 +128,30 @@ def test_what_a_pr_needs_you_for():
     assert needs(failed=True) == "Review failed"
     assert needs() == "No verdict yet"
     assert pr.replies == ()
+
+
+def test_the_merge_box_lists_checks_while_ci_runs():
+    from datetime import UTC, datetime
+
+    from purr.merging import concerns
+    from purr.messages import MergeReadiness
+    from purr.models import Check, CheckState, MergeCheck
+    from purr.tui.session import render_merge
+
+    pr = PR("a/b", 7, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z")
+    checks = (
+        *(Check(f"Job {i}", CheckState.PASSED) for i in range(12)),
+        Check("Docs", CheckState.FAILED),
+        Check("Tests", CheckState.RUNNING, started="2026-11-25T10:00:00Z"),
+    )
+    check = MergeCheck(
+        head_sha="abc", base="main", method="merge", checks=checks, assignees=("me", "alice")
+    )
+    readiness = MergeReadiness(check=check, blockers=[], concerns=concerns(check, "me"))
+    shown = str(render_merge(pr, readiness, now=datetime(2026, 11, 25, 10, 2, 5, tzinfo=UTC)))
+    # Too many to list: those that failed or still run, and how many more passed.
+    assert "✗ Docs" in shown and "Tests  2m 5s" in shown and "✓ 12 more passed" in shown
+    assert "Job 3" not in shown
+    # Listed, they aren't concerns again; the rest are.
+    assert "Docs failed" not in shown and "still running" not in shown
+    assert "⚠ alice hasn't approved" in shown
