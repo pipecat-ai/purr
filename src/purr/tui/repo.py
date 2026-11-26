@@ -307,7 +307,7 @@ class RepoView(PRKeys):
             self._folded.get(repo, set()).discard(self._group(listed))  # its group opens
             self._list()  # or an older done one: listed now that it's selected
 
-    @on(OptionList.OptionHighlighted)
+    @on(OptionList.OptionHighlighted, "#prs")
     def _show_highlighted(self) -> None:
         self.refresh_bindings()  # tab: fold or open on a heading, the PR's pane on a PR
         pr = self.selected_pr()
