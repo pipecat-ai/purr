@@ -793,7 +793,8 @@ class Store:
 
     async def repo_summaries(self) -> list[RepoSummary]:
         """The repo list: watched repos plus any other repo with an open PR Purr tracks
-        (yours, assigned to you, or reviewed), alphabetically, with per-state counts."""
+        (assigned to you, asking for your review, or reviewed), alphabetically, with
+        per-state counts."""
         rows = await self._fetchall(
             """
             WITH names (name, watched) AS (
@@ -844,8 +845,8 @@ class Store:
     async def remove_repo(self, name: str) -> bool:
         """Stop watching a repo and drop its pool.
 
-        PRs of yours, assigned to you, asking for your review, that you've taken part in,
-        or that Purr has started reviewing, are kept.
+        PRs assigned to you, asking for your review, that you've taken part in, or that
+        Purr has started reviewing, are kept.
         Returns whether the repo was being watched.
         """
         cursor = await self._db.execute("DELETE FROM repos WHERE name = ?", (name,))

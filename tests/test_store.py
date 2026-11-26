@@ -159,7 +159,7 @@ async def test_pending_action_can_only_be_resolved_once(store):
 
 
 async def test_where_a_pr_rests(store):
-    """Needs you until your verdict on it as it is; your own PR, until nothing waits."""
+    """Needs you until your verdict on it as it is."""
     pr = await store.upsert_pr(make_pr(1))
     ref = pr.ref
     assert await store.resting_state(ref) == PRState.NOT_REVIEWED
