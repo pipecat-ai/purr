@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from purr.claude import structured
-from purr.models import PR, Outcome, PRDetails, Priority, PRRef, Review, ReviewPlan
+from purr.models import PR, Outcome, PRDetails, PRRef, Review, ReviewPlan
 from purr.review.skills import RepoSkill
 
 INSTRUCTIONS = """\
@@ -213,10 +213,9 @@ def plans_from(output: dict, refs: list[PRRef]) -> dict[PRRef, ReviewPlan]:
     return plans
 
 
-def default_plan(reason: str, *, requested: bool = False) -> ReviewPlan:
+def default_plan(reason: str) -> ReviewPlan:
     """What a PR gets when the lead couldn't plan it: a full review."""
-    priority = Priority.HIGH if requested else Priority.NORMAL
-    return ReviewPlan(priority=priority, why=f"Not planned: {reason}")
+    return ReviewPlan(why=f"Not planned: {reason}")
 
 
 class LeadAgent(Protocol):

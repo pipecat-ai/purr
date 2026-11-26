@@ -95,7 +95,6 @@ def test_plans_from_the_leads_answer():
 def test_default_plan_is_a_full_review():
     plan = default_plan("the lead couldn't plan it (offline)")
     assert (plan.depth, plan.priority, plan.by) == (Depth.FULL, Priority.NORMAL, "default")
-    assert default_plan("x", requested=True).priority == Priority.HIGH
     assert ReviewPlan.from_dict(plan.to_dict()) == plan
 
 

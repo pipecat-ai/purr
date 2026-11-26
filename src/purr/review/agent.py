@@ -210,8 +210,8 @@ class ReviewCallbacks:
         on_propose: A proposed GitHub action ``(kind, description, payload)``;
             returns the pending action's ID, or raises Refused.
         on_ask: Claude Code wants to ask about a tool call ``(tool, input,
-            reason)``; returns whether the user allows it, or None if nobody
-            answered in time.
+            reason, rules)``, ``rules`` being what "always" would keep;
+            returns your answer.
         on_threads: The PR's review threads, for ``get_review_threads``.
     """
 
@@ -277,7 +277,6 @@ class AgentResult:
     error: str | None = None
     cost_usd: float | None = None
     turns: int = 0
-    denials: list[str] = field(default_factory=list)
     duration_ms: int | None = None
     api_duration_ms: int | None = None
     model: str | None = None
@@ -285,7 +284,9 @@ class AgentResult:
 
 
 class ReviewAgent(Protocol):
-    def session_exists(self, session_id: str, worktree: Path) -> bool: ...
+    def session_exists(self, session_id: str, worktree: Path) -> bool:
+        """Whether the session has a transcript to resume (blocking: reads files)."""
+        ...
 
     def history(self, session_id: str, worktree: Path) -> list[dict]:
         """The session's transcript so far, as entries (blocking: reads a file)."""
@@ -714,7 +715,6 @@ def _agent_result(message: ResultMessage) -> AgentResult:
         error=message.result if message.is_error else None,
         cost_usd=message.total_cost_usd,
         turns=message.num_turns,
-        denials=[json.dumps(denial, default=str) for denial in message.permission_denials or []],
         duration_ms=message.duration_ms,
         api_duration_ms=message.duration_api_ms,
         model=_models(message),
