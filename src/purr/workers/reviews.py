@@ -90,6 +90,19 @@ def _repo(repo: str) -> str:
     return repo
 
 
+def rereviewable(pr: PR | None, review: Review | None) -> bool:
+    """Whether the PR's review can look at its new commits: a finished review, in a
+    session, of a PR assigned to you whose head moved on since."""
+    return bool(
+        pr
+        and pr.assigned_to_me
+        and review
+        and review.status == ReviewStatus.FINISHED
+        and review.session_id
+        and review.head_sha != pr.head_sha
+    )
+
+
 def _follows_skill(kind: str, plan: ReviewPlan) -> bool:
     """Whether a run follows the repo's review skill: not a quick re-review."""
     return not (kind == "rereview" and plan.depth == Depth.QUICK)
@@ -272,16 +285,7 @@ class ReviewWorker(BaseWorker):
         async with self._start_lock:
             pr = await self._store.get_pr(ref)
             review = await self._store.latest_review(ref)
-            if (
-                self._stopped_ahead(ref)
-                or ref in self._runs
-                or pr is None
-                or not pr.assigned_to_me
-                or review is None
-                or review.status != ReviewStatus.FINISHED
-                or not review.session_id
-                or review.head_sha == pr.head_sha
-            ):
+            if self._stopped_ahead(ref) or ref in self._runs or not rereviewable(pr, review):
                 return False
             if plan:
                 await self._store.set_review_plan(review.id, plan)
