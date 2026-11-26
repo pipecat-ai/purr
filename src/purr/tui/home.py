@@ -99,12 +99,12 @@ class ReposView(PurrView):
         await super().reload()
         summaries = await self.purr_app.purr.store.repo_summaries()
         watched = [s for s in summaries if s.watched]
-        yours = [s for s in summaries if not s.watched]
-        self.purr_app.repo_names = [s.name for s in watched + yours]
+        unwatched = [s for s in summaries if not s.watched]
+        self.purr_app.repo_names = [s.name for s in watched + unwatched]
         self._watched = {s.name for s in watched}
         alerted = {pr.split("#")[0] for pr in self.purr_app.alerts}
         selected = self.selected_repo()
-        options = self._options(watched, yours, alerted)
+        options = self._options(watched, unwatched, alerted)
         repo_list = self.query_one(OptionList)
         repo_list.set_options(options if summaries else [])
         repo_list.display = bool(summaries)
@@ -122,14 +122,14 @@ class ReposView(PurrView):
         self.query_one("#legend").display = bool(alerted)
 
     def _options(
-        self, watched: list[RepoSummary], yours: list[RepoSummary], alerted: set[str]
+        self, watched: list[RepoSummary], unwatched: list[RepoSummary], alerted: set[str]
     ) -> list[Option]:
         """The column headings, then the watched repos and the others, each group headed."""
         options = [Option(_repo_row(*_REPO_COLUMNS, header=True), disabled=True)]
         number = 0
         for summaries, heading, note, style in [
             (watched, "● WATCHED", "all their open PRs", "bold cyan"),
-            (yours, "○ NOT WATCHED", "only the PRs that concern you · + watches one", "bold"),
+            (unwatched, "○ NOT WATCHED", "only the PRs that concern you · + watches one", "bold"),
         ]:
             if not summaries:
                 continue
