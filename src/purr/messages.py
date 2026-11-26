@@ -419,20 +419,6 @@ class Rereview(Request[Rereviewing]):
 
 
 @dataclass(kw_only=True)
-class Answering:
-    started: bool  # False: nothing to answer, or the agent's at work on it
-
-
-@dataclass(kw_only=True)
-class AnswerComments(Request[Answering]):
-    """Have the agent read what others said on your own PR, and propose what to change
-    and what to answer (see ReviewWorker.answer)."""
-
-    worker: ClassVar[str] = REVIEW_WORKER
-    pr: PRRef
-
-
-@dataclass(kw_only=True)
 class SkipUpNext(Request[Done]):
     """Not for you: the PR leaves what's up next for good, and the lead's told (``s``)."""
 

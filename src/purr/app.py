@@ -173,7 +173,6 @@ class Purr:
                 repos=self._repos,
                 instructions=self._instructions,
                 auto_review=self._config.auto_review,
-                auto_answer=self._config.auto_answer,
             ),
             SuggestionWorker(store=store, agent=self._agent, suggester=self._suggester),
             GitWorker(store=store, repos=self._repos, github=self._github),

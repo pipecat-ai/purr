@@ -334,6 +334,13 @@ MIGRATIONS: list[str] = [
         ORDER BY resolved_at DESC, rowid DESC LIMIT 1
     );
     """,
+    # Your own PRs aren't Purr's any more (you work on them elsewhere, in Claude Code
+    # say): they go, with their reviews, proposals and comments (ON DELETE CASCADE).
+    """
+    DELETE FROM up_next WHERE (repo, number) IN (SELECT repo, number FROM prs WHERE authored);
+    DELETE FROM prs WHERE authored;
+    ALTER TABLE prs DROP COLUMN authored;
+    """,
 ]
 
 # "Needs you" first, then in-flight reviews, then the pool, then done.
@@ -392,7 +399,6 @@ def _pr(row: aiosqlite.Row) -> PR:
         assigned_to_me=bool(row["assigned_to_me"]),
         requested_from_me=bool(row["requested_from_me"]),
         involved=bool(row["involved"]),
-        authored=bool(row["authored"]),
         updated_at=row["updated_at"],
         created_at=row["created_at"],
         base=row["base"],
@@ -424,8 +430,8 @@ def _activity(row: aiosqlite.Row) -> Activity:
 _UPSERT_PR = """
     INSERT INTO prs (repo, number, title, author, url, head_sha, assigned_to_me, gh_state,
                      updated_at, created_at, assignees, base, author_association,
-                     requested_from_me, involved, authored)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     requested_from_me, involved)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET
         title = excluded.title,
         author = excluded.author,
@@ -439,8 +445,7 @@ _UPSERT_PR = """
         base = excluded.base,
         author_association = excluded.author_association,
         requested_from_me = excluded.requested_from_me,
-        involved = MAX(prs.involved, excluded.involved),  -- once you've taken part, you have
-        authored = excluded.authored
+        involved = MAX(prs.involved, excluded.involved)  -- once you've taken part, you have
 """
 
 
@@ -461,7 +466,6 @@ def _upsert_params(pr: PR) -> tuple:
         pr.author_association,
         int(pr.requested_from_me),
         int(pr.involved),
-        int(pr.authored),
     )
 
 
@@ -699,11 +703,10 @@ class Store:
         return row is not None
 
     async def done_without_verdict(self) -> list[PRRef]:
-        """Open PRs of others that are done with no verdict of yours: done by the rule before
-        (nothing left to decide), or your verdict was dismissed, when they need one."""
+        """Open PRs that are done with no verdict of yours: done by the rule before (nothing
+        left to decide), or your verdict was dismissed, when they need one."""
         rows = await self._fetchall(
-            "SELECT repo, number FROM prs"
-            " WHERE gh_state = ? AND state = ? AND NOT authored AND verdict IS NULL",
+            "SELECT repo, number FROM prs WHERE gh_state = ? AND state = ? AND verdict IS NULL",
             (GHState.OPEN, PRState.DONE),
         )
         return [PRRef(row["repo"], row["number"]) for row in rows]
@@ -711,18 +714,14 @@ class Store:
     async def resting_state(self, ref: PRRef) -> PRState:
         """Where the PR goes once no agent is at it. It needs you while something waits on
         you (a proposal, replies), its review failed, or until you give your verdict on it as
-        it is (approve it or request changes: a comment isn't one); then it's done. Your own
-        PR has no verdict: it's done once nothing waits on you. Not reviewed here: not
-        reviewed."""
+        it is (approve it or request changes: a comment isn't one); then it's done. Not
+        reviewed here: not reviewed."""
         review = await self.latest_review(ref)
         if await self.waits_on_you(ref) or (review and review.status == ReviewStatus.FAILED):
             return PRState.NEEDS_YOU
         if await self.decided(ref):
             return PRState.DONE
-        if review is None:
-            return PRState.NOT_REVIEWED
-        pr = await self.get_pr(ref)
-        return PRState.DONE if pr and pr.authored else PRState.NEEDS_YOU
+        return PRState.NOT_REVIEWED if review is None else PRState.NEEDS_YOU
 
     async def running(self, ref: PRRef) -> bool:
         """An agent run on the PR is queued or under way."""
@@ -804,22 +803,19 @@ class Store:
                 -- commented on once).
                 SELECT DISTINCT repo, 0 FROM prs
                 WHERE gh_state = 'open' AND repo NOT IN (SELECT name FROM repos)
-                  AND (authored OR assigned_to_me OR requested_from_me
-                       OR state != 'not_reviewed')
+                  AND (assigned_to_me OR requested_from_me OR state != 'not_reviewed')
             )
             SELECT
                 names.name,
                 names.watched,
-                COALESCE(SUM(prs.authored), 0) AS yours,
                 COALESCE(SUM(prs.state = 'not_reviewed' AND prs.assignees = '[]'
                              AND up_next.number IS NOT NULL), 0) AS up_next,
                 COALESCE(SUM(prs.state = 'needs_you'), 0) AS needs_you,
-                COALESCE(SUM(prs.state = 'done' AND NOT prs.authored
-                             AND prs.verdict = 'approve'
+                COALESCE(SUM(prs.state = 'done' AND prs.verdict = 'approve'
                              AND prs.verdict_head = prs.head_sha), 0) AS to_merge,
                 COALESCE(SUM(prs.state = 'reviewing'), 0) AS reviewing,
                 COALESCE(
-                    SUM(prs.state = 'not_reviewed' AND NOT prs.authored
+                    SUM(prs.state = 'not_reviewed'
                         AND (prs.assigned_to_me OR prs.requested_from_me
                              OR prs.assignees = '[]')), 0
                 ) AS not_reviewed,
@@ -835,7 +831,6 @@ class Store:
             RepoSummary(
                 name=row["name"],
                 watched=bool(row["watched"]),
-                yours=row["yours"],
                 up_next=row["up_next"],
                 needs_you=row["needs_you"],
                 to_merge=row["to_merge"],
@@ -860,7 +855,6 @@ class Store:
             DELETE FROM prs
             WHERE repo = ? COLLATE NOCASE AND state = ?
               AND assigned_to_me = 0 AND requested_from_me = 0 AND involved = 0
-              AND authored = 0
             """,
             (name, PRState.NOT_REVIEWED),
         )
@@ -884,7 +878,7 @@ class Store:
             SELECT up_next.* FROM up_next
             JOIN prs ON prs.repo = up_next.repo AND prs.number = up_next.number
             WHERE up_next.repo = ? AND prs.gh_state = 'open' AND prs.state = 'not_reviewed'
-              AND prs.assignees = '[]' AND NOT prs.authored
+              AND prs.assignees = '[]'
             ORDER BY up_next.rank
             """,
             (repo,),
@@ -914,11 +908,11 @@ class Store:
         return [PR(r["repo"], r["number"], r["title"], r["author"], "", "", "") for r in rows]
 
     async def taken(self, repo: str, *, limit: int = 10) -> list[PR]:
-        """Others' PRs in ``repo`` you had reviewed lately, latest first."""
+        """PRs in ``repo`` you had reviewed lately, latest first."""
         rows = await self._fetchall(
             """
             SELECT prs.* FROM prs JOIN reviews ON reviews.pr_id = prs.id
-            WHERE prs.repo = ? AND NOT prs.authored
+            WHERE prs.repo = ?
             GROUP BY prs.id ORDER BY MAX(reviews.started_at) DESC LIMIT ?
             """,
             (repo, limit),

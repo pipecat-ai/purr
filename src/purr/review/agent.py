@@ -135,24 +135,6 @@ def replies_note(replies: Sequence[Reply]) -> str:
     )
 
 
-def answer_prompt(replies: Sequence[Reply]) -> str:
-    """What starts the agent on the comments on your own PR (see ReviewWorker.answer)."""
-    return (
-        "Others commented on the user's PR since their last word on GitHub, and it's still "
-        f"unanswered:\n{_said(replies)}\n\n"
-        "For each point: read what it's about (get_review_threads has the review threads, "
-        "with their ids), check the code, and decide whether it's right. Then:\n"
-        "1. Call submit_review: a one-line summary (how many points, how many worth "
-        "changing), and a finding for each point that's right, with its file and line: an "
-        "issue if it should be changed, a suggestion if it could, a nit if it's minor.\n"
-        "2. Call propose_action with kind `comment` and the answers, in the user's voice "
-        "and short: a reply in each thread (`replies`), and what to say on the PR itself "
-        "(`body`) for what was said there. Where a point is right, say it'll be changed, "
-        "not that it was; where it isn't, say why, politely.\n"
-        "Don't change files: the user says what to change, here, afterwards."
-    )
-
-
 def quote_note(quote: Quote) -> str:
     """For the agent, ahead of your message: the lines of the diff you're asking about."""
     text = quote.text.replace("purr-note>", "purr-note]")  # can't end the note early
@@ -178,17 +160,6 @@ RESUME_PROMPT = (
     "Purr was restarted while you were reviewing. Continue where you left off, "
     "and finish by calling submit_review and propose_action."
 )
-
-
-YOUR_PR_SECTION = """
-
-## This is the user's own PR
-
-The user opened it: you're helping them with it, not reviewing someone else's work.
-GitHub doesn't let them approve their own PR or request changes on it, so when you
-propose, use `comment`. When others have commented, help them answer: whether each
-point is right, what to change, and what to reply. If they ask you to change the code,
-change it in this worktree; when they ask you to push it, commit it and propose `push`."""
 
 
 def guidelines_section(repo: str, guidelines: str) -> str:
@@ -995,7 +966,6 @@ class ClaudeReviewAgent:
         the PR to."""
         return (
             INSTRUCTIONS.format(repo=pr.repo, number=pr.number)
-            + (YOUR_PR_SECTION if pr.authored else "")
             + guidelines_section(pr.repo, guidelines)
             + (skill_section(pr.repo, skill) if skill else "")
             + (plan_section(plan) if plan else "")

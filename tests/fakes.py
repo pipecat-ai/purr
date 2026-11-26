@@ -44,7 +44,6 @@ class FakeGitHub:
         self.assigned: list[RemotePR] = []
         self.requested: list[RemotePR] = []
         self.involved: list[RemotePR] = []  # PRs you commented on or reviewed
-        self.mine: list[RemotePR] = []  # PRs you opened
         self.conversations: dict = {}  # PRRef -> [Reply], what standing() answers
         self.verdicts: dict = {}  # PRRef -> Verdict, your latest on GitHub
         self.standing_calls: list[list] = []
@@ -66,7 +65,6 @@ class FakeGitHub:
             viewer="me",
             requested=list(self.requested),
             involved=list(self.involved),
-            mine=list(self.mine),
         )
 
     async def viewer_login(self):

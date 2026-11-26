@@ -68,12 +68,6 @@ class Config:
     auto_review: bool = _setting(
         True, about="Review PRs assigned to you without being asked (--no-auto-review: off)."
     )
-    auto_answer: bool = _setting(
-        True,
-        about="When others comment on your own PRs, Claude reads what they said, checks the "
-        "code, and proposes what to change and what to answer, for you to post. Off: only "
-        "when you ask in the PR's conversation.",
-    )
     up_next: int = _setting(
         5,
         about="How many PRs from each watched repo's pool Purr suggests you look at next "
@@ -160,6 +154,8 @@ class Config:
 
 # What settings.toml can set: everything but where it is itself.
 _SETTINGS = {f.name: f for f in fields(Config) if f.name != "config_dir"}
+# Settings Purr had once: ignored, so a settings.toml from before still works.
+_REMOVED = frozenset({"auto_answer"})  # your own PRs aren't Purr's any more
 
 
 def read_settings(path: Path) -> dict[str, Any]:
@@ -175,6 +171,7 @@ def parse_settings(text: str, *, where: str = SETTINGS_FILE) -> dict[str, Any]:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise SettingsError(f"{where}: {e}") from e
+    raw = {name: value for name, value in raw.items() if name not in _REMOVED}
     if unknown := sorted(set(raw) - _SETTINGS.keys()):
         raise SettingsError(f"{where}: unknown setting {', '.join(map(repr, unknown))}")
     return {name: _value(where, name, value) for name, value in raw.items()}

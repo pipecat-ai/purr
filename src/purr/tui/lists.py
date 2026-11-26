@@ -27,13 +27,12 @@ if TYPE_CHECKING:
 
 OTHERS = "others"
 REQUESTED = "requested"
-YOURS = "yours"
 UP_NEXT = "upnext"
 TO_MERGE = "tomerge"
 # What's yours first: what needs you, what you approved and is still open (merging's
-# next, and in Done it'd be missed), what's under way, your own PRs (when someone
-# comments on one, it needs you), PRs asking for your review (someone's waiting on
-# you: a teammate, mostly, whose PRs come first), what's up next (the pool's PRs
+# next, and in Done it'd be missed), what's under way, PRs asking for your review
+# (someone's waiting on you: a teammate, mostly, whose PRs come first), what's up next
+# (the pool's PRs
 # worth looking at next, best first), and what you finished lately (the latest few;
 # search finds the rest). Then what others are reviewing, and last the pool of
 # unreviewed PRs (hundreds, in a big repo).
@@ -41,7 +40,6 @@ GROUPS = [
     (PRState.NEEDS_YOU, "⚠", "NEEDS YOU", "bold yellow"),
     (TO_MERGE, "⇡", "TO MERGE", "bold green"),
     (PRState.REVIEWING, "●", "REVIEWING", "bold cyan"),
-    (YOURS, "◆", "YOUR PRS", "bold blue"),
     (REQUESTED, "◇", "REVIEW REQUESTED", "bold magenta"),
     (UP_NEXT, "➜", "UP NEXT", "bold green"),
     (PRState.DONE, "✓", "DONE", "bold green"),
@@ -172,12 +170,9 @@ class PRList(GroupedList):
 
 
 def group(pr: PR) -> str:
-    """Where a PR goes in the list: its review state; or "yours" if you opened it and
-    nothing's happening; or, done, "to merge" if you approved it and it's still open;
-    or, not reviewed, "requested" if it asks for your review, "others" if someone else
-    took it."""
-    if pr.authored and pr.state in (PRState.NOT_REVIEWED, PRState.DONE):
-        return YOURS
+    """Where a PR goes in the list: its review state; or, done, "to merge" if you approved
+    it and it's still open; or, not reviewed, "requested" if it asks for your review,
+    "others" if someone else took it."""
     if to_merge(pr):
         return TO_MERGE
     if pr.state == PRState.NOT_REVIEWED and pr.requested_from_me and not pr.assigned_to_me:

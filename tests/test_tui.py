@@ -1413,32 +1413,6 @@ async def test_r_moves_the_pr_to_reviewing_at_once(tmp_path):
         assert not listed("NOT REVIEWED")
 
 
-async def test_your_own_prs_have_a_group_and_a_column(tmp_path):
-    app, github = make_app(tmp_path)
-    github.open["pipecat-ai/pipecat"] = [remote(1, title="Someone's fix")]
-    github.mine = [
-        remote(5, title="My fix", author="me"),
-        remote(9, repo="daily-co/daily-x", title="My other fix", author="me"),
-    ]
-    async with app.run_test(size=(140, 30)) as pilot:
-        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
-        # Home: a repo you don't watch is listed for yours, and each says how many.
-        await until(pilot, lambda: app.repo_names == ["pipecat-ai/pipecat", "daily-co/daily-x"])
-        rows = option_texts_of(app.main.repos)
-        assert any("pipecat-ai/pipecat" in row and row.split()[2] == "1" for row in rows)
-
-        await pilot.press("1")
-        await until(pilot, lambda: len(pr_ids(app)) == 2)
-
-        def in_order(*parts: str) -> bool:
-            text = "\n".join(option_texts(app))  # as drawn, which may be a frame behind
-            return all(part in text for part in parts) and sorted(parts, key=text.index) == [*parts]
-
-        await until(pilot, lambda: in_order("YOUR PRS (1)", "My fix", "NOT REVIEWED (1)"))
-        app.main.repo.select("pipecat-ai/pipecat#5", repo="pipecat-ai/pipecat")
-        await until(pilot, lambda: header(app).count("Your PR · r to review it yourself"))
-
-
 async def test_up_next_in_the_list_the_pr_and_at_home(tmp_path):
     from purr.models import FileChange, PRRef
 
@@ -1465,8 +1439,8 @@ async def test_up_next_in_the_list_the_pr_and_at_home(tmp_path):
     async with app.run_test(size=(160, 30)) as pilot:
         await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
-        # Its count of PRs up next: number, repo, yours, needs you, to merge, reviewing, up next.
-        await until(pilot, lambda: option_texts_of(app.main.repos)[-1].split()[6] == "2")
+        # Its count of PRs up next: number, repo, needs you, to merge, reviewing, up next.
+        await until(pilot, lambda: option_texts_of(app.main.repos)[-1].split()[5] == "2")
 
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 3)

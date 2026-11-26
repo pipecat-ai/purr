@@ -197,12 +197,6 @@ async def test_where_a_pr_rests(store):
     await store.set_verdict(other.ref, Verdict(ActionKind.APPROVE, other.head_sha))
     assert await store.resting_state(other.ref) == PRState.DONE
 
-    mine = await store.upsert_pr(make_pr(2, authored=True))  # no verdict on your own
-    assert await store.resting_state(mine.ref) == PRState.NOT_REVIEWED
-    review = await store.start_review(mine.ref)
-    await store.finish_review(review.id, summary="Answered", findings=[])
-    assert await store.resting_state(mine.ref) == PRState.DONE
-
 
 async def test_your_latest_verdict(store):
     """Posted through Purr or read from GitHub, the latest one is yours: whether you approved
@@ -270,7 +264,7 @@ async def test_migrating_a_v1_database_keeps_prs(tmp_path):
 
 async def test_actions_survive_the_migration_that_allows_pushes(tmp_path):
     path = tmp_path / "purr.db"
-    before = len(MIGRATIONS) - 2  # the one before pushes
+    before = next(i for i, script in enumerate(MIGRATIONS) if "pending_actions_new" in script)
     async with aiosqlite.connect(path) as db:
         script = "\n".join(MIGRATIONS[:before])
         await db.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {before};\nCOMMIT;")
@@ -293,6 +287,30 @@ async def test_actions_survive_the_migration_that_allows_pushes(tmp_path):
         assert await store.approved_head(ref) == "s"
         push = await store.add_pending_action(ref, kind=ActionKind.PUSH, description="Push")
         assert [a.kind for a in await store.pending_actions(ref)] == [push.kind]
+
+
+async def test_your_own_prs_go_with_the_migration_that_drops_them(tmp_path):
+    """You work on your own PRs elsewhere: what Purr had of them goes, proposals and all."""
+    path = tmp_path / "purr.db"
+    before = next(i for i, script in enumerate(MIGRATIONS) if "DROP COLUMN authored" in script)
+    async with aiosqlite.connect(path) as db:
+        script = "\n".join(MIGRATIONS[:before])
+        await db.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {before};\nCOMMIT;")
+        await db.execute(
+            "INSERT INTO prs (repo, number, title, author, url, head_sha, updated_at, authored)"
+            " VALUES ('a/b', 1, 'Mine', 'me', 'u', 's', 't', 1),"
+            " ('a/b', 2, 'Theirs', 'alice', 'u', 's', 't', 0)"
+        )
+        await db.execute(
+            "INSERT INTO pending_actions (id, pr_id, kind, description, payload, created_at)"
+            " VALUES ('x1', 1, 'comment', 'Answer', '{}', 't')"
+        )
+        await db.commit()
+
+    async with Store.connect(path) as store:
+        assert await store.get_pr(PRRef("a/b", 1)) is None
+        assert (await store.get_pr(PRRef("a/b", 2))).title == "Theirs"
+        assert await store.pending_actions(PRRef("a/b", 1)) == []
 
 
 async def test_repos_are_listed_alphabetically_ignoring_case(store):

@@ -11,6 +11,7 @@ Needs ``google-chrome`` (or ``chromium``) and ``magick`` on your PATH.
 """
 
 import asyncio
+import io
 import os
 import re
 import shutil
@@ -28,6 +29,7 @@ os.environ["PURR_DATA_DIR"] = str(HOME / ".local" / "share" / "purr")
 sys.path.insert(0, str(ROOT))
 
 from loguru import logger  # noqa: E402
+from rich.console import Console  # noqa: E402
 
 from purr.app import Purr  # noqa: E402
 from purr.config import Config  # noqa: E402
@@ -76,12 +78,6 @@ PRS = [
     remote(6983, title="Rework the frame serializers", author="ken", created_at=ago(days=8)),
 ]  # fmt: skip
 
-YOURS = 7019  # a PR you opened
-MINE = [
-    remote(YOURS, title="Reconnect Deepgram TTS without losing words", author="me",
-           created_at=ago(hours=20)),
-]  # fmt: skip
-
 # How big each PR in the pool is (from Purr's clone, which the demo doesn't have).
 SIZES = {
     7004: [FileChange("src/pipecat/services/google/gemini_live/llm.py", 12, 4)],
@@ -99,15 +95,8 @@ UP_NEXT = {
     7002: "New Sarvam voices, 40 lines in code you've worked on.",
 }
 
-# What the panes of your PR and the first one up next say.
+# What the pane of the first PR up next says.
 OTHER_DETAILS = {
-    YOURS: PRDetails(
-        body="Reconnects to Deepgram's TTS websocket as soon as it drops, so the first "
-        "words after a drop aren't lost.",
-        base="main", head="deepgram-tts-reconnect", additions=46, deletions=12,
-        changed_files=1, files=(FileChange("src/pipecat/services/deepgram/tts.py", 46, 12),),
-        checks="SUCCESS",
-    ),
     7004: PRDetails(
         body="Adds the latest Gemini Live models to the list, and drops the retired ones.",
         base="main", head="gemini-live-models", additions=12, deletions=4, changed_files=1,
@@ -356,6 +345,13 @@ class Recorder:
             await self.shot(0.12)
 
 
+def plain(widget) -> str:
+    """What a Static shows, as text (the PR's header is several renderables)."""
+    console = Console(width=200, record=True, file=io.StringIO())
+    console.print(widget.content)
+    return console.export_text()
+
+
 async def until(pilot, condition, timeout: float = 10) -> None:
     async def wait():
         while not condition():
@@ -368,7 +364,6 @@ def make_app() -> tuple[PurrApp, FakeGitHub]:
     github = FakeGitHub()
     github.repos = {REPO}
     github.open[REPO] = PRS
-    github.mine = MINE
     github.assigned = [pr for pr in PRS if "me" in pr.assignees]
     github.requested = [pr for pr in PRS if "me" in pr.requested]
     ref = PRRef(REPO, FIX)
@@ -418,19 +413,15 @@ async def story(app: PurrApp, record: Recorder) -> None:
     await until(pilot, lambda: "Request changes?" in str(decision.render()))
     await record.shot(3.5)  # the list, grouped, and the review that needs you
 
-    # n, down the list: a review at work, your PR, then the first PR up next, and why.
+    # Down the list: a review at work, then the first PR up next, and why. Chosen by
+    # number, not by counting n presses: the groups' order can change.
     header = session.query_one("#pr-header")
-    for number, says, seconds in [
-        (7008, "Reviewing", 1.0),
-        (YOURS, "Your PR", 1.8),
-        (7004, "Up next:", 3.5),
-    ]:
-        await pilot.press("n")
+    for number, says, seconds in [(7008, "Reviewing", 1.0), (7004, "Up next:", 3.5)]:
+        app.main.repo.select(f"{REPO}#{number}", repo=REPO)
         await until(pilot, lambda n=number: getattr(session.pr, "number", None) == n)
-        await until(pilot, lambda s=says: s in str(header.render()))
+        await until(pilot, lambda s=says: s in plain(header))
         await record.shot(seconds)
-    for _ in range(3):
-        await pilot.press("p")  # back to the review that needs you
+    app.main.repo.select(f"{REPO}#{FIX}", repo=REPO)  # back to the review that needs you
     await until(pilot, lambda: getattr(session.pr, "number", None) == FIX)
     await until(pilot, lambda: "Request changes?" in str(decision.render()))
 
