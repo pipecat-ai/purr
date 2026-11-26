@@ -66,6 +66,7 @@ from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.overview import VERDICTS, short_age
 from purr.tui.prompt import PromptArea
+from purr.tui.scrolling import glide_to, going_to
 from purr.tui.theme import palette
 
 if TYPE_CHECKING:
@@ -580,15 +581,15 @@ class DiffView(ScrollView, can_focus=True):
         later = [i for i in starts if (i - self.cursor) * step > 0]
         if not later:
             return
-        self._go(min(later) if step > 0 else max(later))
-        top, height = round(self.scroll_offset.y), self.size.height
+        self._go(min(later) if step > 0 else max(later), glide=True)
+        top, height = round(going_to(self)), self.size.height
         if not top <= self.cursor < top + height // 2:  # not in the view's upper half
-            self.scroll_to(y=max(self.cursor - 1, 0), animate=False)
+            glide_to(self, self.cursor - 1)
 
     def action_move(self, step: int) -> None:
         """Up or down a row; a comment's box is one, however many lines it takes."""
         first, last = self._unit(self.cursor)
-        self._go(last + step if step > 0 else first + step)
+        self._go(last + step if step > 0 else first + step, glide=True)
 
     def _unit(self, index: int) -> tuple[int, int]:
         """The rows moved over together: a comment's box (its rows are together), else the
@@ -602,13 +603,13 @@ class DiffView(ScrollView, can_focus=True):
         return first, last
 
     def action_page(self, step: int) -> None:
-        self._go(self.cursor + step * max(self.size.height - 1, 1))
+        self._go(self.cursor + step * max(self.size.height - 1, 1), glide=True)
 
     def action_select(self, step: int) -> None:
         """Select up or down a line of code (over comments), in the file the cursor's in."""
         if self.anchor is None:
             self.anchor = self.cursor
-        self._move_to(self._next_line(step))
+        self._move_to(self._next_line(step), glide=True)
 
     def _next_line(self, step: int) -> int:
         """The next line of code that way, in the cursor's file; where it is, if none."""
@@ -648,16 +649,17 @@ class DiffView(ScrollView, can_focus=True):
         if index is not None:
             self._go(self._file_row(index))
 
-    def _go(self, index: int) -> None:
+    def _go(self, index: int, *, glide: bool = False) -> None:
         """Move, letting a selection go, unless it's from a mark."""
         if not self.marking:
             self.anchor = None
-        self._move_to(index)
+        self._move_to(index, glide=glide)
 
-    def _move_to(self, index: int) -> None:
-        """The cursor to a row (a box's first, if it's in one), and all of it into view."""
+    def _move_to(self, index: int, *, glide: bool = False) -> None:
+        """The cursor to a row (a box's first, if it's in one), and all of it into view:
+        gliding there, for keys that move it (see purr.tui.scrolling)."""
         self._place(index)
-        self._into_view(*self._here)
+        self._into_view(*self._here, glide=glide)
 
     def _place(self, index: int) -> None:
         """The cursor on a row (a box's first, if it's in one), wherever the view is."""
@@ -687,12 +689,15 @@ class DiffView(ScrollView, can_focus=True):
         elif height and self._here[1] > bottom:
             self._place(self._unit(bottom)[0])
 
-    def _into_view(self, first: int, last: int) -> None:
-        top, height = self.scroll_offset.y, self.size.height
+    def _into_view(self, first: int, last: int, *, glide: bool = False) -> None:
+        top, height = going_to(self), self.size.height
         if first < top:
-            self.scroll_to(y=first, animate=False)
+            y = first
         elif height and last >= top + height:
-            self.scroll_to(y=min(first, last - height + 1), animate=False)
+            y = min(first, last - height + 1)
+        else:
+            return
+        glide_to(self, y) if glide else self.scroll_to(y=y, animate=False)
 
     def outside_selected(self) -> bool:
         """Whether what's selected (or the line under the cursor) has lines from a gap,

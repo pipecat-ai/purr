@@ -266,3 +266,56 @@ def test_whats_said_moves_with_commits_not_pushed_yet():
     assert found["T1"].line == 7  # two lines added above it
     assert found["T2"].line == 0  # its line changed: outdated
     assert found["T3"].line == 5  # on the base's lines: those didn't move
+
+
+async def test_keys_glide_the_diff_a_page_and_move_it_a_line_at_once():
+    import asyncio
+
+    from textual.app import App, ComposeResult
+
+    from purr.tui.diffview import DiffView
+
+    added = "".join(f"+line {n}\n" for n in range(200))
+    long = (
+        "diff --git a/big.py b/big.py\nnew file mode 100644\n--- /dev/null\n+++ b/big.py\n"
+        f"@@ -0,0 +1,200 @@\n{added}"
+    )
+
+    class Pane(App):
+        def compose(self) -> ComposeResult:
+            yield DiffView()
+
+    async def until(pilot, condition):
+        async def wait():
+            while not condition():
+                await pilot.pause(0.02)
+
+        await asyncio.wait_for(wait(), 5)
+
+    app = Pane()
+    async with app.run_test(size=(60, 20)) as pilot:
+        view = app.query_one(DiffView)
+        view.load(parse(long))
+        view.show([], {0})
+        view.focus()
+        await pilot.pause()
+        seen: list[float] = []
+        view.watch(view, "scroll_y", lambda y: seen.append(y), init=False)
+        # The cursor to the bottom, then a line past it: the view follows at once.
+        await pilot.press("pagedown")
+        assert view.scroll_y == 0
+        await pilot.press("down")
+        await until(pilot, lambda: view.scroll_y == 1)
+        assert seen == [1]
+        # A page: the view glides there, through the lines between, the cursor at its
+        # bottom.
+        seen.clear()
+        await pilot.press("pagedown")
+        height = view.size.height
+        await until(pilot, lambda: view.scroll_y == view.cursor - height + 1)
+        assert view.cursor > height and len(set(seen)) > 3
+        # The top: it glides back.
+        seen.clear()
+        await pilot.press("home")
+        await until(pilot, lambda: view.scroll_y == 0 and view.cursor == 0)
+        assert len(set(seen)) > 3

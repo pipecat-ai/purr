@@ -10,6 +10,8 @@ from textual.strip import Strip
 from textual.timer import Timer
 from textual.widgets import RichLog
 
+from purr.tui.scrolling import glide_by, glide_to, page_lines
+
 REWRAP_AFTER = 0.15  # seconds of no more resizing (dragging a terminal's edge sends many)
 
 
@@ -32,6 +34,30 @@ class Transcript(RichLog):
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
         self._at_end = new_value >= self.max_scroll_y
+
+    # Keys scroll it smoothly (see purr.tui.scrolling): Textual's own take a second to
+    # get to the top or the end, and a page goes at 50 lines a second.
+    def page(self, step: int) -> None:
+        """A page down (1) or up (-1)."""
+        glide_by(self, step * page_lines(self))
+
+    def action_page_down(self) -> None:
+        self.page(1)
+
+    def action_page_up(self) -> None:
+        self.page(-1)
+
+    def action_scroll_down(self) -> None:
+        glide_by(self, 1)
+
+    def action_scroll_up(self) -> None:
+        glide_by(self, -1)
+
+    def action_scroll_home(self) -> None:
+        glide_to(self, 0)
+
+    def action_scroll_end(self) -> None:
+        glide_to(self, self.max_scroll_y)
 
     def on_resize(self, event: events.Resize) -> None:
         if self._at_end:  # shorter (the decision box came back): the last lines stay in view
