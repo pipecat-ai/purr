@@ -488,6 +488,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - Nothing on screen waits on the network or an agent. Every screen draws from local state, so switching repos or PRs takes effect on the next frame (target: well under 50 ms).
 - Lists are re-read from SQLite (milliseconds) when bus events say something changed, a burst coalesced into one redraw (50 ms). What comes from elsewhere is cached in memory: PR details, diffs, and transcripts.
 - Startup: the UI is usable in under a second, drawn from the last saved state. The first GitHub poll and resuming interrupted reviews happen in the background after that.
+- What's there once Purr has started (its modules, Textual's, the first screen) is frozen out of the garbage collector's way (`gc.freeze`): a full collection went through all of it, about 100 ms, a freeze whenever one came along; now about 15 ms.
 - A PR's transcript loads (in a thread) on first open, opens at its end, and stays cached.
 - Slow work (a poll, an agent turn) shows progress in place, and keys keep working meanwhile.
 
