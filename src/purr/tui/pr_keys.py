@@ -352,7 +352,7 @@ class PRKeys(PurrView):
                     await self._ask_again(pr, state, asked)
         finally:
             state.following = False  # whatever ended it: m can follow it again
-            if self.is_attached and self.app.is_running:  # not as Purr quits
+            if self.still_here():  # not as Purr quits
                 self.working_changed()  # its mark in the list stops spinning
 
     async def _ask_again(self, pr: PR, state: SessionState, asked: MergeReadiness) -> None:
