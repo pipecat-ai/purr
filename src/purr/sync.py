@@ -95,10 +95,13 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
     return seen
 
 
+# What Purr keeps of a PR that the searches don't say.
+_OWN_FIELDS = ("id", "state", "model", "state_at", "replies", "verdict")
+
+
 def _same_metadata(old: PR, new: PR) -> bool:
     """Whether GitHub reports nothing new; Purr's own fields don't count."""
-    own = {"id": old.id, "state": old.state, "model": old.model, "state_at": old.state_at}
-    return replace(new, **own, replies=old.replies) == old
+    return replace(new, **{name: getattr(old, name) for name in _OWN_FIELDS}) == old
 
 
 def _assignment_change(old: PR, new: PR, watched: bool) -> PRChange | None:
