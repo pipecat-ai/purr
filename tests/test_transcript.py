@@ -92,3 +92,40 @@ async def test_keys_glide_far_and_move_a_line_at_once():
         assert len(set(seen)) > 3
         await pilot.press("end")
         await until(pilot, lambda: log.scroll_y == log.max_scroll_y)
+
+
+class Rewrapped(Pane):
+    """Counts the transcript's asks to be written again."""
+
+    rewraps = 0
+
+    def on_transcript_rewrap(self) -> None:
+        self.rewraps += 1
+
+
+async def test_what_was_written_while_hidden_is_written_again_when_it_shows():
+    # Hidden (the diff zoomed in its place), it has no width: RichLog wraps what's
+    # written then at its minimum, 78, however wide it is when it shows again.
+    app = Rewrapped()
+    async with app.run_test(size=(160, 20)) as pilot:
+        log = app.query_one(Transcript)
+        await _written(pilot, log)
+        await pilot.pause(0.3)  # no rewrap for the first width
+        assert app.rewraps == 0
+        log.display = False
+        await pilot.pause()
+        log.write("word " * 30)
+        log.display = True
+        await until(pilot, lambda: app.rewraps == 1)
+
+
+async def test_hiding_and_showing_alone_writes_nothing_again():
+    app = Rewrapped()
+    async with app.run_test(size=(160, 20)) as pilot:
+        log = app.query_one(Transcript)
+        await _written(pilot, log)
+        log.display = False
+        await pilot.pause()
+        log.display = True
+        await pilot.pause(0.3)
+        assert app.rewraps == 0
