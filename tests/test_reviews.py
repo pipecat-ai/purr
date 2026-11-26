@@ -489,7 +489,7 @@ def test_a_no_with_what_to_do_instead_reaches_the_agent_and_the_transcript():
         replies_note,
         set_aside_note,
     )
-    from purr.tui.session import render_entry
+    from purr.tui.entries import render_entry
 
     result = permission_result(PermissionAnswer(False, instead="Only bus tests"), [], "a/b", None)
     assert result.message.endswith("Only bus tests") and not result.interrupt

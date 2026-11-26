@@ -145,7 +145,7 @@ def test_subagent_entries_say_which_agent():
     from claude_agent_sdk import AssistantMessage, ToolUseBlock, UserMessage
 
     from purr.review.agent import transcript_entries
-    from purr.tui.session import render_entry
+    from purr.tui.entries import render_entry
 
     call = ToolUseBlock(id="t2", name="Read", input={"file_path": "bus.py"})
     inside = AssistantMessage(content=[call], model="m", parent_tool_use_id="t1")
@@ -290,7 +290,7 @@ async def test_a_run_waits_for_its_background_agents(monkeypatch, tmp_path):
 
 
 def test_a_stopped_background_task_isnt_a_failure():
-    from purr.tui.session import render_entry
+    from purr.tui.entries import render_entry
 
     def shown(event: str) -> tuple[str, str]:
         text = render_entry({"kind": "task", "event": event, "text": "git log -S"})

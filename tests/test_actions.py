@@ -342,7 +342,7 @@ def test_the_proposal_shows_what_would_be_posted():
 
     from rich.console import Console
 
-    from purr.tui.session import render_proposal
+    from purr.tui.entries import render_proposal
 
     def shown(proposal: dict) -> list[str]:
         console = Console(width=100, record=True, file=io.StringIO())

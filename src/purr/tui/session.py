@@ -1,16 +1,13 @@
 """The PR session pane: a Claude Code-style view of a PR's agent session."""
 
 import asyncio
-import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from rich.console import Group, RenderableType
-from rich.markdown import Markdown
-from rich.table import Table
+from rich.console import Group
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
@@ -46,9 +43,7 @@ from purr.models import (
     ReviewPlan,
     ReviewStatus,
 )
-from purr.review.agent import INSTEAD, thought_headline
 from purr.review.skills import RepoSkill
-from purr.review.tools import PROPOSE_ACTION, PURR_TOOL_PREFIX, SUBMIT_REVIEW
 from purr.tui.commands import (
     PURR_NAMES,
     Command,
@@ -57,6 +52,7 @@ from purr.tui.commands import (
     render_help,
     suggestions,
 )
+from purr.tui.entries import render_entry, short
 from purr.tui.keyhelp import KEYS
 from purr.tui.keys import pane_keys
 from purr.tui.merge_box import SPIN_SECONDS, can_run_ci, render_merge, settling
@@ -70,23 +66,10 @@ from purr.workers.reviews import STOPPED
 if TYPE_CHECKING:
     from purr.tui.app import PurrApp
 
-_SEVERITY_STYLE = {"issue": "bold red", "suggestion": "yellow", "nit": "dim"}
-
 
 def number_style() -> str:
     """PR numbers' style, wherever they show."""
     return f"bold {palette().number}"
-
-
-# A background task's event: its mark, what it says, its style.
-_TASK_EVENTS = {
-    "started": ("◷", "started", "dim"),
-    "completed": ("✓", "done", "dim green"),
-    "stopped": ("◼", "stopped", "dim"),
-    "killed": ("◼", "stopped", "dim"),
-}
-# Absolute paths into a PR's worktree read better relative to it.
-_WORKTREE_PREFIX = re.compile(r"\S*/worktrees/[^/\s]+/[^/\s]+/\d+/")
 
 
 # What a does to a proposal, by its kind, as ? and the Needs you note say it.
@@ -107,7 +90,7 @@ def needs_you_for(
     the decision box asks): the agent's question, its proposal (what a does), your
     comments, replies, a failed review; else, your verdict."""
     if ask:
-        return f"Asks: {_short(ask.description, 80)}"
+        return f"Asks: {short(ask.description, 80)}"
     if proposal:
         return f"{A_DOES[proposal]}?"
     if drafted:
@@ -166,59 +149,6 @@ class SessionState:
         return bool(self.progress) and self.since is not None and not self.waiting and not self.ask
 
 
-def _bullet(body: RenderableType, style: str = "") -> Table:
-    grid = Table.grid(padding=(0, 1))
-    grid.add_column(width=1)
-    grid.add_column(ratio=1)
-    grid.add_row(Text("⏺", style=style or "white"), body)
-    return grid
-
-
-def _short(value: str, width: int = 100) -> str:
-    value = _WORKTREE_PREFIX.sub("", value).replace("\n", " ⏎ ")
-    return value if len(value) <= width else value[: width - 1] + "…"
-
-
-_VERDICT = {
-    "request_changes": "Request changes",
-    "approve": "Approve",
-    "comment": "Comment",
-    "push": "Push",
-}
-
-
-def render_proposal(proposal: dict) -> RenderableType:
-    """A proposed review, in full: what would be posted if the user approves."""
-    parts: list[RenderableType] = [
-        Text(f"Proposed: {proposal.get('description', '')}", style="bold magenta")
-    ]
-    verdict = _VERDICT.get(str(proposal.get("kind")), str(proposal.get("kind", "")))
-    parts.append(Text(f"{verdict}", style="magenta"))
-    if body := str(proposal.get("body") or "").strip():
-        parts.append(Markdown(body, code_theme=palette().code))
-    elif proposal.get("kind") == "approve" and not proposal.get("comments"):
-        parts.append(Text("LGTM"))  # what an approval with nothing to say posts
-    for comment in proposal.get("comments") or []:
-        line = Text("• ")
-        line.append(f"{comment.get('path')}:{comment.get('line')}", style="cyan")
-        line.append(f"  {comment.get('body', '')}")
-        parts.append(line)
-    for reply in proposal.get("replies") or []:
-        line = Text("↳ reply in thread  ", style="dim")
-        line.append(str(reply.get("body", "")))
-        parts.append(line)
-    parts += [_commit(commit) for commit in proposal.get("commits") or []]
-    return Group(*parts)
-
-
-def _commit(commit: dict) -> Text:
-    """A commit a push would send: ``• e0b9581  Handle a digit after the degree sign``."""
-    line = Text("• ")
-    line.append(str(commit.get("sha", ""))[:7], style="cyan")
-    line.append(f"  {commit.get('subject', '')}")
-    return line
-
-
 def replied(replies: Sequence[Reply]) -> str:
     """'alice replied', 'alice and bob replied (3)'."""
     authors = list(dict.fromkeys(reply.author for reply in replies))
@@ -233,7 +163,7 @@ def render_replies(replies: Sequence[Reply], shown: int = 3) -> Text:
         where = f" · {reply.where}" if reply.where else ""
         body = " ".join(reply.body.split())
         text.append(f"\n  {reply.author}{where}: ", style="cyan")
-        text.append(_short(body, 110))
+        text.append(short(body, 110))
     if len(replies) > shown:
         text.append(f"\n  and {len(replies) - shown} before", style="dim")
     text.append("\n[x] no reply needed", style="bold")
@@ -246,160 +176,15 @@ def outcome_mark(outcome: Outcome) -> Text:
     return Text("●", style="bold red") if outcome.found else Text("✓", style="bold green")
 
 
-@dataclass(frozen=True)
-class _RenderOptions:
-    """What the renderers are told besides the entry."""
-
-    full_thinking: bool  # thoughts in full, rather than a line each
-
-
-def render_entry(entry: dict, *, full_thinking: bool = False) -> RenderableType | None:
-    """A transcript entry as Claude Code would show it.
-
-    Subagents' own steps aren't shown, only the call that started each one and
-    what it came back with (they're recorded all the same). Each thought is a
-    line, unless ``full_thinking``.
-    """
-    if entry.get("agent"):
-        return None
-    render = _RENDERERS.get(entry.get("kind"))
-    return render(entry, _RenderOptions(full_thinking)) if render else None
-
-
-def _render_text(entry: dict, options: _RenderOptions) -> RenderableType:
-    return _bullet(Markdown(entry["text"], code_theme=palette().code))
-
-
-def _render_thinking(entry: dict, options: _RenderOptions) -> RenderableType:
-    # Like Claude Code: the reasoning, dimmed, ahead of what it leads to. In
-    # full it's ten times what the agent says, so a line each unless you ask (t).
-    text = entry["text"].strip() if options.full_thinking else thought_headline(entry["text"])
-    return _bullet(Text(text, style="dim italic"), style="dim")
-
-
-def _render_user(entry: dict, options: _RenderOptions) -> RenderableType:
-    return _you_wrote(entry["text"])
-
-
-def _you_wrote(text: str) -> Text:
-    """What you wrote, under its ``>``."""
-    indented = text.replace("\n", "\n  ")
-    return Text(f"> {indented}", style="bold")
-
-
-def _render_set_aside(entry: dict, options: _RenderOptions) -> RenderableType:
-    """A proposal you wrote instead of approving."""
-    return Text(f"  ◼ Proposal set aside: {_short(entry.get('text', ''))}", style="dim")
-
-
-# What a tool call is about: the first of these its input has (a description is
-# a subagent's task).
-_TOOL_TARGETS = ("command", "file_path", "pattern", "path", "url", "description")
-
-
-def _render_tool_use(entry: dict, options: _RenderOptions) -> RenderableType:
-    name, tool_input = entry.get("name", ""), entry.get("input") or {}
-    if name == PURR_TOOL_PREFIX + SUBMIT_REVIEW:
-        return _bullet(_render_submitted_review(tool_input), style="bold green")
-    if name == PURR_TOOL_PREFIX + PROPOSE_ACTION:
-        return _bullet(render_proposal(tool_input), style="magenta")
-    line = Text(name.removeprefix(PURR_TOOL_PREFIX), style="bold")
-    target = next((tool_input[key] for key in _TOOL_TARGETS if tool_input.get(key)), "")
-    if target:
-        line.append(f"({_short(str(target))})", style="dim")
-    return _bullet(line, style="green")
-
-
-def _render_submitted_review(review: dict) -> Group:
-    """The review's summary, then its findings, numbered."""
-    findings = enumerate(review.get("findings") or [], start=1)
-    lines = [Text(review.get("summary", ""), style="bold")]
-    lines += [_render_finding(number, finding) for number, finding in findings]
-    return Group(*lines)
-
-
-def _render_finding(number: int, finding: dict) -> Text:
-    """``2. issue  src/bus.py:40  The lock is never released.``"""
-    severity = finding.get("severity", "suggestion")
-    where = finding.get("file") or ""
-    if where and finding.get("line"):
-        where += f":{finding['line']}"
-    line = Text(f"{number}. ")
-    line.append(severity, style=_SEVERITY_STYLE.get(severity, ""))
-    if where:
-        line.append(f"  {where}", style="cyan")
-    line.append(f"  {finding.get('text', '')}")
-    return line
-
-
-def _render_tool_result(entry: dict, options: _RenderOptions) -> RenderableType | None:
-    text = entry.get("text") or ""
-    if text.startswith(("Review recorded", "Proposed (action")):
-        return None  # Purr's own tools; their calls already say it all
-    if text.startswith(INSTEAD):  # you wrote instead of allowing it
-        said = text.removeprefix(INSTEAD).strip()
-        return Group(
-            Text("  ⎿ Not allowed: you wrote instead", style="dim"), Text(""), _you_wrote(said)
-        )
-    lines = text.strip().splitlines() or [""]
-    more = f" … +{len(lines) - 1} lines" if len(lines) > 1 else ""
-    style = "red" if entry.get("is_error") else "dim"
-    return Text(f"  ⎿ {_short(lines[0], 90)}{more}", style=style)
-
-
-def _render_result(entry: dict, options: _RenderOptions) -> RenderableType:
-    """The end of a turn: ``✓ done · 3 turns · $0.12``."""
-    turns, cost = entry.get("turns") or 0, entry.get("cost_usd")
-    details = [f"{turns} turn{'s' if turns != 1 else ''}"] if turns else []
-    details += [f"${cost:.2f}"] if cost else []
-    return Text("  ✓ done" + "".join(f" · {d}" for d in details), style="dim")
-
-
-def _render_error(entry: dict, options: _RenderOptions) -> RenderableType:
-    return Text(f"✗ {entry.get('text', '')}", style="red")
-
-
-def _render_stopped(entry: dict, options: _RenderOptions) -> RenderableType:
-    """You stopped the agent (esc)."""
-    return Text("◼ Stopped", style="bold yellow")
-
-
-def _render_task(entry: dict, options: _RenderOptions) -> RenderableType:
-    """A background agent (or command) starting or reporting back."""
-    # Stopped isn't failed: the agent stops what it no longer needs.
-    mark, verb, style = _TASK_EVENTS.get(entry.get("event"), ("✗", "failed", "dim red"))
-    return Text(f"  {mark} background {verb}: {_short(entry.get('text', ''), 100)}", style=style)
-
-
-def _render_permission_auto(entry: dict, options: _RenderOptions) -> RenderableType:
-    return Text(f"  ✓ allowed by your permission {entry.get('rule', '')}", style="dim green")
-
-
-# How each kind of entry shows. A new kind: its renderer, and a line here.
-_RENDERERS: dict[str, Callable[[dict, _RenderOptions], RenderableType | None]] = {
-    "text": _render_text,
-    "thinking": _render_thinking,
-    "user": _render_user,
-    "set_aside": _render_set_aside,
-    "tool_use": _render_tool_use,
-    "tool_result": _render_tool_result,
-    "result": _render_result,
-    "error": _render_error,
-    "stopped": _render_stopped,
-    "task": _render_task,
-    "permission_auto": _render_permission_auto,
-}
-
-
 def _review_status(pr: PR, review: Review | None, outcome: Outcome, state: SessionState) -> Text:
     """The header's line on the review: waiting on you, at work, how it went, or not done."""
     if state.ask:
         return Text("⚠ Waiting for you to allow something", style="bold yellow")
     if pr.state == PRState.REVIEWING:
-        progress = f" · {_short(state.progress, 80)}" if state.progress else ""
+        progress = f" · {short(state.progress, 80)}" if state.progress else ""
         return Text.assemble(("⟳ Reviewing", "bold cyan"), (progress, "dim"))
     if state.progress:  # the lead is planning its review
-        return Text(f"⟳ {_short(state.progress, 80)}", style="bold cyan")
+        return Text(f"⟳ {short(state.progress, 80)}", style="bold cyan")
     if review is None:
         return _not_reviewed(pr)
     if review.status == ReviewStatus.FAILED and review.error == STOPPED:
@@ -483,7 +268,7 @@ def _permission_question(pr: PR, state: SessionState) -> Text | None:
     always = "   [A] always…" if ask.rule else ""
     return Text.assemble(
         ("The agent wants to: ", "bold"),
-        (_short(ask.description, 120), "yellow"),
+        (short(ask.description, 120), "yellow"),
         ("\n", ""),
         (ask.reason or "Claude Code asks before this.", "dim"),
         (f"\n[a] allow once{always}   [x] deny", "bold"),
@@ -521,7 +306,7 @@ def _push_question(action: PendingAction, shown: int = 3) -> Text:
     text = Text(f"{action.description}?", style="bold")
     for commit in commits[:shown]:
         text.append(f"\n  {str(commit.get('sha', ''))[:7]} ", style="cyan")
-        text.append(_short(str(commit.get("subject", "")), 110))
+        text.append(short(str(commit.get("subject", "")), 110))
     if len(commits) > shown:
         text.append(f"\n  and {len(commits) - shown} before", style="dim")
     text.append("\n[a] push   [x] dismiss", style="bold")

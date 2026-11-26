@@ -2,13 +2,8 @@ from rich.console import Console
 
 from purr.messages import PermissionRequest
 from purr.models import PR, ActionKind, DraftComment, PendingAction, PRRef, Reply
-from purr.tui.session import (
-    SessionState,
-    needs_you_for,
-    render_entry,
-    render_replies,
-    replied,
-)
+from purr.tui.entries import render_entry
+from purr.tui.session import SessionState, needs_you_for, render_replies, replied
 
 
 def rendered(entry) -> str:
