@@ -99,6 +99,8 @@ def test_a_says_what_it_does():
     for kind, label in said.items():
         state.proposal = kind
         assert state.a_does() == label
+    state.progress = "Thinking"  # the agent's at it: what it says may change the proposal
+    assert state.a_does() == ""
     state.ask = PermissionRequest(
         source="reviews", pr="a/b#1", request_id="r", tool="Bash", description="", reason=""
     )
