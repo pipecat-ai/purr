@@ -241,10 +241,10 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 2)
 
-        # r reviews the selected PR and assigns you (it came from the pool), its pane
-        # zoomed in to follow it.
+        # r reviews the selected PR and assigns you (it came from the pool). The list
+        # stays, to start the next one; z zooms in to follow it.
         await pilot.press("r")
-        assert not app.main.repo.query_one("#prs-pane").display
+        assert app.main.repo.query_one("#prs-pane").display and focused(app) == "prs"
         await until(pilot, lambda: "Approve" in decision(app) or "request changes" in decision(app))
         assert agent.runs[0]["pr"].number in (1, 2)
         reviewed = agent.runs[0]["pr"]
@@ -257,7 +257,7 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         assert not footer(app) & {"Request changes", "Always allow", "Dismiss", "Merge"}
         # In the list, it needs you (⚠), and its note says what for.
         needs = "⚠", "Request changes?"
-        rows = lambda: option_texts_of(app.main.repo)  # noqa: E731 (zoomed: not drawn)
+        rows = lambda: option_texts_of(app.main.repo)  # noqa: E731
         await until(pilot, lambda: any(all(n in t for n in needs) for t in rows()))
         # What it found, and how deep it went (the plan shows only while it's under way).
         await until(pilot, lambda: "review: found 1 issue" in header(app))
@@ -283,10 +283,9 @@ async def test_reviewing_from_the_keyboard(tmp_path):
         await pilot.press("a")
         await until(pilot, lambda: agent.answers == [True])
         agent.ask = None
-        # esc zooms out (it doesn't stop the agent, zoomed), back to the list.
-        assert "Zoom out" in footer(app) and "Stop" not in footer(app)
-        await pilot.press("escape")
+        # Still in the list, where esc goes home rather than stopping the agent.
         assert app.main.repo.query_one("#prs-pane").display and focused(app) == "prs"
+        assert "Home" in footer(app) and "Stop" not in footer(app)
 
         # tab opens the PR's pane to read it; enter there (or right away on the list)
         # goes to its prompt, and a follow-up continues the session. esc goes back
@@ -1295,8 +1294,7 @@ async def test_a_review_at_work_keeps_moving(tmp_path):
         agent.gate = asyncio.Event()
         await pilot.press("r")
         await until(pilot, lambda: working.display)
-        await pilot.press("escape")  # zoomed in to follow it: back to the list, still at work
-        assert app.main.repo.query_one("#prs-pane").display and working.display
+        assert app.main.repo.query_one("#prs-pane").display  # the list stays
         assert re.search(r"… \(\d+s · esc to stop\)$", str(working.render()))
         await until(pilot, lambda: mark() in FRAMES)
         first = mark()
@@ -1338,8 +1336,7 @@ async def test_esc_stops_the_agent_from_its_pane_and_r_asks_before_starting_over
         await pilot.press("r")
         await until(pilot, lambda: "review: found 1 issue" in header(app))
         prs = app.main.repo.query_one("#prs-pane")
-        await pilot.press("escape")  # r zoomed in on it: out
-        assert prs.display and focused(app) == "prs"
+        assert prs.display and focused(app) == "prs"  # r doesn't zoom in on it
 
         # r on a reviewed PR asks first: n leaves it be.
         agent.gate = asyncio.Event()
@@ -1349,15 +1346,12 @@ async def test_esc_stops_the_agent_from_its_pane_and_r_asks_before_starting_over
         await pilot.pause(0.1)
         assert len(agent.runs) == 1 and "Stop" not in footer(app)
 
-        # y starts over, zoomed in to follow it. esc zooms out first, back to the list, which
-        # it doesn't stop it from (esc there goes home)...
+        # y starts over. esc doesn't stop it from the list (esc there goes home)...
         await pilot.press("r")
         await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         await pilot.press("y")
-        await until(pilot, lambda: working.display and not prs.display)
-        assert "Zoom out" in footer(app) and "Stop" not in footer(app)
-        await pilot.press("escape")
-        assert prs.display and focused(app) == "prs" and working.display
+        await until(pilot, lambda: working.display)
+        assert prs.display and focused(app) == "prs"
         await until(pilot, lambda: "Home" in footer(app) and "Stop" not in footer(app))
         # ...in the PR's pane, it stops it, and the first review is back, with what it
         # proposed.
@@ -1624,7 +1618,7 @@ async def test_the_decision_box_shows_only_when_its_needed(tmp_path):
 
         # Typing hides it (a and x type there); an empty prompt, or leaving it, brings it
         # back, since a and x work again.
-        await pilot.press("escape", "enter")
+        await pilot.press("enter")
         assert focused(app) == "prompt" and "[a] request changes" in decision(app)
         await pilot.press("w")
         assert decision(app) == ""

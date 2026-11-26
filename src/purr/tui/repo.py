@@ -669,7 +669,7 @@ class RepoView(PRKeys):
             self.session.display = not self.session.display
             self.diff.set_class(not self.session.display, "-wide")  # all the width, zoomed
         elif self._left_pane.display:  # zooming the PR's pane: from it, or from the list
-            self.zoom_in_on_pr()
+            self._zoom_in_on_pr()
         else:  # and back, the focus where it was
             self._left_pane.display = True
             if self._zoomed_from_left:
@@ -681,9 +681,8 @@ class RepoView(PRKeys):
         if self.zoomed:
             self.action_zoom()
 
-    def zoom_in_on_pr(self) -> None:
-        """The PR's pane, full screen (as starting its review does, to follow it): z or esc
-        comes back, the focus where it was."""
+    def _zoom_in_on_pr(self) -> None:
+        """The PR's pane, full screen: z or esc comes back, the focus where it was."""
         if not self.session.display:  # the diff was zoomed: the PR's pane instead
             self.session.display = True
             self.diff.remove_class("-wide")

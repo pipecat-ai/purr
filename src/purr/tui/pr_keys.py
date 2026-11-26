@@ -88,9 +88,6 @@ class PRKeys(PurrView):
     def selected_pr(self) -> PR | None:
         raise NotImplementedError
 
-    def zoom_in_on_pr(self) -> None:
-        raise NotImplementedError
-
     def working_changed(self) -> None:
         raise NotImplementedError
 
@@ -131,8 +128,6 @@ class PRKeys(PurrView):
         self.refresh_bindings()
         if not targets:
             return
-        if self.session.pr and [pr.ref for pr in targets] == [self.session.pr.ref]:
-            self.zoom_in_on_pr()  # to follow it; z or esc comes back
         plural = "s" if len(targets) != 1 else ""
         self.notify(f"Planning {len(targets)} review{plural}")
         # The lead plans them together (a few seconds), then they start. Meanwhile they
