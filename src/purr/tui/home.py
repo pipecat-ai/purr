@@ -98,6 +98,8 @@ class ReposView(PurrView):
     async def reload(self) -> None:
         await super().reload()
         summaries = await self.purr_app.purr.store.repo_summaries()
+        if not self.still_here():
+            return  # Purr quit while the store answered
         watched = [s for s in summaries if s.watched]
         unwatched = [s for s in summaries if not s.watched]
         self.purr_app.repo_names = [s.name for s in watched + unwatched]

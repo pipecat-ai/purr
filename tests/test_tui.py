@@ -17,6 +17,7 @@ from purr.tui.dialogs import AddRepoScreen, ConfirmScreen
 from purr.tui.lists import HEADING
 from purr.tui.prompt import HistorySearchScreen
 from purr.tui.screens import MainScreen
+from purr.tui.views import PurrView
 from tests.fakes import (
     FakeAgent,
     FakeGitHub,
@@ -2415,6 +2416,32 @@ async def test_the_prs_pane_fills_its_width_after_the_diff_had_the_screen(tmp_pa
         await pilot.press("escape")  # both panes
         await until(pilot, lambda: repo.session.display)
         await until(pilot, lambda: widest() > 78)
+
+
+async def test_a_reload_the_store_answers_after_quitting_draws_nothing(tmp_path):
+    # A redraw waits on the store (a reload, on news). If Purr quits meanwhile, its lists
+    # are gone when the answer comes: it leaves them be.
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(1)]
+    answer = asyncio.Event()
+
+    async def held(*args, **kwargs):  # the store's answer, held till Purr's quit
+        await answer.wait()
+        return []
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 1)
+        store = app.purr.store
+        store.up_next = held  # the repo's list waits on its last answer
+        store.repo_summaries = held  # home's on its only one
+        reloads = [asyncio.create_task(view.reload()) for view in app.main.query(PurrView)]
+        await pilot.pause(0.1)
+        assert not any(reload.done() for reload in reloads)
+    answer.set()
+    await asyncio.gather(*reloads)  # no error: nothing drawn
 
 
 async def test_the_diff_follows_what_the_agent_commits(tmp_path):

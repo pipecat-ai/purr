@@ -17,6 +17,11 @@ class PurrView(Widget):
     def purr_app(self) -> "PurrApp":
         return cast("PurrApp", self.app)
 
+    def still_here(self) -> bool:
+        """Whether it's still on screen, with Purr running. After waiting on something (the
+        store, GitHub, a timer), Purr may have quit meanwhile and its widgets be gone."""
+        return self.is_attached and self.app.is_running
+
     def _key(self) -> tuple:
         return (self.purr_app.data_version,)
 

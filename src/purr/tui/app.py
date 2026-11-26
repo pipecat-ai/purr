@@ -452,6 +452,8 @@ class PurrApp(App):
 
     async def _count_needs_you(self) -> None:
         summaries = await self.purr.store.repo_summaries()
+        if not self.is_running:
+            return  # quit while the store answered: the top bar's gone
         self._needs_you = {summary.name: summary.needs_you for summary in summaries}
         self.main.set_alert(self._alert_text())
 

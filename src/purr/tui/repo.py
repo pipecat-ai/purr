@@ -144,6 +144,8 @@ class RepoView(PRKeys):
         self._drafted = await store.drafted(self.repo)
         self._failed = await store.failed(self.repo)
         self._up_next = {str(pick.pr): pick for pick in await store.up_next(self.repo)}
+        if not self.still_here():
+            return  # Purr quit while the store answered
         self._number_width = max((len(f"#{pr.number}") for pr in self._all), default=5)
         self._list()
 
@@ -352,7 +354,7 @@ class RepoView(PRKeys):
         wait = self._pane_shown_at + PANE_EVERY - time.monotonic()
         if wait > 0:
             await asyncio.sleep(wait)
-            if not (self.is_attached and self.app.is_running):
+            if not self.still_here():
                 return  # Purr quit meanwhile: the pane may be gone already
         self._pane_shown_at = time.monotonic()
         await self.session.show(pr)
