@@ -491,6 +491,7 @@ List and pane keys (letters and numbers act on lists and panes; while a prompt h
 - A PR's transcript loads (in a thread) on first open, opens at its end, and stays cached.
 - List rows are one line each and say so (`tui/rows.py`): Textual's list works out every row's height before drawing any, and a Rich table or rule has to be drawn to know it. With pipecat's 750 rows that took half a second each time the list was built (a repo opened, a poll's update) or changed width (the diff closed, `z`); now about a tenth of that.
 - A poll that leaves the list's rows as they were (the same PRs, in the same order) draws again only the rows that look different, and the cursor and the scroll stay put (`PRList.show_options`); PRs coming, going or moving group build it again.
+- Moving the cursor fast (a key held down), the PR's pane catches up at most every 100 ms (`PANE_EVERY`), and where the cursor stops; one key after a pause shows the PR at once. Showing a PR lays out the whole screen (its transcript and header are new), which costs as much as moving the cursor. The key bar is drawn again only when its keys change, since that too lays out the whole screen.
 - Slow work (a poll, an agent turn) shows progress in place, and keys keep working meanwhile.
 
 ## Voice (planned)
