@@ -14,7 +14,7 @@ from purr.diff import File, Gap, Line, gaps, mover
 from purr.models import DraftComment, PRComment
 from purr.tui.boxes import BOX_WIDTH, comment_box
 from purr.tui.code import code, colored_source, highlighted
-from purr.tui.overview import VERDICTS, short_age
+from purr.tui.overview import VERDICTS, ago
 from purr.tui.theme import Palette, palette
 
 SHORT_DIFF = 60  # a diff this short starts with its files opened
@@ -295,19 +295,13 @@ def _title(said: Said, where: bool) -> str:
     ``agent, proposed · now``, ``you · lines 4–9`` (and where, if it isn't on a line here)."""
     title = "agent, proposed" if said.source == "agent" else said.who
     title += " (you)" if said.yours else ""
-    notes = [_when(said.at)] if said.at else []
+    notes = [ago(said.at)] if said.at else []
     notes += [f"lines {said.start}–{said.line}"] if said.start else []
     notes += [said.note] if said.note else []
     notes += ["reply"] if said.reply else []
     notes += ["resolved"] if said.resolved else []
     notes += [_where(said)] if where else []
     return " · ".join([title, *notes])
-
-
-def _when(at: str) -> str:
-    """``3h ago``, ``2d ago``, ``now``."""
-    age = short_age(at)
-    return age if age == "now" else f"{age} ago"
 
 
 def _where(said: Said) -> str:

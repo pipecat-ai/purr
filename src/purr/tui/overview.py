@@ -56,6 +56,12 @@ def short_age(timestamp: str | None) -> str:
     return f"{int(seconds // 60)}m" if seconds >= 60 else "now"
 
 
+def ago(timestamp: str | None) -> str:
+    """``3h ago``, ``2d ago``, ``now``."""
+    age = short_age(timestamp)
+    return age if age == "now" else f"{age} ago"
+
+
 @dataclass
 class _Entry:
     details: PRDetails
@@ -263,6 +269,6 @@ def render_conversation(conversation: Sequence[PRComment]) -> list[RenderableTyp
 
 def comment_title(comment: PRComment) -> str:
     """``alice · 3h ago · approved``, ``me (you) · now``."""
-    notes = [f"{short_age(comment.at)} ago" if short_age(comment.at) != "now" else "now"]
+    notes = [ago(comment.at)]
     notes += [VERDICTS[comment.state]] if comment.state in VERDICTS else []
     return " · ".join([comment.author + (" (you)" if comment.mine else ""), *notes])
