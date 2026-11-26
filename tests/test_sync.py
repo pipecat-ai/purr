@@ -2,7 +2,7 @@ from dataclasses import replace
 
 from purr.github import PRStatus, RemotePR, Snapshot
 from purr.models import PR, GHState, PRChange, PRRef, PRState
-from purr.sync import missing_reviewed, moved_reviewed, plan_sync
+from purr.sync import missing_reviewed, moved_reviewed, not_open, plan_sync
 
 WATCHED = ["pipecat-ai/pipecat"]
 
@@ -149,6 +149,27 @@ def test_prs_leaving_the_pool_are_dropped_unless_reviewed():
         (3, PRChange.MERGED),
         (4, PRChange.UNASSIGNED),
     ]
+
+
+def test_a_merged_pr_a_search_still_lists_stays_merged():
+    """GitHub's search lags: right after you merge a PR, it can still list it as open (and
+    assigned to you). Only the PR's status says it's open again."""
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    snapshot = Snapshot(open={"pipecat-ai/pipecat": [remote(7)]}, assigned=[remote(7)])
+    assert not_open([], snapshot) == [ref]  # the store has it merged: not among its open
+
+    for status in (PRStatus(GHState.MERGED, "aaa"), None):  # merged, or couldn't tell
+        plan = plan_sync([], snapshot, watched=WATCHED, statuses={ref: status} if status else {},
+                         closed={ref})  # fmt: skip
+        assert plan.upserts == [] and plan.changes == []
+
+    # Reopened: open again, quietly, at the head it has.
+    reopened = {ref: PRStatus(GHState.OPEN, "bbb")}
+    plan = plan_sync([], snapshot, watched=WATCHED, statuses=reopened, closed={ref})
+    assert [(pr.ref, pr.gh_state, pr.head_sha) for pr in plan.upserts] == [
+        (ref, GHState.OPEN, "bbb")
+    ]
+    assert plan.changes == []
 
 
 def test_nothing_is_concluded_from_failed_searches():

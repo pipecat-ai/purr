@@ -142,6 +142,30 @@ async def test_a_push_the_searches_havent_seen_is_no_news(setup):
     assert (await store.get_pr(ref)).head_sha == "f00"
 
 
+async def test_a_pr_you_merged_stays_merged_while_the_searches_catch_up(setup):
+    """Right after you merge a PR, the searches can still list it as open and assigned to
+    you (pipecat#6759): it stays merged, and that's no news. Reopened, it's open again."""
+    store, github, worker, client = setup
+    await client.next_event(Synced)
+    ref = PRRef("pipecat-ai/pipecat", 5)
+    github.assigned = [remote(5, head_sha="abc")]
+    await worker.poll()
+    review = await store.start_review(ref)
+    await store.finish_review(review.id, summary="Fine", findings=[])
+    await store.set_pr_state(ref, PRState.DONE)
+    await store.apply_sync(gh_states={ref: GHState.MERGED})  # as merging with m leaves it
+
+    github.statuses = {ref: PRStatus(GHState.MERGED, "abc")}
+    plan = await worker.poll()
+    assert ref in github.status_calls[-1]
+    assert plan.changes == [] and plan.upserts == []
+    assert (await store.get_pr(ref)).gh_state == GHState.MERGED
+
+    github.statuses = {ref: PRStatus(GHState.OPEN, "abc")}  # reopened
+    await worker.poll()
+    assert (await store.get_pr(ref)).gh_state == GHState.OPEN
+
+
 async def test_adding_an_unknown_repo_is_rejected(setup):
     store, _, _, client = setup
     with pytest.raises(NotFound, match="Can't find nobody/nothing"):

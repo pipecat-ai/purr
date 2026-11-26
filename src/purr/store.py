@@ -737,6 +737,16 @@ class Store:
         rows = await self._fetchall("SELECT * FROM prs WHERE gh_state = ?", (GHState.OPEN,))
         return [_pr(row) for row in rows]
 
+    async def closed_among(self, refs: Iterable[PRRef]) -> set[PRRef]:
+        """Those of ``refs`` Purr has as merged or closed."""
+        wanted = set(refs)
+        if not wanted:
+            return set()
+        rows = await self._fetchall(
+            "SELECT repo, number FROM prs WHERE gh_state != ?", (GHState.OPEN,)
+        )
+        return {ref for row in rows if (ref := PRRef(row["repo"], row["number"])) in wanted}
+
     async def apply_sync(
         self,
         *,
