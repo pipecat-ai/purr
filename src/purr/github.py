@@ -89,9 +89,8 @@ _DETAILS_FIELDS = f"""
 """
 # Who said what on a PR, for replies to you (see replies_to).
 _CONVERSATION_FIELDS = """
-    author { login } createdAt
     comments(last: 50) { nodes { author { login __typename } createdAt body url } }
-    reviews(last: 50) { nodes { author { login __typename } submittedAt state body url } }
+    reviews(last: 50) { nodes { author { login } submittedAt state body } }
     reviewThreads(last: 50) { nodes { path line
         comments(last: 30) { nodes { author { login __typename } createdAt body url } } } }
 """
@@ -254,7 +253,7 @@ class _Search:
     """One search's progress through its pages of results."""
 
     query: str
-    # By repo and number: a search across repos (yours, assigned to you) can find a #1 in
+    # By repo and number: a search across repos (assigned to you, say) can find a #1 in
     # each of several.
     found: dict[PRRef, RemotePR] = field(default_factory=dict)
     total: int | None = None  # how many results GitHub says there are
@@ -416,9 +415,9 @@ class GitHub:
         *,
         on_page: OnPage | None = None,
     ) -> Snapshot:
-        """Fetch watched repos, and the PRs assigned to you, asking for your review, that
-        you've taken part in or that you opened, in as few requests as possible (one per
-        page of results, all searches batched together).
+        """Fetch watched repos, and the PRs assigned to you, asking for your review or that
+        you've taken part in, in as few requests as possible (one per page of results, all
+        searches batched together).
 
         Args:
             full: Repos to fetch every listed PR of.

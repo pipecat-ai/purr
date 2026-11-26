@@ -109,9 +109,9 @@ class GitHubWorker(BaseWorker):
     :class:`PRListUpdated` when anything changed. Handles the jobs that change
     GitHub or the watched repos (``WatchRepo``, ``ApproveAction``, ``MergePR``, ...).
 
-    After a poll it reads the conversation of the PRs Purr reviewed, you took part
-    in or opened, that changed (all of them on the first poll), for replies to you
-    since your last word there: a PR with replies you haven't answered needs you.
+    After a poll it reads the conversation of the PRs Purr reviewed or you took part
+    in that changed (all of them on the first poll), for replies to you since your
+    last word there: a PR with replies you haven't answered needs you.
 
     Each repo gets a full sync on its first poll after startup and every
     ``FULL_SYNC_EVERY`` seconds; polls in between only fetch PRs updated since
@@ -149,7 +149,7 @@ class GitHubWorker(BaseWorker):
         self._lock = asyncio.Lock()
         self._poll_task: asyncio.Task | None = None
         self._last_full_sync: dict[str, float] = {}  # repo -> time.monotonic()
-        # Reviewed PRs whose replies to read on the next poll; None: all of them.
+        # Followed PRs whose replies to read on the next poll; None: all of them.
         self._replies_due: set[PRRef] | None = None
 
     async def on_activated(self, args: dict | None) -> None:
@@ -242,8 +242,8 @@ class GitHubWorker(BaseWorker):
         return await self._github.snapshot(full, incremental, on_page=on_page)
 
     async def _read_replies(self, changed: set[PRRef]) -> tuple[list[Change], bool]:
-        """Read what others said to you, and your verdict, on PRs Purr reviewed, you took
-        part in, that changed (all of them, the first time).
+        """Read what others said to you, and your verdict, on PRs Purr reviewed or you took
+        part in that changed (all of them, the first time).
 
         Returns the PRs with new replies, and whether any PR's replies, verdict or state
         changed.
