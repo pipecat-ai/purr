@@ -505,7 +505,7 @@ async def test_news_survives_a_restart_and_shows_in_bold(tmp_path):
         def bold(title: str) -> bool:
             repo = app.main.repo
             pr = next(pr for pr in repo._prs.values() if pr.title == title)
-            return "bold" in str(repo._prompt(pr).columns[4]._cells[0].style)
+            return "bold" in str(repo._prompt(pr).cells[2].style)  # its title
 
         assert bold("Message bus") and not bold("Docs")
         await pilot.press("n")
@@ -831,7 +831,7 @@ async def test_the_theme_setting(tmp_path, monkeypatch):
         await pilot.press("1")
         await until(pilot, lambda: nord.main.repo.selected_pr() is not None)
         row = nord.main.repo._prompt(nord.main.repo.selected_pr())
-        number = row.columns[2]._cells[0]
+        number = row.cells[1]
         assert colors.number.lower() in str(number.style).lower()
 
 

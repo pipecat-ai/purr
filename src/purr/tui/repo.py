@@ -4,7 +4,6 @@ the right."""
 import asyncio
 from functools import partial
 
-from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
@@ -41,6 +40,7 @@ from purr.tui.lists import (
 )
 from purr.tui.merge_box import settling
 from purr.tui.pr_keys import PRKeys
+from purr.tui.rows import Row
 from purr.tui.session import PRSession, SessionState, needs_you_for, outcome_mark
 from purr.tui.theme import palette
 from purr.tui.working import FRAME_SECONDS, FRAMES
@@ -255,7 +255,7 @@ class RepoView(PRKeys):
         for key in self._spinning & self._prs.keys():
             prs.redraw_option(key, self._prompt(self._prs[key]))
 
-    def _prompt(self, pr: PR) -> Table:
+    def _prompt(self, pr: PR) -> Row:
         unread = str(pr.ref) in self.purr_app.alerts
         return pr_row(
             pr,
