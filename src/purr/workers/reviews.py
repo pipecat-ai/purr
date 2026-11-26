@@ -457,7 +457,8 @@ class ReviewWorker(BaseWorker):
             raise NotFound(f"{ref} hasn't been reviewed yet")
         sent = MessageSent()
         if not command:
-            pr, sent.set_aside = await self._set_proposals_aside(pr)
+            # You wrote instead of deciding what the agent proposed.
+            sent.set_aside = [action.description for action in await self._dismiss_pending(ref)]
             if sent.set_aside:
                 text = set_aside_note(sent.set_aside) + text
             if pr.replies:  # so it can help you answer them
@@ -467,17 +468,6 @@ class ReviewWorker(BaseWorker):
             pr, review, prompt=text, resume=True, followup=True, queued=False, kind="message"
         )
         return sent
-
-    async def _set_proposals_aside(self, pr: PR) -> tuple[PR, list[str]]:
-        """Dismiss what the PR's agent proposed, since you wrote instead of deciding it.
-
-        Returns the PR as it is now, and the proposals set aside.
-        """
-        proposals = await self._store.pending_actions(pr.ref)
-        if not proposals:
-            return pr, []
-        await self._dismiss_pending(pr.ref)
-        return pr, [proposal.description for proposal in proposals]
 
     async def _send_after(self, ref: PRRef, text: str) -> None:
         """What you wrote that the agent didn't get to read in its run, as a follow-up."""
