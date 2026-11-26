@@ -1579,7 +1579,7 @@ async def test_the_latest_done_prs_come_before_the_pool(tmp_path):
 
 
 async def test_waiting_on_its_author_then_done_once_merged(tmp_path):
-    from purr.models import GHState, PRRef, PRState, Verdict
+    from purr.models import Finding, GHState, PRRef, PRState, Severity, Verdict
 
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [
@@ -1597,7 +1597,11 @@ async def test_waiting_on_its_author_then_done_once_merged(tmp_path):
         # You requested changes on #1 as it is: it's the author's turn, not done.
         await store.set_pr_state(one, PRState.DONE)
         await store.set_verdict(one, Verdict(ActionKind.REQUEST_CHANGES, "abc"))
-        # #2 you approved, then it merged; #3 merged with a proposal still waiting on you.
+        # #2 you approved, then it merged (its review had found an issue); #3 merged with
+        # a proposal still waiting on you.
+        review = await store.start_review(two)
+        issue = Finding(severity=Severity.ISSUE, text="Race on shutdown")
+        await store.finish_review(review.id, summary="One issue", findings=[issue])
         await store.set_pr_state(two, PRState.DONE)
         await store.set_verdict(two, Verdict(ActionKind.APPROVE, "abc"))
         await store.set_pr_state(three, PRState.NEEDS_YOU)
@@ -1610,6 +1614,7 @@ async def test_waiting_on_its_author_then_done_once_merged(tmp_path):
         assert text().index("Change alpha") < text().index("DONE (2)")
         assert "NEEDS YOU" not in text()  # merged: what waited on you is moot
         assert any("↩" in row and "Change alpha" in row for row in option_texts(app))
+        assert mark_of(app, 2) == "✓"  # done: what its review found is behind it
 
         # On a merged PR, there's nothing to decide, and nothing to review.
         app.main.repo.select(str(three), repo="pipecat-ai/pipecat")
