@@ -299,8 +299,8 @@ class RepoView(PRKeys):
             return Text("✗", style="bold red")
         if key == PRState.NEEDS_YOU:
             return Text(ICONS[PRState.NEEDS_YOU], style="bold yellow")
-        if key in (TO_MERGE, WAITING):  # the group says it all
-            return Text(ICONS[key], style=STYLES[key])
+        if key in (TO_MERGE, WAITING, PRState.DONE):  # the group says it all: what the
+            return Text(ICONS[key], style=STYLES[key])  # review found is behind it now
         outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
         return outcome_mark(outcome) if outcome else Text(ICONS[key])
 
