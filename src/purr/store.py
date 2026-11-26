@@ -532,6 +532,10 @@ class Store:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON")
         await db.execute("PRAGMA journal_mode = WAL")
+        # No fsync per commit (with WAL, a power cut can lose the last commits, never the
+        # database): every write is a fraction of a millisecond, not several, and reads
+        # (the UI's) don't wait behind them.
+        await db.execute("PRAGMA synchronous = NORMAL")
         store = cls(db)
         await store._migrate()
         return store
