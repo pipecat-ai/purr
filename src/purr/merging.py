@@ -8,7 +8,8 @@ reviewing it too, and you may want them to approve as well.
   commits since you did (approve again), it has conflicts, it's a draft.
 - **Concerns** are for you to weigh: checks that failed or are still running (a
   docs build failing needn't hold it up), assignees who haven't approved, a
-  branch rule GitHub says isn't met (it may refuse; it says why).
+  branch rule GitHub says isn't met (it may refuse; it says why), GitHub still
+  working out whether it can be merged (it does, in seconds, once asked).
 """
 
 from purr.models import CheckState, MergeCheck
@@ -30,7 +31,12 @@ def blockers(check: MergeCheck, approved_head: str | None) -> list[str]:
 
 def concerns(check: MergeCheck, me: str) -> list[str]:
     """What you may want to wait for; merging anyway is your call."""
-    return [*check_concerns(check), *_review_concerns(check, me), *_rule_concerns(check)]
+    return [
+        *check_concerns(check),
+        *_review_concerns(check, me),
+        *_rule_concerns(check),
+        *([WORKING_OUT] if working_out(check) else []),
+    ]
 
 
 def check_concerns(check: MergeCheck) -> list[str]:
@@ -64,13 +70,20 @@ _SAID = {"CHANGES_REQUESTED": "requested changes"}
 _RULES = {
     "BLOCKED": "A branch rule isn't met: GitHub may refuse",
     "BEHIND": "It's behind {base}: GitHub may want its branch updated first",
-    "UNKNOWN": "GitHub is still working out whether it can be merged",
 }
+
+WORKING_OUT = "GitHub is still working out whether it can be merged"
 
 
 def _rule_concerns(check: MergeCheck) -> list[str]:
     rule = _RULES.get(check.merge_state or "")
     return [rule.format(base=check.base)] if rule else []
+
+
+def working_out(check: MergeCheck) -> bool:
+    """GitHub hasn't worked out yet whether it can be merged: it starts when asked, and
+    takes seconds."""
+    return "UNKNOWN" in (check.mergeable, check.merge_state)
 
 
 def new_concerns(fresh: list[str], seen: list[str]) -> list[str]:

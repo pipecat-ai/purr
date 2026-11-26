@@ -157,6 +157,35 @@ def test_the_merge_box_lists_checks_while_ci_runs():
     assert "⚠ alice hasn't approved" in shown
 
 
+def test_the_merge_box_waits_while_github_works_out_if_it_can_be_merged():
+    from dataclasses import replace
+
+    from purr.merging import WORKING_OUT, concerns
+    from purr.messages import MergeReadiness
+    from purr.models import Check, CheckState, MergeCheck
+    from purr.tui.session import render_merge, settling
+
+    pr = PR("a/b", 7, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z")
+    check = MergeCheck(
+        head_sha="abc",
+        base="main",
+        method="merge",
+        mergeable="UNKNOWN",
+        checks=(Check("Build", CheckState.PASSED),),
+    )
+    readiness = MergeReadiness(check=check, blockers=[], concerns=concerns(check, "me"))
+    assert WORKING_OUT in readiness.concerns  # merging past it is your call
+    assert settling(readiness)
+    shown = str(render_merge(pr, readiness))
+    # A spinner instead of a concern, below the checks, listed one by one meanwhile.
+    assert "GitHub is working out whether it can be merged" in shown and "⚠" not in shown
+    assert shown.index("✓ Build") < shown.index("working out")
+    # Something blocks it: there's nothing to wait for.
+    assert not settling(replace(readiness, blockers=["It's a draft"]))
+    known = replace(check, mergeable="MERGEABLE", merge_state="CLEAN")
+    assert not settling(MergeReadiness(check=known, blockers=[], concerns=[]))
+
+
 def test_what_you_approved_and_is_still_open_is_to_merge():
     from dataclasses import replace
 
