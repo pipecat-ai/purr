@@ -1,8 +1,9 @@
 """Executing approved actions on GitHub.
 
-This is the only place Purr writes to GitHub, and it only runs after the user
-approved a pending action (or, for assignment, asked for a review; for a merge,
-pressed ``m`` and confirmed). Writes go through ``gh``, as the user. An
+Purr writes to GitHub from here, and only when the user says so: a pending action
+they approved, a comment they saved (or changed, or deleted), a review they asked
+for (assigning them), a merge they confirmed, workflows they let run. Writes go
+through ``gh``, as the user; a push goes through git (``GitRepos.push``). An
 approval with nothing else to say is "LGTM".
 """
 
