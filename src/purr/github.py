@@ -249,7 +249,9 @@ class _Search:
     """One search's progress through its pages of results."""
 
     query: str
-    found: dict[int, RemotePR] = field(default_factory=dict)
+    # By repo and number: a search across repos (yours, assigned to you) can find a #1 in
+    # each of several.
+    found: dict[PRRef, RemotePR] = field(default_factory=dict)
     total: int | None = None  # how many results GitHub says there are
     cursor: str | None = None  # where the next page starts
     more: bool = True  # whether there are pages left to fetch
@@ -263,7 +265,7 @@ class _Search:
         self.total = result["issueCount"]
         # Non-PR results come back as empty objects.
         prs = [_remote_pr(node) for node in result["nodes"] if node]
-        self.found.update((pr.number, pr) for pr in prs)
+        self.found.update((pr.ref, pr) for pr in prs)
         page = result["pageInfo"]
         self.more, self.cursor = page["hasNextPage"], page["endCursor"]
         return prs
