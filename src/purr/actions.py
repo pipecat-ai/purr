@@ -160,8 +160,6 @@ _EDIT = (
     " updatePullRequestReviewComment(input: {pullRequestReviewCommentId: $id, body: $body})"
     " { pullRequestReviewComment { url } } }"
 )
-
-
 _EDIT_PR = (
     "mutation($id: ID!, $body: String!) {"
     " updateIssueComment(input: {id: $id, body: $body}) { issueComment { url } } }"
@@ -193,33 +191,16 @@ class GhWriter:
 
     async def assign_self(self, ref: PRRef) -> None:
         """Assign the current user, so teammates see the PR is taken."""
-        process = await asyncio.create_subprocess_exec(
-            self._gh,
-            "pr",
-            "edit",
-            str(ref.number),
-            "--repo",
-            ref.repo,
-            "--add-assignee",
-            "@me",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-        if process.returncode != 0:
-            raise ActionError(stderr.decode().strip() or f"gh exited with {process.returncode}")
+        await self._run("pr", "edit", str(ref.number), "--repo", ref.repo, "--add-assignee", "@me")
 
     async def reply_to_thread(self, thread_id: str, body: str) -> str:
         data = await self._mutation(_REPLY, id=thread_id, body=body)
-        return ((data.get("addPullRequestReviewThreadReply") or {}).get("comment") or {}).get(
-            "url", ""
-        )
+        return _url(data, "addPullRequestReviewThreadReply", "comment")
 
     async def edit_review_comment(self, comment_id: str, body: str) -> str:
         """New words for an inline comment of yours already on GitHub (its node id)."""
         data = await self._mutation(_EDIT, id=comment_id, body=body)
-        edited = data.get("updatePullRequestReviewComment") or {}
-        return (edited.get("pullRequestReviewComment") or {}).get("url", "")
+        return _url(data, "updatePullRequestReviewComment", "pullRequestReviewComment")
 
     async def post_line_comment(self, ref: PRRef, comment: dict, *, commit_id: str) -> str:
         """A comment on lines of the PR (``path``, ``line``, ``side``, ``body``; on several,
@@ -236,7 +217,7 @@ class GhWriter:
     async def edit_pr_comment(self, comment_id: str, body: str) -> str:
         """New words for a comment of yours on the PR itself (its node id)."""
         data = await self._mutation(_EDIT_PR, id=comment_id, body=body)
-        return ((data.get("updateIssueComment") or {}).get("issueComment") or {}).get("url", "")
+        return _url(data, "updateIssueComment", "issueComment")
 
     async def delete_comment(self, comment_id: str, *, on_line: bool) -> None:
         """Delete a comment of yours (its node id): on a line, or on the PR itself."""
@@ -244,16 +225,10 @@ class GhWriter:
 
     async def _mutation(self, query: str, **variables: str) -> dict:
         """A GraphQL mutation through gh (-f: values as they are, never read from files)."""
-        args = [self._gh, "api", "graphql", "-f", f"query={query}"]
+        args = ["api", "graphql", "-f", f"query={query}"]
         for name, value in variables.items():
             args += ["-f", f"{name}={value}"]
-        process = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
-            raise ActionError(stderr.decode().strip() or f"gh exited with {process.returncode}")
-        return json.loads(stdout or "{}").get("data") or {}
+        return json.loads(await self._run(*args) or "{}").get("data") or {}
 
     async def merge(self, ref: PRRef, *, method: str, sha: str) -> None:
         """Merge the PR (``method``: merge, squash or rebase), only if its head is ``sha``."""
@@ -266,26 +241,42 @@ class GhWriter:
         await self._api(f"repos/{repo}/actions/runs/{run_id}/approve", {})
 
     async def _api(self, path: str, request: dict, *, http: str = "POST") -> dict:
+        """A REST call, ``request`` its body."""
+        args = ("api", "--method", http, path, "--input", "-")
+        return json.loads(await self._run(*args, stdin=json.dumps(request)) or "{}")
+
+    async def _run(self, *args: str, stdin: str | None = None) -> bytes:
+        """What gh prints. Raises ActionError if it fails: with what GitHub said, if it
+        answered a REST call, else with what gh said."""
         process = await asyncio.create_subprocess_exec(
             self._gh,
-            "api",
-            "--method",
-            http,
-            path,
-            "--input",
-            "-",
-            stdin=asyncio.subprocess.PIPE,
+            *args,
+            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate(json.dumps(request).encode())
+        stdout, stderr = await process.communicate(stdin.encode() if stdin is not None else None)
         if process.returncode != 0:
-            detail = stderr.decode().strip()
-            try:
-                body = json.loads(stdout)
-                errors = "; ".join(str(e) for e in body.get("errors", []))
-                detail = f"{body.get('message', detail)} {errors}".strip()
-            except (json.JSONDecodeError, AttributeError):
-                pass
+            detail = _refusal(stdout) or stderr.decode().strip()
             raise ActionError(detail or f"gh exited with {process.returncode}")
-        return json.loads(stdout or "{}")
+        return stdout
+
+
+def _refusal(stdout: bytes) -> str:
+    """Why GitHub refused a REST call, from its answer: its message and errors; "" if gh
+    printed none."""
+    try:
+        body = json.loads(stdout)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(body, dict) or "message" not in body:
+        return ""  # GraphQL says why in errors, and gh repeats it
+    errors = "; ".join(str(e) for e in body.get("errors", []))
+    return f"{body['message']} {errors}".strip()
+
+
+def _url(data: dict, *path: str) -> str:
+    """The ``url`` at the end of ``path`` in a mutation's answer; "" if it isn't there."""
+    for key in path:
+        data = data.get(key) or {}
+    return data.get("url", "")
