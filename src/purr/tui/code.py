@@ -7,7 +7,7 @@ its green and red behind them.
 
 Only what a language marks (keywords, strings, numbers, built-ins, names being defined)
 takes the style's colors. The rest (names, operators, punctuation) takes none, for the
-diff to give it its own (bright: see diffview._numbered), and comments are dim, as
+diff to give it its own (bright: see diffrows._numbered), and comments are dim, as
 Purr's other asides: a style's own text and operator colors read dimmed (Solarized's
 operators are its comment color).
 """

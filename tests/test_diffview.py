@@ -2,7 +2,7 @@
 
 from purr.diff import parse
 from purr.models import DraftComment
-from purr.tui.diffview import first_opened, moved, opens_short, rows, said
+from purr.tui.diffrows import first_opened, moved, opens_short, rows, said
 
 DIFF = """diff --git a/src/bus.py b/src/bus.py
 index 1111111..2222222 100644
@@ -97,7 +97,7 @@ def test_a_box_for_each_comment_under_its_line():
 
 def test_the_conversation_comes_first_its_boxes_not_under_code():
     from purr.models import PRComment
-    from purr.tui.diffview import CONVERSATION
+    from purr.tui.diffrows import CONVERSATION
 
     files = (CONVERSATION, *parse(DIFF))
     alice = PRComment("IC1", "comment", "alice", "Can you **rebase**?", "2020-01-01T00:00:00Z")
