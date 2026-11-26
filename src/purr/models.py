@@ -262,6 +262,8 @@ class Check:
     name: str
     state: CheckState
     required: bool = False  # by the base branch's rules
+    started: str = ""  # when it started (ISO), if GitHub says
+    finished: str = ""  # when it finished (ISO), if it did and GitHub says
 
 
 @dataclass(frozen=True)

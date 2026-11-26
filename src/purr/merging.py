@@ -30,10 +30,11 @@ def blockers(check: MergeCheck, approved_head: str | None) -> list[str]:
 
 def concerns(check: MergeCheck, me: str) -> list[str]:
     """What you may want to wait for; merging anyway is your call."""
-    return [*_check_concerns(check), *_review_concerns(check, me), *_rule_concerns(check)]
+    return [*check_concerns(check), *_review_concerns(check, me), *_rule_concerns(check)]
 
 
-def _check_concerns(check: MergeCheck) -> list[str]:
+def check_concerns(check: MergeCheck) -> list[str]:
+    """Checks that failed or are still running."""
     found = []
     for state, what in ((CheckState.FAILED, "failed"), (CheckState.RUNNING, "is still running")):
         for run in (run for run in check.checks if run.state == state):

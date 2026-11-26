@@ -720,8 +720,8 @@ def _merge_fields(number: int) -> str:
         latestOpinionatedReviews(first: 20) {{ nodes {{ author {{ login }} state }} }}
         commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{
             nodes {{
-                ... on CheckRun {{ name status conclusion {required} }}
-                ... on StatusContext {{ context state {required} }}
+                ... on CheckRun {{ name status conclusion startedAt completedAt {required} }}
+                ... on StatusContext {{ context state createdAt {required} }}
             }}
         }} }} }} }} }}
     """
@@ -739,16 +739,20 @@ _CHECK_STATES = {
 
 def _check(node: dict) -> Check | None:
     """A check run or a status; None for anything else in the rollup."""
-    if "context" in node:  # a status, as readthedocs reports
+    if "context" in node:  # a status, as readthedocs reports: when it said so last
         name, outcome = node["context"], node.get("state") or ""
+        pending = outcome in ("PENDING", "EXPECTED")
+        started, finished = (node.get("createdAt") or "", "") if pending else ("", "")
     elif "name" in node:
         name = node["name"]
-        finished = node.get("status") == "COMPLETED"
-        outcome = (node.get("conclusion") or "") if finished else "PENDING"
+        done = node.get("status") == "COMPLETED"
+        outcome = (node.get("conclusion") or "") if done else "PENDING"
+        started, finished = node.get("startedAt") or "", node.get("completedAt") or ""
     else:
         return None
     state = _CHECK_STATES.get(outcome, CheckState.FAILED)  # failure, error, timed out, ...
-    return Check(name, state, required=bool(node.get("isRequired")))
+    required = bool(node.get("isRequired"))
+    return Check(name, state, required=required, started=started, finished=finished)
 
 
 def _merge_check(pr: dict) -> MergeCheck:

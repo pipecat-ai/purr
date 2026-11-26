@@ -2315,6 +2315,7 @@ def rows(view, text: str) -> list:
 
 async def test_the_merge_box_follows_checks_still_running(tmp_path, monkeypatch):
     from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
 
     from purr.messages import ApproveAction
     from purr.models import ActionKind, Check, CheckState, MergeCheck, PRRef
@@ -2323,13 +2324,17 @@ async def test_the_merge_box_follows_checks_still_running(tmp_path, monkeypatch)
     app, github = make_app(tmp_path)
     github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
     ref = PRRef("pipecat-ai/pipecat", 7)
+    build = Check(
+        "Build", CheckState.PASSED, started="2026-11-25T10:00:00Z", finished="2026-11-25T10:00:18Z"
+    )
+    started = (datetime.now(UTC) - timedelta(seconds=72)).isoformat()
     running = MergeCheck(
         head_sha="abc",
         base="main",
         method="squash",
         mergeable="MERGEABLE",
         merge_state="CLEAN",
-        checks=(Check("Unit Tests", CheckState.RUNNING),),
+        checks=(build, Check("Unit Tests", CheckState.RUNNING, required=True, started=started)),
         assignees=("me",),
     )
     github.merge_checks[ref] = running
@@ -2345,13 +2350,24 @@ async def test_the_merge_box_follows_checks_still_running(tmp_path, monkeypatch)
         await app.main.repo.session.refresh_status()
         await until(pilot, lambda: "You approved it." in decision(app))
 
+        # While CI runs, each check, as GitHub's page lists them: how long each took, and
+        # a spinner on the one still running, turning, with how long it's been at it.
+        def spinner() -> str:
+            line = next((line for line in decision(app).splitlines() if "Unit Tests" in line), "")
+            return line.strip()[:1]
+
         await pilot.press("m")
-        await until(pilot, lambda: "⚠ Unit Tests is still running" in decision(app))
+        await until(pilot, lambda: spinner() != "")
+        shown = decision(app)
+        assert "✓ Build  18s" in shown and "Unit Tests (required)  1m 1" in shown
+        assert "still running" not in shown and "[m] merge anyway" in shown
+        first = spinner()
+        await until(pilot, lambda: spinner() not in ("", first))
         # It finishes: the box says so, without pressing anything.
-        passed = (Check("Unit Tests", CheckState.PASSED),)
+        passed = (build, replace(running.checks[1], state=CheckState.PASSED))
         github.merge_checks[ref] = replace(running, checks=passed)
-        await until(pilot, lambda: "✓ 1 check passed" in decision(app))
-        assert "still running" not in decision(app) and "merge anyway" not in decision(app)
+        await until(pilot, lambda: "✓ 2 checks passed" in decision(app))
+        assert "Unit Tests" not in decision(app) and "merge anyway" not in decision(app)
 
 
 async def test_replies_and_requests_are_news_as_they_happen(tmp_path):

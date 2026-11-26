@@ -62,7 +62,7 @@ def _shell() -> str:
     return "/bin/sh"
 
 
-MERGE_RECHECK = 10.0  # seconds between asking GitHub again while checks run
+MERGE_RECHECK = 5.0  # seconds between asking GitHub again while checks run
 
 # What the spinner says while a does what's proposed ("Posting" for the rest).
 _DOING = {ActionKind.PUSH: "Pushing", ActionKind.APPROVE: "Approving", ActionKind.MERGE: "Merging"}
