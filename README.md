@@ -48,7 +48,8 @@ To look around without starting reviews, run `purr --no-auto-review`.
 4. Read the review and the diff (`d`). Ask the agent anything (`enter`).
 5. Decide with the keys the box above the prompt shows: `a` posts the review, `x`
    dismisses it. Once you've approved, `m` merges. The box hides while you type and while
-   the agent works.
+   the agent works. Once you've merged a PR, or requested changes on it, the cursor goes
+   on to the next PR to merge, or else the next that needs you.
 
 You can also ask the agent to change the PR. It commits the change and proposes a push, and
 `a` pushes it. Until then, the diff (`d`) shows the PR with the change. If you ask it to

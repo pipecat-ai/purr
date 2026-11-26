@@ -1912,6 +1912,72 @@ async def test_merging_with_m_after_approving(tmp_path):
         assert len(app.purr._writer.merges) == 1
 
 
+async def test_once_merged_the_cursor_goes_to_whats_next(tmp_path):
+    """Merged, a PR's done with: the cursor goes on to the next to merge, else to the next
+    that needs you, and says so; requesting changes too. Unless you moved on meanwhile."""
+    from purr.models import ActionKind, MergeCheck, PRRef, PRState, Verdict
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(i, head_sha="abc") for i in (6, 7, 8, 9)]
+    pr = {i: PRRef("pipecat-ai/pipecat", i) for i in (6, 7, 8, 9)}
+    for i in (7, 8):
+        github.merge_checks[pr[i]] = MergeCheck(
+            head_sha="abc", base="main", method="merge", mergeable="MERGEABLE",
+            merge_state="CLEAN",
+        )  # fmt: skip
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: len(pr_ids(app)) == 4)
+        store, repo = app.purr.store, app.main.repo
+        for i in (7, 8):  # you approved them: to merge
+            await store.set_pr_state(pr[i], PRState.DONE)
+            await store.set_verdict(pr[i], Verdict(ActionKind.APPROVE, "abc"))
+        for i in (6, 9):  # the agent proposes requesting changes: they need you
+            await store.set_pr_state(pr[i], PRState.NEEDS_YOU)
+            await store.add_pending_action(
+                pr[i], kind=ActionKind.REQUEST_CHANGES, description="Fix the race"
+            )
+        await repo.reload()
+
+        def on(number: int) -> bool:
+            here = repo.selected_pr()
+            return here is not None and here.number == number
+
+        def said(text: str) -> bool:
+            return any(text in n.message for n in app._notifications)
+
+        async def merge(number: int) -> None:
+            await go_to(app, pilot, number)
+            await pilot.press("m")
+            await until(pilot, lambda: f"Merge #{number}" in decision(app))
+            await pilot.press("m")
+            await until(pilot, lambda: said(f"Merged #{number} into"))
+
+        # Merged: the next to merge.
+        await merge(8)  # listed newest first: #8 is the first to merge
+        await until(pilot, lambda: on(7))
+        assert said("· next: #7, to merge")
+        # Moved on meanwhile (merging takes seconds): the cursor stays where you put it.
+        await go_to(app, pilot, 7)
+        await pilot.press("m")
+        await until(pilot, lambda: "Merge #7" in decision(app))
+        github.merge_gate = asyncio.Event()
+        await pilot.press("m")
+        await until(pilot, lambda: "Merging…" in working(app))
+        await go_to(app, pilot, 9)
+        github.merge_gate.set()
+        await until(pilot, lambda: said("Merged #7 into"))
+        await pilot.pause(0.1)
+        assert on(9) and not said("next: #9")
+        # Requesting changes (a, as proposed): its part's done, on to the next.
+        await until(pilot, lambda: "[a] request changes" in decision(app))
+        await pilot.press("a")
+        await until(pilot, lambda: on(6))
+        assert said("next: #6, needs you")
+
+
 async def test_a_merge_it_cant_do_says_so_and_x_closes_it(tmp_path):
     from purr.messages import ActionPending, ApproveAction
     from purr.models import ActionKind, MergeCheck, PRRef, PRState

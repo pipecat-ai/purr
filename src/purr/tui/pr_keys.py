@@ -8,6 +8,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import partial
+from typing import NamedTuple
 
 from textual import work
 
@@ -85,6 +86,16 @@ def _recheck_in(merge: MergeReadiness | None) -> float:
 _DOING = {ActionKind.PUSH: "Pushing", ActionKind.APPROVE: "Approving", ActionKind.MERGE: "Merging"}
 
 
+class _Post(NamedTuple):
+    """What a posts, what the spinner says meanwhile and once it's done, and whether your
+    part's done after it (changes requested: the cursor moves on to what's next)."""
+
+    job: ApproveAction | PostComments | ApprovePR
+    doing: str
+    done: str
+    moves_on: bool = False
+
+
 class PRKeys(PurrView):
     """The keys' side of the repo page (RepoView), which says what's selected and marked."""
 
@@ -92,6 +103,12 @@ class PRKeys(PurrView):
     _marked: set[str]  # the ones marked (space) to review together
 
     def selected_pr(self) -> PR | None:
+        raise NotImplementedError
+
+    def select(self, pr: str, *, repo: str) -> None:
+        raise NotImplementedError
+
+    def next_for_you(self, done: PR) -> tuple[PR, str] | None:
         raise NotImplementedError
 
     def working_changed(self) -> None:
@@ -201,33 +218,42 @@ class PRKeys(PurrView):
         if can_run_ci(state.merge):
             await self._run_ci(pr, state)
             return
-        if not (to_do := await self._to_post(pr, state)):
+        if not (post := await self._to_post(pr, state)):
             return
-        job, doing, done = to_do
-        async with self._doing(pr, doing):
+        async with self._doing(pr, post.doing):
             try:
-                posted = await self.purr_app.bus.request(job)
+                posted = await self.purr_app.bus.request(post.job)
             except PurrError as e:
                 self.notify(str(e), severity="error")
                 return
-        self.notify(f"{done}: {posted.url}" if posted.url else done)
+        done = f"{post.done}: {posted.url}" if posted.url else post.done
+        self._move_on(pr, done) if post.moves_on else self.notify(done)
         for warning in posted.warnings:
             self.notify(warning, severity="warning")
 
-    async def _to_post(
-        self, pr: PR, state: SessionState
-    ) -> tuple[ApproveAction | PostComments | ApprovePR, str, str] | None:
-        """What a does, what the spinner says meanwhile, and what it says once done: the
-        agent's proposal (a review, with your comments, or a push), your comments on their
-        own, or, waiting for your verdict alone, approving the PR."""
+    async def _to_post(self, pr: PR, state: SessionState) -> "_Post | None":
+        """What a does: the agent's proposal (a review, with your comments, or a push), your
+        comments on their own, or, waiting for your verdict alone, approving the PR."""
         store = self.purr_app.purr.store
         if actions := await store.pending_actions(pr.ref):
             kind = actions[0].kind
             done = "Pushed" if kind == ActionKind.PUSH else "Posted"
-            return ApproveAction(action_id=actions[0].id), _DOING.get(kind, "Posting"), done
+            job = ApproveAction(action_id=actions[0].id)
+            return _Post(job, _DOING.get(kind, "Posting"), done, kind == ActionKind.REQUEST_CHANGES)
         if await store.draft_comments(pr.ref):
-            return PostComments(pr=pr.ref), "Posting", "Posted"
-        return (ApprovePR(pr=pr.ref), "Approving", "Approved") if state.verdict_due else None
+            return _Post(PostComments(pr=pr.ref), "Posting", "Posted")
+        return _Post(ApprovePR(pr=pr.ref), "Approving", "Approved") if state.verdict_due else None
+
+    def _move_on(self, pr: PR, done: str) -> None:
+        """You're done with ``pr`` for now (merged it, or requested changes): if you're still
+        on it, the cursor goes on to what's next for you (RepoView.next_for_you), and
+        ``done`` says where. Moved on yourself meanwhile (merging takes seconds), it stays."""
+        here = self.selected_pr() if self.display else None
+        if here and here.ref == pr.ref and (after := self.next_for_you(pr)):
+            next_pr, why = after
+            self.select(str(next_pr.ref), repo=next_pr.repo)
+            done += f" · next: #{next_pr.number}, {why}"
+        self.notify(done)
 
     @work(group="keys")
     async def action_dismiss(self) -> None:
@@ -365,7 +391,7 @@ class PRKeys(PurrView):
         merged = await self.purr_app.bus.request(request)
         state.merge = merged.readiness
         if merged.merged:
-            self.notify(f"Merged #{pr.number} into {pr.base or 'its base'}")
+            self._move_on(pr, f"Merged #{pr.number} into {pr.base or 'its base'}")
         else:
             self.notify("Something changed since you looked: see it again", severity="warning")
 
