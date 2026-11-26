@@ -1,14 +1,9 @@
 from rich.console import Console
 
 from purr.messages import PermissionRequest
-from purr.models import PR, ActionKind, DraftComment, Reply
-from purr.tui.session import (
-    SessionState,
-    needs_you_for,
-    render_entry,
-    render_replies,
-    replied,
-)
+from purr.models import PR, ActionKind, DraftComment, PendingAction, PRRef, Reply
+from purr.tui.entries import render_entry
+from purr.tui.session import SessionState, needs_you_for, render_replies, replied
 
 
 def rendered(entry) -> str:
@@ -97,7 +92,7 @@ def test_a_says_what_it_does():
         ActionKind.PUSH: "Push",
     }
     for kind, label in said.items():
-        state.proposal = kind
+        state.actions = [PendingAction("1", PRRef("a/b", 1), kind, "", "")]
         assert state.a_does() == label
     state.progress = "Thinking"  # the agent's at it: what it says may change the proposal
     assert state.a_does() == ""
@@ -136,7 +131,7 @@ def test_the_merge_box_lists_checks_while_ci_runs():
     from purr.merging import concerns
     from purr.messages import MergeReadiness
     from purr.models import Check, CheckState, MergeCheck
-    from purr.tui.session import render_merge
+    from purr.tui.merge_box import render_merge
 
     pr = PR("a/b", 7, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z")
     checks = (
@@ -163,7 +158,7 @@ def test_the_merge_box_waits_while_github_works_out_if_it_can_be_merged():
     from purr.merging import WORKING_OUT, concerns
     from purr.messages import MergeReadiness
     from purr.models import Check, CheckState, MergeCheck
-    from purr.tui.session import render_merge, settling
+    from purr.tui.merge_box import render_merge, settling
 
     pr = PR("a/b", 7, "Fix", "x", "u", "abc", "2026-11-20T10:00:00Z")
     check = MergeCheck(

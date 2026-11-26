@@ -93,7 +93,7 @@ class RepoView(PRKeys):
         self._failed: set = set()  # PRRefs whose latest review failed
         self._up_next: dict[str, UpNext] = {}  # what's up next in the repo, by PR
         self._listed: str | None = None  # the repo whose PRs the list has
-        self._folded: dict[str, set[str]] = {}  # repo -> its groups folded (←)
+        self._folded: dict[str, set[str]] = {}  # repo -> its groups folded (tab)
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -115,7 +115,7 @@ class RepoView(PRKeys):
         self._spinner = self.set_interval(FRAME_SECONDS, self._spin, pause=True)
 
     def focus_main(self) -> None:
-        self.query_one(OptionList).focus()
+        self.query_one(PRList).focus()
 
     def _key(self) -> tuple:
         return (self.repo, self.purr_app.data_version)
@@ -158,7 +158,7 @@ class RepoView(PRKeys):
         else:
             options = []
 
-        option_list = self.query_one(OptionList)
+        option_list = self.query_one(PRList)
         # Where you'd scrolled to (the wheel, say), for this repo's list drawn again.
         scrolled = option_list.scroll_offset.y if self._listed == self.repo else None
         self._listed = self.repo
@@ -178,10 +178,12 @@ class RepoView(PRKeys):
 
     def _groups(self, prs: list[PR]) -> list[PRGroup]:
         """The PRs in their groups; empty groups left out."""
+        by_group: dict[str, list[PR]] = {}
+        for pr in prs:
+            by_group.setdefault(self._group(pr), []).append(pr)
         groups = []
         for key, icon, label, style in GROUPS:
-            members = [pr for pr in prs if self._group(pr) == key]
-            if not members:
+            if not (members := by_group.get(key)):
                 continue
             if key == UP_NEXT:  # best first
                 members.sort(key=lambda pr: self._up_next[str(pr.ref)].rank)
@@ -292,7 +294,7 @@ class RepoView(PRKeys):
         return outcome_mark(outcome) if outcome else Text(ICONS[self._group(pr)])
 
     def selected_pr(self) -> PR | None:
-        option = self.query_one(OptionList).highlighted_option
+        option = self.query_one(PRList).highlighted_option
         return self._prs.get(option.id) if option and option.id else None
 
     def select(self, pr: str, *, repo: str) -> None:
@@ -301,13 +303,13 @@ class RepoView(PRKeys):
         if repo != self.repo:
             return
         if pr in self._prs:
-            option_list = self.query_one(OptionList)
+            option_list = self.query_one(PRList)
             option_list.highlighted = option_list.get_option_index(pr)
         elif listed := next((p for p in self._all if str(p.ref) == pr), None):
             self._folded.get(repo, set()).discard(self._group(listed))  # its group opens
             self._list()  # or an older done one: listed now that it's selected
 
-    @on(OptionList.OptionHighlighted)
+    @on(OptionList.OptionHighlighted, "#prs")
     def _show_highlighted(self) -> None:
         self.refresh_bindings()  # tab: fold or open on a heading, the PR's pane on a PR
         pr = self.selected_pr()
@@ -410,7 +412,7 @@ class RepoView(PRKeys):
         listed = list(self._prs)
         after = listed[listed.index(str(pr.ref)) + 1 :]
         self._up_next.pop(str(pr.ref), None)
-        self._list(at=next((key for key in after if key in self._prs), None))
+        self._list(at=after[0] if after else None)
         try:
             await self.purr_app.bus.request(SkipUpNext(pr=pr.ref))
         except PurrError as e:
@@ -432,11 +434,10 @@ class RepoView(PRKeys):
 
     def action_switch_pane(self) -> None:
         """From the list (or its search, or the diff) to the PR's pane, and back."""
-        left = self.diff if self.diff_shown else self.query_one("#prs-pane")
         if not self.session.has_focus_within:
             if self.session.pr:  # the selected PR, or the last one (on a heading)
                 self.session.focus_transcript()
-        elif left.display:  # not while the PR's pane is zoomed
+        elif self._left_pane.display:  # not while the PR's pane is zoomed
             self._focus_left()
 
     # -- Search ---------------------------------------------------------------------
@@ -455,7 +456,7 @@ class RepoView(PRKeys):
         """Back to the list. The search stays, shown above it, until you clear it."""
         self._set_search(self._search.strip())
         self.query_one("#search").display = bool(self._search)
-        self.query_one(OptionList).focus()
+        self.query_one(PRList).focus()
 
     def action_search(self) -> None:
         search = self.query_one("#search", Input)
@@ -464,11 +465,8 @@ class RepoView(PRKeys):
 
     @on(Input.Changed, "#search")
     def _searching(self, event: Input.Changed) -> None:
-        self._search = event.value
-        if self.repo:
-            self._searches[self.repo] = event.value
+        self._set_search(event.value)
         self._list()
-        self.refresh_bindings()  # esc: clear the search, or home
 
     @on(Input.Submitted, "#search")
     def _searched(self) -> None:
@@ -554,11 +552,9 @@ class RepoView(PRKeys):
             return
         self._marked ^= {str(pr.ref)}
         self.refresh_bindings()  # esc: unmark, while some are
-        option_list = self.query_one(OptionList)
-        index = option_list.highlighted
-        option_list.replace_option_prompt(str(pr.ref), self._prompt(pr))
-        if index is not None and index + 1 < option_list.option_count:
-            option_list.action_cursor_down()
+        prs = self.query_one(PRList)
+        prs.redraw_option(str(pr.ref), self._prompt(pr))
+        prs.action_cursor_down()  # it stops at the last PR
 
     # -- The diff, in the list's place --------------------------------------------------
 
