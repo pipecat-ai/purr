@@ -100,7 +100,16 @@ async def test_snapshot_follows_pages():
             REQUESTED_QUERY: [page([node(8, "other/repo", reviewRequests=requests)], total=1)],
             COMMENTED_QUERY: [page([node(5, "else/where"), node(6, "else/where")], total=2)],
             REVIEWED_QUERY: [page([node(6, "else/where"), node(7, "else/where")], total=2)],
-            MINE_QUERY: [page([node(4, "else/where", author={"login": "Me"}, isDraft=True)], 1)],
+            MINE_QUERY: [
+                page(
+                    [
+                        node(4, "else/where", author={"login": "Me"}, isDraft=True),
+                        node(1, "my/lib", author={"login": "Me"}),
+                        node(1, "my/app", author={"login": "Me"}),  # another #1
+                    ],
+                    total=3,
+                )
+            ],
             open_query("pipecat-ai/pipecat"): [
                 page([node(1), node(2)], total=3, cursor="1"),
                 page([node(3)], total=3),
@@ -119,9 +128,14 @@ async def test_snapshot_follows_pages():
     assert not snapshot.assigned[0].to_pr("me").requested_from_me
     # Commented on or reviewed: once each.
     assert sorted(pr.number for pr in snapshot.involved) == [5, 6, 7]
-    # Yours, drafts too.
-    [mine] = snapshot.mine
-    assert mine.is_draft and mine.to_pr("me").authored
+    # Yours, drafts too; a #1 in each of two repos is two PRs, not one.
+    assert snapshot.mine is not None
+    mine = {pr.ref: pr for pr in snapshot.mine}
+    assert set(mine) == {
+        PRRef("else/where", 4), PRRef("my/lib", 1), PRRef("my/app", 1)
+    }  # fmt: skip
+    assert mine[PRRef("else/where", 4)].is_draft
+    assert mine[PRRef("else/where", 4)].to_pr("me").authored
     assert not snapshot.assigned[0].to_pr("me").authored
     # One request for the first pages, a second only for the repo with more.
     assert len(github.calls) == 2
