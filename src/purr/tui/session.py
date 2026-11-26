@@ -136,8 +136,7 @@ class SessionState:
     merge: MergeReadiness | None = None  # where it stood for merging when you pressed m
     head: str = ""  # the PR's head when last shown: a new one, and the merge box goes
     mine: list[DraftComment] = field(default_factory=list)  # your comments, not posted yet
-    proposal: ActionKind | None = None  # what the agent proposes (the oldest), as last read
-    actions: list[PendingAction] = field(default_factory=list)  # all it proposes, as last read
+    actions: list[PendingAction] = field(default_factory=list)  # what it proposes, as last read
     verdict_due: bool = False  # it waits for your verdict alone: a approves it
     quote: Quote | None = None  # the lines of the diff you're asking about, if any
     suggestion: str = ""  # what you might ask next (purr.suggest)
@@ -159,8 +158,8 @@ class SessionState:
             return ""
         if can_run_ci(self.merge):
             return "Run CI"
-        if self.proposal:
-            return A_DOES[self.proposal]
+        if self.actions:  # what the agent proposes (the oldest)
+            return A_DOES[self.actions[0].kind]
         if self.mine:
             return "Post comments"
         return "Approve PR" if self.verdict_due else ""
@@ -396,13 +395,7 @@ _RENDERERS: dict[str, Callable[[dict, _RenderOptions], RenderableType | None]] =
 }
 
 
-def _review_status(
-    pr: PR,
-    review: Review | None,
-    outcome: Outcome,
-    actions: list[PendingAction],
-    state: SessionState,
-) -> Text:
+def _review_status(pr: PR, review: Review | None, outcome: Outcome, state: SessionState) -> Text:
     """The header's line on the review: waiting on you, at work, how it went, or not done."""
     if state.ask:
         return Text("⚠ Waiting for you to allow something", style="bold yellow")
@@ -420,7 +413,7 @@ def _review_status(
     if review.status == ReviewStatus.FINISHED:
         mark = outcome_mark(outcome)
         kind = _review_kind(review.plan)
-        pending = f" · {len(actions)} pending action" if actions else ""
+        pending = f" · {len(state.actions)} pending action" if state.actions else ""
         said = f" {kind}: {outcome.text()}"
         return Text.assemble(mark, (said, mark.style), (pending, "yellow"))
     return Text()
@@ -477,18 +470,17 @@ def _decision(pr: PR, state: SessionState, *, typing: bool = False) -> Text | No
     while the agent's at it (what it says next may change them), bar where the PR stands
     for merging, which you asked for (m). They're back once that's over.
     """
-    actions = state.actions
     if state.ask:
-        return _permission_question(pr, state, actions)
+        return _permission_question(pr, state)
     if typing or state.doing:
         return None
     if state.progress:
-        return _merge_question(pr, state, actions)
-    asked = (question(pr, state, actions) for question in _QUESTIONS)
+        return _merge_question(pr, state)
+    asked = (question(pr, state) for question in _QUESTIONS)
     return next((text for text in asked if text is not None), None)
 
 
-def _permission_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _permission_question(pr: PR, state: SessionState) -> Text | None:
     """The agent wants to do something Claude Code asks about first."""
     if not (ask := state.ask):
         return None
@@ -503,11 +495,11 @@ def _permission_question(pr: PR, state: SessionState, actions: list[PendingActio
     )
 
 
-def _proposal_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _proposal_question(pr: PR, state: SessionState) -> Text | None:
     """The agent proposes posting something (the oldest proposal first)."""
-    if not actions:
+    if not state.actions:
         return None
-    action = actions[0]
+    action = state.actions[0]
     if action.kind == ActionKind.PUSH:
         return _push_question(action)
     comments = len(action.payload.get("comments") or [])
@@ -545,9 +537,9 @@ def _yours(mine: list[DraftComment]) -> str:
     return f"your {len(mine)} comment{'s' if len(mine) != 1 else ''}"
 
 
-def _comments_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _comments_question(pr: PR, state: SessionState) -> Text | None:
     """You wrote comments on the diff, and there's no proposal for them to go with."""
-    if not state.mine or actions:
+    if not state.mine or state.actions:
         return None
     return Text.assemble(
         (f"Post {_yours(state.mine)}?", "bold"),
@@ -556,12 +548,12 @@ def _comments_question(pr: PR, state: SessionState, actions: list[PendingAction]
     )
 
 
-def _replies_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _replies_question(pr: PR, state: SessionState) -> Text | None:
     """Others replied to you on GitHub: answer, or say no reply's needed."""
     return render_replies(pr.replies) if pr.replies else None
 
 
-def _verdict_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _verdict_question(pr: PR, state: SessionState) -> Text | None:
     """Reviewed, and nothing's proposed or said to you: it waits for your verdict alone."""
     if not state.verdict_due or state.mine:
         return None
@@ -580,12 +572,12 @@ def _verdict_due(pr: PR, review: Review | None, actions: list[PendingAction]) ->
     return pr.state == PRState.NEEDS_YOU and reviewed and alone
 
 
-def _merge_question(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _merge_question(pr: PR, state: SessionState) -> Text | None:
     """You pressed m: where it stands for merging, for your final decision."""
     return render_merge(pr, state.merge) if state.merge else None
 
 
-def _merge_hint(pr: PR, state: SessionState, actions: list[PendingAction]) -> Text | None:
+def _merge_hint(pr: PR, state: SessionState) -> Text | None:
     """You approved it as it is, and nothing else waits on you: it can be merged."""
     if pr.gh_state != GHState.OPEN or not state.approved or state.approved != pr.head_sha:
         return None
@@ -598,7 +590,7 @@ def _merge_hint(pr: PR, state: SessionState, actions: list[PendingAction]) -> Te
 
 # What the decision box can ask, most pressing first; each says None when it has
 # nothing to ask. A new question: its function, and a line here.
-_QUESTIONS: list[Callable[[PR, SessionState, list[PendingAction]], Text | None]] = [
+_QUESTIONS: list[Callable[[PR, SessionState], Text | None]] = [
     _permission_question,
     _merge_question,
     _proposal_question,
@@ -1053,11 +1045,10 @@ class PRSession(Vertical):
         state.approved, state.mine, state.actions = approved, mine, actions
         if state.head != pr.head_sha:  # new commits: where it stood for merging is moot
             state.merge, state.head = None, pr.head_sha
-        state.proposal = actions[0].kind if actions else None
         state.verdict_due = _verdict_due(pr, review, actions)
         details = self.purr_app.details.get(pr)
         self.query_one("#pr-header", Static).update(
-            self._header(pr, review, outcome, actions, state, details, up_next)
+            self._header(pr, review, outcome, state, details, up_next)
         )
         self._show_working(state)
         self._suggest_next()
@@ -1102,7 +1093,6 @@ class PRSession(Vertical):
         pr: PR,
         review: Review | None,
         outcome: Outcome,
-        actions: list[PendingAction],
         state: SessionState,
         details: PRDetails | None,
         up_next: str = "",
@@ -1110,7 +1100,7 @@ class PRSession(Vertical):
         """The PR's number and title; who and what (``details_line``); then where its review
         stands, and what's under way."""
         title = Text.assemble((f"#{pr.number}", number_style()), (f"  {pr.title}", "bold"))
-        text = _review_status(pr, review, outcome, actions, state)
+        text = _review_status(pr, review, outcome, state)
         if up_next and review is None:  # why the lead thinks it's worth looking at next
             text.append(f"\n➜ Up next: {up_next}", style="green")
         if pr.replies and review is not None:

@@ -1,7 +1,7 @@
 from rich.console import Console
 
 from purr.messages import PermissionRequest
-from purr.models import PR, ActionKind, DraftComment, Reply
+from purr.models import PR, ActionKind, DraftComment, PendingAction, PRRef, Reply
 from purr.tui.session import (
     SessionState,
     needs_you_for,
@@ -97,7 +97,7 @@ def test_a_says_what_it_does():
         ActionKind.PUSH: "Push",
     }
     for kind, label in said.items():
-        state.proposal = kind
+        state.actions = [PendingAction("1", PRRef("a/b", 1), kind, "", "")]
         assert state.a_does() == label
     state.progress = "Thinking"  # the agent's at it: what it says may change the proposal
     assert state.a_does() == ""
