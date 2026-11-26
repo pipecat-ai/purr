@@ -87,9 +87,7 @@ def _seen(snapshot: Snapshot) -> dict[PRRef, PR]:
     for pr in snapshot.requested or []:
         seen.setdefault(pr.ref, replace(pr.to_pr(me), requested_from_me=True))
     for pr in snapshot.involved or []:
-        seen.setdefault(pr.ref, pr.to_pr(me))
-    for ref in {pr.ref for pr in snapshot.involved or []}:
-        seen[ref] = replace(seen[ref], involved=True)
+        seen[pr.ref] = replace(seen.get(pr.ref) or pr.to_pr(me), involved=True)
     for pr in snapshot.assigned or []:
         seen[pr.ref] = replace(pr.to_pr(me), assigned_to_me=True)
     return seen
