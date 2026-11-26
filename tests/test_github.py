@@ -230,7 +230,8 @@ async def test_review_threads():
                 "line": 42,
                 "comments": {"nodes": [comment]},
             }
-            return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [thread]}}}}}
+            assert variables == {"o0": "a", "n0": "b", "k0": 1}
+            return {"data": {"t0": {"pullRequest": {"reviewThreads": {"nodes": [thread]}}}}}
 
     [thread] = await Threads().review_threads(PRRef("a/b", 1))
     assert thread["id"] == "T1" and thread["path"] == "bus.py" and not thread["resolved"]
