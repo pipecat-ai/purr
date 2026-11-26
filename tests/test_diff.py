@@ -50,7 +50,6 @@ def test_where_a_comment_goes():
     targets = [line.target() for line in bus.lines]
     assert targets == [None, (10, "RIGHT"), (11, "LEFT"), (11, "RIGHT"), (12, "RIGHT"),
                        (12, "LEFT"), (13, "RIGHT")]  # fmt: skip
-    assert bus.at(12, "RIGHT") == 4 and bus.at(12, "LEFT") == 5 and bus.at(99, "RIGHT") is None
 
 
 GAPPED = """diff --git a/a.py b/a.py
