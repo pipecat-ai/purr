@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from rich.console import Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.markdown import Markdown
 from rich.text import Text
 
@@ -127,31 +127,61 @@ class DetailsCache:
         return True
 
 
-def details_line(pr: PR, details: PRDetails | None) -> Text:
-    """``by alice · opened 3d ago · main ← fix-bus · +22 −4 in 2 files · ✓ checks pass · bug``"""
-    text = Text(f"by {pr.author}", style="dim")
+class Parts:
+    """A line in parts, `` · `` between them, that wraps only between parts: one that doesn't
+    fit where the line's got to starts the next, whole (``✓ checks pass`` isn't cut in two).
+    However wide it's drawn (the pane zoomed, the terminal resized)."""
+
+    SEPARATOR = Text(" · ", style="dim")
+
+    def __init__(self, parts: Sequence[Text]):
+        self.parts = [part for part in parts if part]
+
+    @property
+    def plain(self) -> str:
+        return self.SEPARATOR.plain.join(part.plain for part in self.parts)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        line = Text()
+        for part in self.parts:
+            if line and line.cell_len + self.SEPARATOR.cell_len + part.cell_len > options.max_width:
+                yield line
+                line = Text()
+            if line:
+                line.append_text(self.SEPARATOR)
+            line.append_text(part)
+        yield line
+
+
+def details_line(pr: PR, details: PRDetails | None) -> Parts:
+    """``by alice · opened 3d ago · main ← fix-bus · +22 −4 in 2 files · ✓ checks pass ·
+    approved · bug``, wrapping only between those (where it stands, checks and reviews,
+    together)."""
+    parts = [Text(f"by {pr.author}", style="dim")]
     if pr.created_at:
-        text.append(f" · opened {short_age(pr.created_at)} ago", style="dim")
+        parts.append(Text(f"opened {short_age(pr.created_at)} ago", style="dim"))
     if pr.assigned_to_me:
-        text.append(" · assigned to you", style="magenta")
+        parts.append(Text("assigned to you", style="magenta"))
     elif pr.assignees:
-        text.append(f" · {', '.join(pr.assignees)} on it", style="cyan")
+        parts.append(Text(f"{', '.join(pr.assignees)} on it", style="cyan"))
     if details is None:
-        return text
+        return Parts(parts)
     if details.base:
-        text.append(f" · {details.base} ← {details.head}", style="dim")
-    text.append(" · ", style="dim")
-    text.append(f"+{details.additions}", style="green")
-    text.append(f" −{details.deletions}", style="red")
+        parts.append(Text(f"{details.base} ← {details.head}", style="dim"))
     files = details.changed_files
-    text.append(f" in {files} file{'s' if files != 1 else ''}", style="dim")
+    parts.append(
+        Text.assemble(
+            (f"+{details.additions}", "green"),
+            (f" −{details.deletions}", "red"),
+            (f" in {files} file{'s' if files != 1 else ''}", "dim"),
+        )
+    )
     badges = (_CHECKS.get(details.checks or ""), _DECISIONS.get(details.review_decision or ""))
-    for label, style in filter(None, badges):
-        text.append(" · ", style="dim")
-        text.append(label, style=style)
+    standing = [Text(label, style=style) for label, style in filter(None, badges)]
+    parts.append(Parts.SEPARATOR.join(standing))
     if details.labels:
-        text.append(f" · {', '.join(details.labels)}", style="dim")
-    return text
+        parts.append(Text(", ".join(details.labels), style="dim"))
+    return Parts(parts)
 
 
 def where_it_changes(details: PRDetails) -> str:
