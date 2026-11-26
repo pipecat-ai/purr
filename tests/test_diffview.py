@@ -2,7 +2,7 @@
 
 from purr.diff import parse
 from purr.models import DraftComment
-from purr.tui.diffview import first_opened, opens_short, rows, said
+from purr.tui.diffview import first_opened, moved, opens_short, rows, said
 
 DIFF = """diff --git a/src/bus.py b/src/bus.py
 index 1111111..2222222 100644
@@ -253,3 +253,16 @@ def test_lines_left_out_around_the_hunks_shown_from_the_file():
     # A file that ends with the last hunk: nothing after it.
     ends = rows([file], {0}, [], sources={"a.py": "l1\nl2\nl3\nx\nY\n"})
     assert plain(ends)[-1] == "         5  +Y"
+
+
+def test_whats_said_moves_with_commits_not_pushed_yet():
+    changes = "diff --git a/bus.py b/bus.py\n@@ -2,0 +3,2 @@\n+a\n+b\n@@ -8 +10 @@\n-x\n+y\n"
+    threads = [
+        {"id": "T1", "path": "bus.py", "line": 5, "side": "RIGHT", "comments": [{"body": "Hm"}]},
+        {"id": "T2", "path": "bus.py", "line": 8, "side": "RIGHT", "comments": [{"body": "X"}]},
+        {"id": "T3", "path": "bus.py", "line": 5, "side": "LEFT", "comments": [{"body": "Old"}]},
+    ]
+    found = {s.thread: s for s in moved(said([], [], threads), changes)}
+    assert found["T1"].line == 7  # two lines added above it
+    assert found["T2"].line == 0  # its line changed: outdated
+    assert found["T3"].line == 5  # on the base's lines: those didn't move

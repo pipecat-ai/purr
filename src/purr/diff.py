@@ -6,9 +6,12 @@ the ``LEFT`` (its number in the base). Only lines in the diff's hunks take one.
 
 What the diff leaves out of a file, around its hunks, are its gaps (:func:`gaps`):
 lines the PR doesn't change, which can be shown from the file as it is in the PR.
+
+Commits on top of the PR move its lines: :func:`mover` says where one is now.
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from functools import lru_cache
@@ -19,6 +22,7 @@ GENERATED = ("*.lock", "package-lock.json", "pnpm-lock.yaml", "go.sum", "*.min.j
 
 _MARKS = {"+", "-", "\\"}  # how a hunk line starts, besides a space
 _HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_SPAN = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@")  # with their lengths
 
 # What git says about a file before its hunks, as a short note.
 _NOTES = {
@@ -151,3 +155,33 @@ def _hunks(lines: list[str]) -> list[Line]:
         old += in_old
         new += in_new
     return parsed
+
+
+def mover(changes: str) -> Callable[[str, int], int]:
+    """Where a line of a file is after ``changes`` (a ``git diff -U0`` of it), by its
+    number before them: 0 if they changed that line, or deleted the file."""
+    spans: dict[str, list[tuple[int, int, int]]] = {}  # path -> (first, length, shift)
+    gone: set[str] = set()
+    path = ""
+    for text in changes.splitlines():
+        if text.startswith("diff --git "):
+            path = text.rpartition(" b/")[2]
+        elif text.startswith("deleted file mode"):
+            gone.add(path)
+        elif span := _SPAN.match(text):  # git leaves out a length of 1
+            first, length, now = int(span[1]), int(span[2] or 1), int(span[3] or 1)
+            spans.setdefault(path, []).append((first, length, now - length))
+
+    def moved(path: str, line: int) -> int:
+        if path in gone:
+            return 0
+        shift = 0
+        for first, length, more in spans.get(path, ()):
+            if line < first + (length == 0):  # lines added go after line ``first``
+                break
+            if line < first + length:
+                return 0
+            shift += more
+        return line + shift
+
+    return moved

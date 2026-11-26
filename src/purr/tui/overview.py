@@ -16,6 +16,7 @@ from rich.console import Group, RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
 
+from purr.messages import PRDiff
 from purr.models import PR, PRComment, PRDetails
 from purr.tui.boxes import CommentBox
 from purr.tui.theme import palette
@@ -67,7 +68,7 @@ class DetailsCache:
     def __init__(self):
         self._entries: dict[str, _Entry] = {}
         self._fetching: set[str] = set()
-        self._diffs: dict[str, tuple[str, str]] = {}  # ref -> (head sha, diff), oldest first
+        self._diffs: dict[str, tuple[str, PRDiff]] = {}  # ref -> (head sha, diff), oldest first
         self._fetching_diffs: set[str] = set()
 
     def get(self, pr: PR) -> PRDetails | None:
@@ -97,10 +98,14 @@ class DetailsCache:
         self._entries[str(pr.ref)] = _Entry(details, pr.updated_at, time.monotonic())
         return old is None or old.details != details
 
-    def diff(self, pr: PR) -> str | None:
+    def diff(self, pr: PR) -> PRDiff | None:
         """The PR's diff at its current head, if fetched."""
-        head, diff = self._diffs.get(str(pr.ref), ("", ""))
+        head, diff = self._diffs.get(str(pr.ref), ("", None))
         return diff if head == pr.head_sha else None
+
+    def forget_diff(self, pr: str) -> None:
+        """The PR's diff may have changed (the agent committed): fetched again, next."""
+        self._diffs.pop(pr, None)
 
     def claim_diffs(self, prs: list[PR]) -> list[PR]:
         """The PRs whose diff is worth fetching, marked as on their way."""
@@ -110,7 +115,7 @@ class DetailsCache:
         self._fetching_diffs.update(str(pr.ref) for pr in claimed)
         return claimed
 
-    def put_diff(self, pr: PR, diff: str | None) -> bool:
+    def put_diff(self, pr: PR, diff: PRDiff | None) -> bool:
         """Store a fetched diff (None: the fetch failed). Returns whether it's new."""
         self._fetching_diffs.discard(str(pr.ref))
         if diff is None:

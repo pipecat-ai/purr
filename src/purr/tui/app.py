@@ -509,6 +509,7 @@ class PurrApp(App):
         state.progress, state.waiting = event.text or None, event.waiting
         if not state.progress:
             state.since, state.background = None, 0
+            self.main.repo.commits_may_have_changed(event.pr)
         elif state.since is None:
             state.since = time.monotonic()  # the agent's working: the spinner's clock
         self._session_changed(event.pr)
@@ -533,6 +534,7 @@ class PurrApp(App):
         state = self._session_state(pr)
         state.progress, state.waiting, state.since = None, False, None
         state.background = 0
+        self.main.repo.commits_may_have_changed(pr)
         self._session_changed(pr)
 
     def _permission_asked(self, event: PermissionRequest) -> None:
@@ -547,9 +549,12 @@ class PurrApp(App):
     def _action_changed(self, event: ActionPending | ActionResolved | CommentsChanged) -> None:
         """A proposal waits for you, or was settled, or your comments changed: the decision
         box changes, and the diff's comments. Where the PR stood for merging (m) is from
-        before what's proposed now: it goes, and m asks again."""
+        before what's proposed now: it goes, and m asks again. A push settled: the diff's
+        of its new head."""
         if isinstance(event, ActionPending):
             self._session_state(event.pr).merge = None
+        if isinstance(event, ActionResolved):
+            self.main.repo.commits_may_have_changed(event.pr)
         self.main.repo.diff_changed(event.pr)
         self._session_changed(event.pr)
 

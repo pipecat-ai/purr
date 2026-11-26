@@ -1,6 +1,6 @@
 """Reading a PR's diff: files, numbered lines, and where a comment on each goes."""
 
-from purr.diff import parse
+from purr.diff import mover, parse
 
 DIFF = """\
 diff --git a/src/bus.py b/src/bus.py
@@ -104,3 +104,31 @@ def test_nothing_left_out_of_new_or_deleted_files_or_after_the_last_line():
         "\\ No newline at end of file\n"
     )
     assert gaps(ends) == ()
+
+
+def test_where_lines_are_after_more_commits():
+    changes = """\
+diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ -5,0 +6,2 @@ def f():
++a
++b
+@@ -10,2 +11,0 @@
+-c
+-d
+@@ -20 +19,3 @@
+-e
++f
++g
++h
+diff --git a/gone.py b/gone.py
+deleted file mode 100644
+"""
+    where = mover(changes)
+    # Lines added after line 5 push the rest down; deleted or changed ones are gone (0).
+    assert [where("x.py", n) for n in (5, 6, 9, 10, 11, 12, 19, 20, 21)] == [
+        5, 8, 11, 0, 0, 12, 19, 0, 23,
+    ]  # fmt: skip
+    assert where("gone.py", 3) == 0
+    assert where("same.py", 7) == 7  # a file they didn't touch

@@ -361,7 +361,7 @@ class RepoView(PRKeys):
     async def _fetch_diff(self, pr: PR) -> str | None:
         """Fetch the PR's diff into the cache; why not, if it couldn't be."""
         try:
-            diff = (await self.purr_app.bus.request(GetDiff(pr=pr.ref))).diff
+            diff = await self.purr_app.bus.request(GetDiff(pr=pr.ref))
         except Exception as e:  # never let a background fetch take the UI down
             self.purr_app.details.put_diff(pr, None)
             return str(e) or type(e).__name__
@@ -608,6 +608,18 @@ class RepoView(PRKeys):
         """What's been said on a PR changed: its diff shows it, if it's the one shown."""
         if self.diff_shown and self.diff.pr and str(self.diff.pr.ref) == pr:
             self.run_worker(self.diff.reload(), group="diff-comments")
+
+    def commits_may_have_changed(self, pr: str) -> None:
+        """The agent's done on a PR, and may have committed there: its diff is fetched again,
+        next time; now, if it's the one shown."""
+        self.purr_app.details.forget_diff(pr)
+        if self.diff_shown and self.diff.pr and str(self.diff.pr.ref) == pr:
+            self.run_worker(self._refetch_diff(self.diff.pr), group="diff-refetch")
+
+    async def _refetch_diff(self, shown: PR) -> None:
+        pr = await self.purr_app.purr.store.get_pr(shown.ref) or shown  # pushed: a new head
+        if await self._fetch_diff(pr) is None and (diff := self.purr_app.details.diff(pr)):
+            await self.diff.update(pr, diff)
 
     @on(DiffPane.Closed)
     def _diff_closed(self) -> None:

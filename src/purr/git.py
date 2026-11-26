@@ -37,6 +37,20 @@ class GitError(Exception):
 
 
 @dataclass(frozen=True)
+class Local:
+    """What the agent committed in a PR's worktree that isn't on GitHub yet.
+
+    Attributes:
+        head: What's checked out there.
+        commits: How many commits it made on top of the PR's head (a merge is one); 0 if
+            it rewrote the PR instead (a rebase, say).
+    """
+
+    head: str
+    commits: int
+
+
+@dataclass(frozen=True)
 class Unpushed:
     """What pushing a PR's worktree would send to its branch.
 
@@ -59,6 +73,8 @@ _BASE_REFSPEC = f"+HEAD:{BASE_REF}"
 _PUT_ON = "refs/worktree/purr/head"
 # Fail fast on a missing object instead of fetching it on its own (blobless clones).
 _NO_LAZY_FETCH = {"GIT_NO_LAZY_FETCH": "1"}
+# A diff as GitHub (and gh pr diff) shows it.
+_DIFF = ("diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/")
 # What git leaves in a worktree's git dir while something's halfway, and what aborts it
 # (git am keeps its state where a rebase does, with an "applying" file: it comes first).
 _UNFINISHED = (
@@ -572,6 +588,49 @@ class GitRepos:
         if (await self._pr_heads(clone)).get(pr.number) != pr.head_sha:
             await self._git(clone, "fetch", "--quiet", "origin", _pr_refspec(pr.number))
 
+    async def local(self, pr: PR) -> Local | None:
+        """What the agent committed in the PR's worktree that isn't on GitHub yet: commits
+        on top of the PR's head, or the PR rewritten (a rebase). None if there's nothing,
+        git's halfway through something there, or the worktree is on an older head (the
+        PR moved on since)."""
+        path = self.worktree_path(pr.ref)
+        if not (path / ".git").exists():
+            return None
+        try:
+            head = (await self._git(path, "rev-parse", "HEAD")).strip()
+            if head == pr.head_sha or await self._unfinished(path):
+                return None
+            if await self._builds_on(path, pr.head_sha):
+                return Local(head, len(await self._log(path, pr.head_sha, "HEAD")))
+            if await self._put_on(path) == pr.head_sha:
+                return Local(head, 0)
+        except GitError:
+            return None
+        return None
+
+    async def local_diff(self, pr: PR, local: Local) -> str | None:
+        """The PR's diff as it'll be once what's ``local`` is pushed; None if git can't
+        tell. A rebase, or a merge, likely brings in the base's latest: it's fetched first
+        (and if the clone doesn't have the base yet)."""
+        clone = self.clone_path(pr.repo)
+        base = f"{BASE_REFS}/{pr.base}" if pr.base else BASE_REF
+        try:
+            merges = await self._git(clone, "rev-list", "--merges", f"{pr.head_sha}..{local.head}")
+            if not local.commits or merges.strip() or not await self._has_ref(clone, base):
+                base = await self._fetch_base(pr.repo, pr.base or "")
+            return await self._git(clone, *_DIFF, f"{base}...{local.head}")
+        except GitError:
+            return None
+
+    async def moved(self, pr: PR, local: Local) -> str:
+        """How the agent's commits changed the PR's files (a diff with no context): where
+        lines of the PR's head are now. Empty if git can't tell."""
+        try:
+            changes = ("diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames")
+            return await self._git(self.clone_path(pr.repo), *changes, pr.head_sha, local.head)
+        except GitError:
+            return ""
+
     async def diff(self, pr: PR) -> str | None:
         """The PR's diff from the clone; None if the clone doesn't have it (yet)."""
         clone = self.clone_path(pr.repo)
@@ -583,27 +642,19 @@ class GitRepos:
             )
             if head.strip() != pr.head_sha:
                 return None
-            return await self._git(
-                clone,
-                "diff",
-                "--no-color",
-                "--no-ext-diff",
-                "--src-prefix=a/",
-                "--dst-prefix=b/",
-                self._range(pr),
-                env=_NO_LAZY_FETCH,
-            )
+            return await self._git(clone, *_DIFF, self._range(pr), env=_NO_LAZY_FETCH)
         except GitError:
             return None
 
-    async def file_at(self, pr: PR, path: str) -> str | None:
-        """A file as it is at the PR's head, from the clone; None if the clone doesn't have
-        that head (yet), or the file."""
+    async def file_at(self, pr: PR, path: str, commit: str = "") -> str | None:
+        """A file as it is at the PR's head (or ``commit``), from the clone; None if the
+        clone doesn't have that commit (yet), or the file."""
         clone = self.clone_path(pr.repo)
         if not (clone / "HEAD").exists():
             return None
         try:
-            return await self._git(clone, "show", f"{pr.head_sha}:{path}", env=_NO_LAZY_FETCH)
+            at = commit or pr.head_sha
+            return await self._git(clone, "show", f"{at}:{path}", env=_NO_LAZY_FETCH)
         except GitError:
             return None
 

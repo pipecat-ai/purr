@@ -2196,6 +2196,54 @@ async def test_the_diff_its_files_and_your_comments_on_lines(tmp_path):
         assert await app.purr.store.draft_comments(ref) == []
 
 
+async def test_the_diff_follows_what_the_agent_commits(tmp_path):
+    from purr.git import Local
+    from purr.messages import SendMessage
+    from purr.tui.diffview import DiffView
+
+    app, github = make_app(tmp_path)
+    github.open["pipecat-ai/pipecat"] = [remote(7, title="Fix the bus", head_sha="abc")]
+    ref = PRRef("pipecat-ai/pipecat", 7)
+    header = "diff --git a/bus.py b/bus.py\n--- a/bus.py\n+++ b/bus.py\n@@ -1 +1 @@\n-old\n"
+    github.diffs[ref] = f"{header}+new\n"
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
+        await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
+        await pilot.press("1")
+        await until(pilot, lambda: pr_ids(app) == [str(ref)])
+        await pilot.press("r")
+        await until(pilot, lambda: "[a] request changes" in decision(app))
+        await until(pilot, lambda: not app.purr.runner.get_worker("reviews").running)
+        repo = app.main.repo
+        await pilot.press("d")
+        await until(pilot, lambda: repo.diff_shown)
+        view = repo.query_one(DiffView)
+
+        def lines() -> list[str]:
+            return [line.text for file in view.files for line in file.lines]
+
+        assert repo.diff.border_title == "Diff #7" and "+new" in lines()
+
+        # The agent commits a fix: once its turn's done, the diff has it, and says so.
+        repos = app.purr._repos
+        repos.locals = {ref: Local("f00d", 1)}
+        repos.local_diffs = {ref: f"{header}+newer\n"}
+        await app.bus.request(SendMessage(pr=ref, text="Fix it"))
+        await until(pilot, lambda: "+newer" in lines())
+        assert repo.diff.border_title == "Diff #7 · with 1 commit not pushed yet"
+        assert repo.diff_shown and focused(app) == "diff"
+        # GitHub takes comments only on lines it has: not those, till they're pushed.
+        view.to_file("bus.py")
+        await pilot.press("c")
+        await until(pilot, lambda: any("aren't pushed" in n.message for n in app._notifications))
+
+        # Pushed (or dropped): the PR as on GitHub again.
+        repos.locals = {}
+        await app.bus.request(SendMessage(pr=ref, text="Never mind"))
+        await until(pilot, lambda: "+new" in lines())
+        assert repo.diff.border_title == "Diff #7"
+
+
 async def test_answering_on_the_pr_and_dropping_the_agents_comments(tmp_path):
     from purr.models import ActionKind, PRComment, PRDetails, PRRef
     from purr.tui.diffview import CommentScreen, DiffView
