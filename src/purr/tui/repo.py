@@ -410,7 +410,7 @@ class RepoView(PRKeys):
         listed = list(self._prs)
         after = listed[listed.index(str(pr.ref)) + 1 :]
         self._up_next.pop(str(pr.ref), None)
-        self._list(at=next((key for key in after if key in self._prs), None))
+        self._list(at=after[0] if after else None)
         try:
             await self.purr_app.bus.request(SkipUpNext(pr=pr.ref))
         except PurrError as e:
@@ -432,11 +432,10 @@ class RepoView(PRKeys):
 
     def action_switch_pane(self) -> None:
         """From the list (or its search, or the diff) to the PR's pane, and back."""
-        left = self.diff if self.diff_shown else self.query_one("#prs-pane")
         if not self.session.has_focus_within:
             if self.session.pr:  # the selected PR, or the last one (on a heading)
                 self.session.focus_transcript()
-        elif left.display:  # not while the PR's pane is zoomed
+        elif self._left_pane.display:  # not while the PR's pane is zoomed
             self._focus_left()
 
     # -- Search ---------------------------------------------------------------------
@@ -464,11 +463,8 @@ class RepoView(PRKeys):
 
     @on(Input.Changed, "#search")
     def _searching(self, event: Input.Changed) -> None:
-        self._search = event.value
-        if self.repo:
-            self._searches[self.repo] = event.value
+        self._set_search(event.value)
         self._list()
-        self.refresh_bindings()  # esc: clear the search, or home
 
     @on(Input.Submitted, "#search")
     def _searched(self) -> None:
