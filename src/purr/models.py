@@ -305,6 +305,7 @@ class RepoSummary:
     yours: int = 0  # PRs you opened
     up_next: int = 0  # PRs in the pool worth looking at next
     needs_you: int = 0
+    to_merge: int = 0  # PRs you approved as they are, still open
     reviewing: int = 0
     not_reviewed: int = 0
     last_activity: str | None = None

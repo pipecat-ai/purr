@@ -25,6 +25,7 @@ from purr.tui.lists import (
     GROUPS,
     HEADING,
     ICONS,
+    TO_MERGE,
     UP_NEXT,
     PRGroup,
     PRList,
@@ -263,6 +264,8 @@ class RepoView(PRKeys):
         key = str(pr.ref)
         if self._group(pr) == UP_NEXT:
             return self._up_next[key].why
+        if self._group(pr) == TO_MERGE:
+            return "approved · m merges"
         if pr.state != PRState.NEEDS_YOU:
             return ""
         state = self.purr_app.sessions.get(key)
@@ -285,6 +288,8 @@ class RepoView(PRKeys):
             return Text("✗", style="bold red")
         if pr.state == PRState.NEEDS_YOU:
             return Text(ICONS[PRState.NEEDS_YOU], style="bold yellow")
+        if self._group(pr) == TO_MERGE:
+            return Text(ICONS[TO_MERGE], style="bold green")
         outcome = self._outcomes.get(pr.ref) if pr.state != PRState.REVIEWING else None
         return outcome_mark(outcome) if outcome else Text(ICONS[self._group(pr)])
 

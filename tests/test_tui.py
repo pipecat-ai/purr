@@ -1457,7 +1457,8 @@ async def test_up_next_in_the_list_the_pr_and_at_home(tmp_path):
     async with app.run_test(size=(160, 30)) as pilot:
         await app.bus.request(WatchRepo(repo="pipecat-ai/pipecat"))
         await until(pilot, lambda: "pipecat-ai/pipecat" in app.repo_names)
-        await until(pilot, lambda: option_texts_of(app.main.repos)[-1].split()[5] == "2")
+        # Its count of PRs up next: number, repo, yours, needs you, to merge, reviewing, up next.
+        await until(pilot, lambda: option_texts_of(app.main.repos)[-1].split()[6] == "2")
 
         await pilot.press("1")
         await until(pilot, lambda: len(pr_ids(app)) == 3)
@@ -1769,6 +1770,11 @@ async def test_merging_with_m_after_approving(tmp_path):
         await app.bus.request(ApproveAction(action_id=approval.id))
         await app.main.repo.session.refresh_status()
         await until(pilot, lambda: "You approved it." in decision(app))
+        # In the list, it's to merge: in Done, it'd be missed.
+        rows = lambda: option_texts_of(app.main.repo)  # noqa: E731
+        await until(pilot, lambda: any("TO MERGE (1)" in row for row in rows()))
+        assert any("⇡" in row and "approved · m merges" in row for row in rows())
+        assert not any("DONE" in row for row in rows())
 
         # m: where it stands. The docs build failed and alice hasn't approved: your call.
         # GitHub takes a moment: meanwhile, it says what it's doing.

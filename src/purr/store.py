@@ -804,6 +804,9 @@ class Store:
                 COALESCE(SUM(prs.state = 'not_reviewed' AND prs.assignees = '[]'
                              AND up_next.number IS NOT NULL), 0) AS up_next,
                 COALESCE(SUM(prs.state = 'needs_you'), 0) AS needs_you,
+                COALESCE(SUM(prs.state = 'done' AND NOT prs.authored
+                             AND prs.verdict = 'approve'
+                             AND prs.verdict_head = prs.head_sha), 0) AS to_merge,
                 COALESCE(SUM(prs.state = 'reviewing'), 0) AS reviewing,
                 COALESCE(
                     SUM(prs.state = 'not_reviewed' AND NOT prs.authored
@@ -825,6 +828,7 @@ class Store:
                 yours=row["yours"],
                 up_next=row["up_next"],
                 needs_you=row["needs_you"],
+                to_merge=row["to_merge"],
                 reviewing=row["reviewing"],
                 not_reviewed=row["not_reviewed"],
                 last_activity=row["last_activity"],
